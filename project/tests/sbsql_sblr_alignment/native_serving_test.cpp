@@ -634,7 +634,21 @@ int ServeMode(const fs::path& path, std::string_view variant, bool hold) {
   if (variant != "nocrypto" && variant != "keyed" && variant != "readonly") {
     auto again = srv::AcquireDatabaseOwnership({path, "server", {}, d::RouteStorageAccess::read_only,
                                                 d::DatabaseFileOwnership::native_data_file});
-    std::cout << "AFTER_CLOSE reowned=" << (again.acquired ? "true" : "false") << " threads=" << ThreadNames() << std::endl;
+    // The loop's std::thread was JOINED by the close above, but the kernel removes a joined thread's
+    // /proc/self/task entry slightly later than the join returns (pthread_join wakes on the cleared tid
+    // word in exit_mm; release_task runs afterwards in exit_notify). A listing taken in that window still
+    // names "sb-db-loop" although the thread function has returned (seen once under suite load at 128K:
+    // "AFTER_CLOSE reowned=true threads=sb-db-loop,..."). Wait, bounded, for the kernel to settle BEFORE
+    // listing; the assertion is unchanged (the loop thread must be gone) and still fails if it never goes.
+    std::string after_threads = ThreadNames();
+    int settle_ms = 0;
+    while (after_threads.find("sb-db-loop") != std::string::npos && settle_ms < 2000) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      settle_ms += 5;
+      after_threads = ThreadNames();
+    }
+    std::cout << "AFTER_CLOSE reowned=" << (again.acquired ? "true" : "false") << " threads=" << after_threads
+              << " settle_ms=" << settle_ms << std::endl;
     if (again.acquired) again.lock->release();
   }
   return exit_code;

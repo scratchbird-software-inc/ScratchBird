@@ -16,11 +16,13 @@ using scratchbird::core::platform::Uuid;
 
 // SEARCH_KEY: SB_SESSION_LEDGER_RECORD
 // Plan 36 T2 (owner Q165 = 1, 2026-11-14; Q308 2026-11-19: the ledger is built
-// before S4e). The durable SESSION LEDGER is a chain of fixed 256-byte records
+// before S4e). The durable SESSION LEDGER is a chain of fixed 512-byte records
+// (owner ruling 2026-11-23, S4e answer 2: 512, was 256, so one record is exactly
+// one careful-write unit and the session record carries the spec's fields; OLD: 256)
 // that is NOT catalog rows (a catalog row needs a transaction, which needs a
 // session). It follows the SBTXHD01 transaction-header pattern: careful-write,
-// one record written once into an empty slot, two records per 512-byte write
-// unit. RULE (plan 36 §Target design 2): a record is durable before any
+// one record written once into an empty slot, ONE record per 512-byte write
+// unit (2026-11-23; was two 256-byte records). RULE (plan 36 §Target design 2): a record is durable before any
 // transaction header cites it.
 //
 // Four record kinds. EVERY identifier is a binary(16) UUID; there is no text
@@ -41,15 +43,15 @@ using scratchbird::core::platform::Uuid;
 // reason; the latest record of a UUID is its current state. Whether and when a
 // session ends is S4e's business; this codec only admits both states.
 //
-// Layout (little-endian, 256 bytes):
-//   +0   u16 version (1)             +2   u16 record bytes (256)
+// Layout (little-endian, 512 bytes):
+//   +0   u16 version (1)             +2   u16 record bytes (512; OLD 256)
 //   +4   u8  kind (1 connection, 2 session, 3 attachment, 4 settings change)
 //   +5   u8  state (1 = complete; session only: 2 = complete, ended)
 //   +6   u16 zero
 //   +8   u64 ordinal (the slot's number in the chain: sequence * slots + slot)
 //   +16  database UUID (v7)          +32  record UUID (v7)
-//   +48..+247 the kind's fields, every unlisted byte zero
-//   +248 u64 checksum: the first 8 bytes of SHA-256 over bytes 0..247. Any
+//   +48..+503 the kind's fields, every unlisted byte zero (OLD: +48..+247)
+//   +504 u64 checksum: the first 8 bytes of SHA-256 over bytes 0..503 (OLD: +248 over 0..247). Any
 //        single byte changed anywhere in the record fails it; an all-zero slot
 //        is the EMPTY slot and has no checksum.
 //
@@ -70,7 +72,7 @@ using scratchbird::core::platform::Uuid;
 //   +108 u16 peer port (0 unless a type is stated)   +110 u16 zero
 //   +112 [32] peer address bytes (the first length bytes, the rest zero)
 //   +144 [32] TLS evidence hash (zero when the kind is 0)
-//   +176..+247 zero (reserved)
+//   +176..+503 zero (reserved; OLD +176..+247)
 // Session (kind 2), fields from +48:
 //   +48 principal UUID (v7)          +64 auth context UUID (zero or v7)
 //   +80 [32] role-set digest (SHA-256 of the role set; zero = none stated)
@@ -82,23 +84,29 @@ using scratchbird::core::platform::Uuid;
 //        by server, 3 ended by policy, 4 connection lost, 5 server shutdown, 6 setup failed [S4e])
 //   +210 [32] group-set digest (S4e Part 0, owner 2026-11-22: the spec's group_set_hash; SHA-256 of the group set defined as
 //        the role-set digest is; zero = none stated)
-//   +242..+247 zero (6 bytes reserved)
-//   SPEC SessionDescriptorRecord FIELDS NOT STORED (they do not fit: 38 bytes were free after +210, group_set_hash takes 32):
-//   external_authorization_hash (32; null for every local-authority session, so it has no value to record yet),
-//   policy_generation (8) and security_generation (8) (the session's policy snapshot UUID at +128 names the policy state;
-//   the generations are re-derivable only from the catalog as it stood, an owner decision), parser_profile_uuid (16) and
-//   donor_profile_uuid (16) (the connection record names the parser instance; the profiles are parser-layer facts). The
-//   owner chooses between a larger record and a fifth record kind for them (S4e report). role_set_hash is the digest at +80.
+//   +242..+247 zero (6 bytes reserved; kept so every earlier offset is unchanged)
+//   2026-11-23 (512-byte record): the spec SessionDescriptorRecord fields that did not fit the 256-byte record:
+//   +248 [32] external-authorization hash (spec external_authorization_hash; zero = null, which every local-authority
+//        login is; any 32 bytes otherwise, the engine does not interpret it)
+//   +280 u64 policy generation (spec policy_generation: current at admission; 0 = not stated)
+//   +288 u64 security generation (spec security_generation: current at admission; 0 = not stated)
+//   +296 parser profile UUID (spec parser_profile_uuid: zero = not parser-mediated or not known, else v7)
+//   +312 donor profile UUID (spec donor_profile_uuid: zero = not donor-mediated or not known, else v7)
+//   +328..+503 zero (176 bytes reserved)
+//   Spec SessionDescriptorRecord fields NOT stored, and why: session_uuid (= the record UUID at +32), database_uuid (+16),
+//   engine_uuid (= the engine instance at +112), connection_uuid (the ATTACHMENT record binds session to connection),
+//   state (derived: state byte 1 open, 2 ended), role_set_hash (+80), group_set_hash (+210), resource_context_uuid (a
+//   per-process memory-context identity of the running server, meaningless after a restart, so not durable).
 // Attachment (kind 3), fields from +48:
 //   +48 session UUID (v7)            +64 connection UUID (v7)
 //   +80 predecessor attachment UUID (zero or v7)
-//   +96 engine instance UUID (v7)    +112 u64 at (non-zero)   +120..+247 zero
+//   +96 engine instance UUID (v7)    +112 u64 at (non-zero)   +120..+503 zero
 // Settings change (kind 4), fields from +48:
 //   +48 session UUID (v7)            +64 u64 generation (>= 1)
 //   +72 [48] settings block          +120 u64 effective-from transaction order (>= 1)
-//   +128 u64 at (non-zero)           +136..+247 zero
+//   +128 u64 at (non-zero)           +136..+503 zero
 
-inline constexpr std::size_t kSessionLedgerRecordBytes = 256;
+inline constexpr std::size_t kSessionLedgerRecordBytes = 512;  // owner 2026-11-23 (OLD 256)
 inline constexpr u16 kSessionLedgerRecordVersion = 1;
 
 enum class SessionLedgerKind : std::uint8_t { connection = 1, session = 2, attachment = 3, settings_change = 4 };
@@ -151,8 +159,14 @@ struct LedgerSessionRecord {
   u64 opened_at_utc_ns = 0;
   u64 ended_at_utc_ns = 0;  // 0 = the open record
   LedgerEndReason end_reason = LedgerEndReason::none;
-  // S4e Part 0: the spec's group_set_hash (see the layout note; the other new spec fields did not fit).
+  // S4e Part 0: the spec's group_set_hash.
   std::array<byte, kLedgerDigestBytes> group_set_digest{};
+  // 2026-11-23 (512-byte record): the rest of the spec's session fields (see the layout note).
+  std::array<byte, kLedgerDigestBytes> external_authorization_hash{};  // zero = null (local authority)
+  u64 policy_generation = 0;     // 0 = not stated
+  u64 security_generation = 0;   // 0 = not stated
+  Uuid parser_profile_uuid;      // zero = unknown or not parser-mediated, else v7
+  Uuid donor_profile_uuid;       // zero = unknown or not donor-mediated, else v7
   bool ended() const noexcept { return ended_at_utc_ns != 0; }
   bool operator==(const LedgerSessionRecord&) const = default;
 };

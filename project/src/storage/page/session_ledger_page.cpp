@@ -77,8 +77,10 @@ void BeginEdit(std::span<byte> image, std::size_t changed_offset, TipPageEdit& e
 }  // namespace
 
 u32 SessionLedgerSlotsPerPage(u32 page_size) noexcept {
-  // The same geometry as SBTXHD01 (512-byte prefix, 256-byte records).
-  return TransactionHeaderSlotsPerPage(page_size);
+  // Owner 2026-11-23: a ledger record is 512 bytes (one write unit), after the 512-byte prefix: (P - 512) / 512 slots.
+  // (OLD: the SBTXHD01 count for 256-byte records, (P - 512) / 256.)
+  if (page_size <= kRecords || page_size % kTransactionStateWriteUnitBytes) return 0;
+  return (page_size - static_cast<u32>(kRecords)) / static_cast<u32>(kRecord);
 }
 
 std::optional<SessionLedgerSlotLocation> LocateSessionLedgerSlot(u32 page_size, u64 ordinal) noexcept {

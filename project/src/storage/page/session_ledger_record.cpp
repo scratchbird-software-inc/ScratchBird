@@ -16,7 +16,7 @@ using scratchbird::core::platform::StoreLittle32;
 using scratchbird::core::platform::StoreLittle64;
 using E = SessionLedgerRecordError;
 
-constexpr std::size_t kChecksumAt = 248;
+constexpr std::size_t kChecksumAt = kSessionLedgerRecordBytes - 8;  // 504 (OLD 248)
 constexpr std::size_t kFieldsAt = 48;
 
 bool V7(const Uuid& id) { return scratchbird::core::uuid::IsEngineIdentityUuid(id); }
@@ -31,7 +31,7 @@ bool ZeroRange(const byte* p, std::size_t n) {
   return std::all_of(p, p + n, [](byte b) { return b == 0; });
 }
 
-// The first 8 bytes of SHA-256 over bytes 0..247. False only when the hash
+// The first 8 bytes of SHA-256 over bytes 0..503. False only when the hash
 // provider fails (the record is then neither written nor accepted).
 bool Checksum(const byte* record, std::array<byte, 8>& out) noexcept {
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(record, kChecksumAt);
@@ -90,6 +90,9 @@ E ValidateBody(const LedgerConnectionRecord& c) {
 E ValidateBody(const LedgerSessionRecord& s) {
   if (!V7(s.principal_uuid) || !V7(s.engine_instance_uuid)) return E::invalid_required_identity;
   if (!NoneOrV7(s.auth_context_uuid) || !NoneOrV7(s.policy_snapshot_uuid)) return E::invalid_optional_identity;
+  // 2026-11-23: the parser and donor profile identities may be zero (unknown) but a non-zero value must be v7. The
+  // external-authorization hash and the two generations are any value (zero = not stated; the engine does not interpret them).
+  if (!NoneOrV7(s.parser_profile_uuid) || !NoneOrV7(s.donor_profile_uuid)) return E::invalid_optional_identity;
   if (const auto e = ValidateSettings(s.settings); e != E::none) return e;
   if (s.opened_at_utc_ns == 0) return E::invalid_time;
   const auto reason = static_cast<std::uint16_t>(s.end_reason);
@@ -186,6 +189,11 @@ SessionLedgerRecordError EncodeSessionLedgerRecord(const SessionLedgerRecord& r,
     StoreLittle64(f + 152, s->ended_at_utc_ns);
     StoreLittle16(f + 160, static_cast<u16>(s->end_reason));
     std::copy(s->group_set_digest.begin(), s->group_set_digest.end(), f + 162);
+    std::copy(s->external_authorization_hash.begin(), s->external_authorization_hash.end(), f + 200);
+    StoreLittle64(f + 232, s->policy_generation);
+    StoreLittle64(f + 240, s->security_generation);
+    PutUuid(f + 248, s->parser_profile_uuid);
+    PutUuid(f + 264, s->donor_profile_uuid);
   } else if (const auto* a = std::get_if<LedgerAttachmentRecord>(&r.body)) {
     PutUuid(f + 0, a->session_uuid);
     PutUuid(f + 16, a->connection_uuid);
@@ -257,7 +265,13 @@ SessionLedgerDecodeResult DecodeSessionLedgerRecord(std::span<const byte> bytes)
       s.ended_at_utc_ns = LoadLittle64(f + 152);
       s.end_reason = static_cast<LedgerEndReason>(LoadLittle16(f + 160));
       std::copy_n(f + 162, kLedgerDigestBytes, s.group_set_digest.begin());
-      if (!reserved(194)) { result.error = E::invalid_reserved; return result; }
+      std::copy_n(f + 200, kLedgerDigestBytes, s.external_authorization_hash.begin());
+      s.policy_generation = LoadLittle64(f + 232);
+      s.security_generation = LoadLittle64(f + 240);
+      s.parser_profile_uuid = GetUuid(f + 248);
+      s.donor_profile_uuid = GetUuid(f + 264);
+      // +242..+247 (absolute) are f+194..f+199; the tail after the donor profile is f+280 to the checksum.
+      if (!ZeroRange(f + 194, 6) || !reserved(280)) { result.error = E::invalid_reserved; return result; }
       if ((state == 2) != s.ended()) { result.error = E::invalid_state; return result; }
       r.body = s;
       break;

@@ -5902,6 +5902,19 @@ std::optional<NativeApprovalRefusal> ApproveNativeSessionOnLoop(ServerSessionReg
     return NativeApprovalRefusal{"PARSER_SERVER_IPC.NATIVE_SESSION_DIGEST_FAILED", "The group-set digest could not be computed.",
                                  "group_set_digest_failed"};
   }
+  // Owner 2026-11-23 (the 512-byte record): the spec's remaining session fields, from what the server really has.
+  // policy_generation / security_generation: the generations of the login material the approval was decided on (carried by the
+  // login's adapter state; zero = not stated when the state is absent). external_authorization_hash stays zero: every native
+  // login is local authority (spec: null). parser_profile_uuid: the DIALECT PROFILE the admitted HELLO stated (the parser's
+  // profile identity); zero when no HELLO was admitted on the channel. donor_profile_uuid stays zero: the HELLO states no
+  // donor profile, and the server does not decide donor mediation here (owner question in the report).
+  if (auth_result.durable_security_state) {
+    record.policy_generation = auth_result.durable_security_state->policy_generation;
+    record.security_generation = auth_result.durable_security_state->security_generation;
+  }
+  if (admitted != registry->admitted_parser_identity_by_connection_uuid.end()) {
+    record.parser_profile_uuid = Uuid{admitted->second.dialect_profile_uuid};
+  }
 
   const auto opened = loop->SubmitOpenSession(request).get();
   if (!opened.ok()) {

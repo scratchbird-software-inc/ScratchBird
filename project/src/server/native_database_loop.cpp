@@ -773,7 +773,9 @@ engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotN
       NativeNamesSnapshotRequest request;
       request.limits = serving.login_limits;
       request.catalog = serving.name_scan_limits;
+      if (scope_view_ && scope_names_) return *scope_names_;  // the same view, the same rows: no second scan (see scope_names_)
       result = Host::ReadNativeNamesSnapshot(serving.runtime, request, scope_view_ ? &*scope_view_ : nullptr);
+      if (scope_view_ && result.ok()) scope_names_ = result;
     }
   } catch (...) {
     result = {};
@@ -1638,10 +1640,16 @@ NativeLoopReadScopeResult NativeDatabaseLoop::RunSnapshotScopeNow(
     // The captured value is the scope's view for exactly the work's duration (a scope inside a scope restores the outer).
     struct ScopeView {
       std::optional<transaction::mga::VisibilitySnapshot>& slot;
+      std::optional<engine::internal_api::NativeNamesSnapshot>& names_slot;
       std::optional<transaction::mga::VisibilitySnapshot> outer;
-      ~ScopeView() { slot = std::move(outer); }
-    } scope_view{scope_view_, std::move(scope_view_)};
+      std::optional<engine::internal_api::NativeNamesSnapshot> outer_names;
+      ~ScopeView() {
+        slot = std::move(outer);
+        names_slot = std::move(outer_names);
+      }
+    } scope_view{scope_view_, scope_names_, std::move(scope_view_), std::move(scope_names_)};
     scope_view_ = std::move(captured_view);
+    scope_names_.reset();  // a scope's names rows belong to its own view (the outer scope's are restored at the end)
     if (work) {
       try {
         work(info);

@@ -307,11 +307,14 @@ std::vector<std::string> all_wires;       // every client-visible serialization 
 std::vector<std::string> all_internal;    // every internal code the test saw
 
 // The handoff itself, with no test-global state touched: safe to call from several threads (each attempt has its own registry).
-Attempt HandoffRaw(const LoginAsk& ask, srv::ServerSessionRegistry* shared_registry = nullptr, const std::string& source = {}) {
+Attempt HandoffRaw(const LoginAsk& ask, srv::ServerSessionRegistry* shared_registry = nullptr, const std::string& source = {},
+                   const srv::ServerAdmittedParserChannelIdentity* hello = nullptr) {
   Attempt attempt;
   auto* registry = shared_registry ? shared_registry : attempt.registry.get();
   registry->login_source_key = source;
   attempt.connection = sbps::MakeUuidV7Bytes();
+  // 2026-11-23 (512-byte ledger record): a channel whose HELLO was admitted (the identities the server retained).
+  if (hello) registry->admitted_parser_identity_by_connection_uuid[p::Uuid{attempt.connection}] = *hello;
   const auto frame = MakeFrame(sbps::MessageType::kAuthHandoff, AuthPayload(attempt.connection, ask), attempt.connection);
   const auto started = std::chrono::steady_clock::now();
   attempt.result = srv::HandleAuthHandoff(registry, served.started.state, frame);
@@ -325,8 +328,9 @@ void Record(const Attempt& attempt) {
   all_internal.push_back(attempt.result.native_login_audit.internal_code);
   if (attempt.result.native_approval.present) ++g_approvals;
 }
-Attempt Handoff(const LoginAsk& ask, srv::ServerSessionRegistry* shared_registry = nullptr, const std::string& source = {}) {
-  auto attempt = HandoffRaw(ask, shared_registry, source);
+Attempt Handoff(const LoginAsk& ask, srv::ServerSessionRegistry* shared_registry = nullptr, const std::string& source = {},
+                const srv::ServerAdmittedParserChannelIdentity* hello = nullptr) {
+  auto attempt = HandoffRaw(ask, shared_registry, source, hello);
   Record(attempt);
   return attempt;
 }
@@ -506,9 +510,10 @@ struct Approved {
   Attempt attempt;
   srv::ServerNativeApproval approval;
 };
-Approved Approve(const LoginAsk& ask = {std::string(kBootstrapName), std::string(kBootstrapPassword)}) {
+Approved Approve(const LoginAsk& ask = {std::string(kBootstrapName), std::string(kBootstrapPassword)},
+                 const srv::ServerAdmittedParserChannelIdentity* hello = nullptr) {
   Approved out;
-  out.attempt = Handoff(ask);
+  out.attempt = Handoff(ask, nullptr, {}, hello);
   Check(out.attempt.result.accepted && out.attempt.result.native_approval.present, "the login is approved: " + out.attempt.wire);
   out.approval = out.attempt.result.native_approval;
   const auto& ap = out.approval;
@@ -575,11 +580,38 @@ int S4eState(const std::string& state, const fs::path& path) {
       Check(sess.settings.isolation_profile == kSnapshotStableProfile && !sess.settings.read_only && sess.settings.lock_wait_timeout_ms == 0 && sess.settings.language_uuid.is_nil(),
             "the settings block: snapshot default, read-write, no lock wait limit, language unset");
       Check(sess.policy_snapshot_uuid.is_nil(), "no policy snapshot before plan 32");
+      // 2026-11-23 (the 512-byte record): the spec's remaining session fields, from what the server really has. The generations
+      // are those of the login material the approval was decided on; a local login has no external-authorization hash; no
+      // HELLO was admitted on this channel, so both profile identities are zero.
+      Check(sess.policy_generation == material.policy_generation && sess.security_generation == material.security_generation,
+            "the session record's policy and security generations are the login material's (" + std::to_string(material.policy_generation) + "/" +
+                std::to_string(material.security_generation) + ")");
+      Check(sess.security_generation != 0, "the bootstrap material has a real (non-zero) security generation");
+      Check(std::all_of(sess.external_authorization_hash.begin(), sess.external_authorization_hash.end(), [](std::uint8_t b) { return b == 0; }),
+            "a local login has a zero external-authorization hash");
+      Check(sess.parser_profile_uuid.is_nil() && sess.donor_profile_uuid.is_nil(), "no HELLO admitted: parser and donor profile are zero");
       Check(sess.auth_context_uuid.is_nil() || sess.auth_context_uuid == p::Uuid{s1.attempt.registry->auth_contexts_by_uuid.begin()->second.auth_context_uuid},
             "the auth context field is the registry's auth context (or zero when it is not a v7 identity)");
     }
-    // Session 2: a different session, a different transaction.
-    auto s2 = Approve();
+    // Session 2: a different session, a different transaction. Its channel has an ADMITTED HELLO (2026-11-23): the connection
+    // record names the listener and parser instance, and the session record carries the HELLO's dialect profile as the parser
+    // profile (the HELLO states no donor profile, so that stays zero).
+    srv::ServerAdmittedParserChannelIdentity hello;
+    hello.parser_instance_uuid = Fresh().bytes;
+    hello.dialect_profile_uuid = Fresh().bytes;
+    hello.listener_uuid = Fresh().bytes;
+    auto s2 = Approve({std::string(kBootstrapName), std::string(kBootstrapPassword)}, &hello);
+    {
+      const auto f = read();
+      const auto& sess2 = std::get<pgs::LedgerSessionRecord>(f.ledger[IndexOf(f, p::Uuid{s2.approval.session_uuid}, pgs::SessionLedgerKind::session)].body);
+      const auto& conn2 = std::get<pgs::LedgerConnectionRecord>(f.ledger[IndexOf(f, p::Uuid{s2.approval.connection_record_uuid}, pgs::SessionLedgerKind::connection)].body);
+      Check(sess2.parser_profile_uuid == p::Uuid{hello.dialect_profile_uuid} && sess2.donor_profile_uuid.is_nil(),
+            "an admitted HELLO: the session record's parser profile is its dialect profile, the donor profile stays zero");
+      Check(conn2.parser_instance_uuid == p::Uuid{hello.parser_instance_uuid} && conn2.listener_uuid == p::Uuid{hello.listener_uuid},
+            "and the connection record names the HELLO's parser instance and listener");
+      Check(sess2.policy_generation == material.policy_generation && sess2.security_generation == material.security_generation,
+            "its generations are the login material's too");
+    }
     Check(s2.approval.session_uuid != s1.approval.session_uuid && s2.approval.transaction_uuid != s1.approval.transaction_uuid &&
               s2.approval.transaction_order > s1.approval.transaction_order && s2.approval.attachment_uuid != s1.approval.attachment_uuid &&
               s2.approval.connection_record_uuid != s1.approval.connection_record_uuid,
@@ -681,7 +713,10 @@ int S4eState(const std::string& state, const fs::path& path) {
       const auto& open_body = std::get<pgs::LedgerSessionRecord>(f2.ledger[IndexOf(f2, p::Uuid{s1.approval.session_uuid}, pgs::SessionLedgerKind::session)].body);
       Check(body.ended() && body.end_reason == pgs::LedgerEndReason::connection_lost && body.ended_at_utc_ns >= body.opened_at_utc_ns, "ended, reason connection_lost");
       Check(body.principal_uuid == open_body.principal_uuid && body.opened_at_utc_ns == open_body.opened_at_utc_ns && body.role_set_digest == open_body.role_set_digest &&
-                body.group_set_digest == open_body.group_set_digest && body.settings == open_body.settings && body.engine_instance_uuid == open_body.engine_instance_uuid,
+                body.group_set_digest == open_body.group_set_digest && body.settings == open_body.settings && body.engine_instance_uuid == open_body.engine_instance_uuid &&
+                body.external_authorization_hash == open_body.external_authorization_hash && body.policy_generation == open_body.policy_generation &&
+                body.security_generation == open_body.security_generation && body.parser_profile_uuid == open_body.parser_profile_uuid &&
+                body.donor_profile_uuid == open_body.donor_profile_uuid,
             "the ended record repeats the session's own facts");
     }
     {
@@ -890,6 +925,8 @@ int S4eState(const std::string& state, const fs::path& path) {
       const auto& sess = std::get<pgs::LedgerSessionRecord>(file.ledger[1].body);
       Check(sess.role_set_digest == SetDigest(material.effective_role_uuids) && sess.group_set_digest == SetDigest(material.effective_group_uuids),
             state + ": the ledger's role-set and group-set digests are those of the effective sets");
+      Check(sess.policy_generation == material.policy_generation && sess.security_generation == material.security_generation,
+            state + ": the ledger's policy and security generations are the login material's (2026-11-23)");
       const auto& rec = a.registry->sessions_by_uuid.begin()->second;
       Check(rec.effective_role_uuids.size() == material.effective_role_uuids.size() && rec.effective_group_uuids.size() == material.effective_group_uuids.size(),
             state + ": the session's effective sets are the closure");

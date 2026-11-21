@@ -638,6 +638,12 @@ class NativeDatabaseLoop final {
   // SB_SNAPSHOT_POINT_VIEW: the snapshot value of the snapshot-point scope that is running its work right now (loop
   // thread only; empty outside a scope). ReadLoginMaterialNow and ReadNamesSnapshotNow pass it to the runtime reads.
   std::optional<transaction::mga::VisibilitySnapshot> scope_view_;
+  // 2026-11-23 (speed item): the names rows read inside the running snapshot-point scope. The scope's view is one captured value
+  // and the work runs on the loop thread (nothing can be written meanwhile), so a second names read in the same scope (a
+  // native login reads the names twice: the principal scope and default language, then the resolver's own read) would return
+  // exactly the same rows; it is served from here instead of scanning the names relation again. Loop thread only; empty
+  // outside a scope and at the start of every scope; a durable-transaction scope has no captured view and never fills it.
+  std::optional<engine::internal_api::NativeNamesSnapshot> scope_names_;
   // SB_NATIVE_NAMES_SOURCE: what the NativeNamesSource handed out in the served facts points at.
   std::shared_ptr<NativeNamesBinding> names_binding_ = std::make_shared<NativeNamesBinding>();
 };

@@ -18,18 +18,19 @@ namespace scratchbird::storage::page {
 //
 // Layout (P = page size), the SBTXHD01 geometry:
 //   0..127    common page header (type 0x0301, flags 0)
-//   128..255  family header: magic, version, record size (256), slots per
+//   128..255  family header: magic, version, record size (512; OLD 256), slots per
 //             page, sequence in the chain, first ordinal; the rest zero
 //   256..511  aligned u64 link to the next page of the chain; the rest zero
-//   512..P    256-byte ledger records; an empty slot is all zero
-// Slots per page: (P - 512) / 256 = 30, 62, 126, 254, 510 at 8, 16, 32, 64,
-// 128 KiB. Slot i of page s holds the record of ordinal s * slots + i. Two
-// records share each 512-byte write unit; an append writes one unit.
+//   512..P    512-byte ledger records (OLD 256); an empty slot is all zero
+// Slots per page: (P - 512) / 512 = 15, 31, 63, 127, 255 at 8, 16, 32, 64,
+// 128 KiB (OLD, 256-byte records: 30, 62, 126, 254, 510; owner 2026-11-23).
+// Slot i of page s holds the record of ordinal s * slots + i. A record IS one
+// 512-byte write unit (it starts on a unit boundary); an append writes one unit.
 //
 // APPEND-ONLY, no counter. The records of a page fill from slot 0 without a
 // gap. A page is formatted empty and linked from the previous page only once
 // that page is full, so every page but the last is full. A crash during an
-// append can leave ONE torn slot: bytes that are not all zero and fail the
+// append can leave ONE torn slot (a torn write unit): bytes that are not all zero and fail the
 // record checksum, directly after the last complete record, with every later
 // slot zero. That slot is IGNORED (never a visible record) and the next append
 // overwrites it (its preimage is the torn bytes). Anything else that is not a

@@ -298,6 +298,12 @@ pg::LedgerSessionRecord Sess(const Uuid& principal, unsigned n, bool ended = fal
   s.opened_at_utc_ns = 2'000'000'000ull + n;
   // S4e Part 0 (NEW): the added spec fields go through the page, the chain and the reload too.
   for (unsigned i = 0; i < 32; ++i) s.group_set_digest[i] = static_cast<byte>(0x70 + i + n);
+  // 2026-11-23 (512-byte record): the rest of the spec's session fields travel page -> chain -> reload too.
+  for (unsigned i = 0; i < 32; ++i) s.external_authorization_hash[i] = static_cast<byte>(0xB0 + i + n);
+  s.policy_generation = 5000 + n;
+  s.security_generation = 6000 + n;
+  s.parser_profile_uuid = Fixed(7600 + n);
+  s.donor_profile_uuid = Fixed(7700 + n);
   if (ended) {
     s.ended_at_utc_ns = s.opened_at_utc_ns + 100;
     s.end_reason = pg::LedgerEndReason::closed_by_client;
@@ -373,7 +379,7 @@ void SectionCreate(const Base& b) {
     auto image = b.bytes;
     const u64 at = b.ledger_root.page_number * b.size;
     if (mutate == 0) image[at + 128] ^= 1;               // the magic
-    if (mutate == 1) image[at + 512 + 256] = 1;          // a record after an empty slot
+    if (mutate == 1) image[at + 512 + 512] = 1;          // a record after an empty slot (slot 1; OLD 512 + 256 with 256-byte slots, owner 2026-11-23)
     if (mutate == 2) image[at + 256] = 7;                // a link on a page with room
     ImageSink sink(image);
     u::StandaloneUuidV7Issuer issuer({b.database, Fixed(10)}, {{}, 0, 1000});

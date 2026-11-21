@@ -7,9 +7,10 @@
 // the corruption rule (EVERY bit of EVERY byte of a record of each kind flipped:
 // the record is refused; and every reserved, framing or enum byte set to a
 // bad value under a RE-SEALED checksum is refused with its own code). Pages:
-// geometry at the five page sizes (30/62/126/254/510 slots), append, the torn
+// geometry at the five page sizes (15/31/63/127/255 slots; owner 2026-11-23 the record is 512 bytes, OLD 256 bytes and
+// 30/62/126/254/510 slots), append, the torn
 // slot rule at every prefix length of a record, the full-page / link rules, and
-// the one-unit edit property (an append changes exactly one 512-byte write unit).
+// the one-unit edit property (an append changes exactly one 512-byte write unit, which is now exactly the record's slot).
 // Growth across a page boundary is exercised at the codec level here (format
 // the next page, link it, continue the ordinals); the real chain growth is the
 // writer test (native_session_ledger_writer_test).
@@ -115,6 +116,12 @@ page::LedgerSessionRecord Session(unsigned tag, bool ended = false) {
   s.opened_at_utc_ns = 2'000'000'000ull * (tag + 1);
   // S4e Part 0 (owner 2026-11-22): the spec's session fields that fit the record (NEW).
   for (unsigned i = 0; i < 32; ++i) s.group_set_digest[i] = static_cast<byte>(0x90 + i + tag);
+  // 2026-11-23 (512-byte record): the rest of the spec's session fields.
+  for (unsigned i = 0; i < 32; ++i) s.external_authorization_hash[i] = static_cast<byte>(0xC0 + i + tag);
+  s.policy_generation = 7000 + tag;
+  s.security_generation = 9000 + tag;
+  s.parser_profile_uuid = V7(tag + 1400);
+  s.donor_profile_uuid = V7(tag + 1500);
   if (ended) {
     s.ended_at_utc_ns = s.opened_at_utc_ns + 5;
     s.end_reason = page::LedgerEndReason::connection_lost;
@@ -152,16 +159,16 @@ std::vector<SessionLedgerRecord> OneOfEach(unsigned tag = 0) {
           Rec(Attachment(tag), tag + 2), Rec(Change(tag), tag + 3)};
 }
 
-std::array<byte, 256> Encode(const SessionLedgerRecord& r) {
-  std::array<byte, 256> out{};
+std::array<byte, 512> Encode(const SessionLedgerRecord& r) {
+  std::array<byte, 512> out{};
   CheckRec(page::EncodeSessionLedgerRecord(r, out), RE::none, "encode");
   return out;
 }
-// Re-seals a record image after a test changed bytes 0..247.
-void Reseal(std::array<byte, 256>& image) {
-  const auto d = scratchbird::core::hash::ComputeSha256Digest(image.data(), 248);
+// Re-seals a record image after a test changed bytes 0..503 (OLD 0..247).
+void Reseal(std::array<byte, 512>& image) {
+  const auto d = scratchbird::core::hash::ComputeSha256Digest(image.data(), 504);
   Check(d.ok(), "sha256 for the test's re-seal");
-  std::copy_n(d.digest.begin(), 8, image.begin() + 248);
+  std::copy_n(d.digest.begin(), 8, image.begin() + 504);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +179,7 @@ void TestRoundTrips() {
         "kind is the variant index + 1");
   for (const auto& r : records) {
     const auto bytes = Encode(r);
-    Check(bytes[0] == 1 && bytes[1] == 0 && bytes[2] == 0 && bytes[3] == 1, "version 1, 256 bytes, little endian");
+    Check(bytes[0] == 1 && bytes[1] == 0 && bytes[2] == 0 && bytes[3] == 2, "version 1, 512 bytes (0x0200), little endian");
     Check(bytes[4] == static_cast<byte>(r.kind()), "kind byte");
     const bool ended = r.kind() == SessionLedgerKind::session && std::get<page::LedgerSessionRecord>(r.body).ended();
     Check(bytes[5] == (ended ? 2 : 1), "state byte: 1 complete, 2 an ended session");
@@ -207,6 +214,11 @@ void TestRoundTrips() {
         if (rng.Below(2)) s.auth_context_uuid = Uuid{};
         if (rng.Below(2)) s.policy_snapshot_uuid = Uuid{};
         if (rng.Below(2)) s.group_set_digest = {};                 // S4e Part 0: zero = none stated is valid
+        if (rng.Below(2)) s.external_authorization_hash = {};      // 2026-11-23: zero = null is valid
+        if (rng.Below(2)) s.parser_profile_uuid = Uuid{};          // zero = unknown is valid
+        if (rng.Below(2)) s.donor_profile_uuid = Uuid{};
+        if (rng.Below(3) == 0) s.policy_generation = 0;            // zero = not stated is valid
+        if (rng.Below(3) == 0) s.security_generation = ~u64{0};    // any generation value
         if (s.ended()) s.end_reason = static_cast<page::LedgerEndReason>(1 + rng.Below(6));
         s.settings.read_only = rng.Below(2);
         r = Rec(s, tag, rng.Below(100000));
@@ -220,28 +232,28 @@ void TestRoundTrips() {
       }
       default: r = Rec(Change(tag), tag, rng.Below(100000));
     }
-    std::array<byte, 256> bytes{};
+    std::array<byte, 512> bytes{};
     CheckRec(page::EncodeSessionLedgerRecord(r, bytes), RE::none, "random record encodes");
     const auto back = page::DecodeSessionLedgerRecord(bytes);
     Check(back.ok() && *back.record == r, "random record round-trips");
   }
   // A short output is refused and left untouched.
-  std::array<byte, 255> small{};
+  std::array<byte, 511> small{};
   small.fill(0xAB);
   CheckRec(page::EncodeSessionLedgerRecord(records[0], small), RE::short_buffer, "short output");
   Check(std::all_of(small.begin(), small.end(), [](byte b) { return b == 0xAB; }), "output untouched on a refusal");
   // A bad record leaves the output untouched too.
   auto bad = records[0];
   bad.database_uuid = V4(1);
-  std::array<byte, 256> out{};
+  std::array<byte, 512> out{};
   out.fill(0xCD);
   CheckRec(page::EncodeSessionLedgerRecord(bad, out), RE::invalid_identity, "v4 database uuid");
   Check(std::all_of(out.begin(), out.end(), [](byte b) { return b == 0xCD; }), "output untouched on a validation refusal");
   // Wrong sizes are framing errors; an all-zero slot is not a record.
-  std::vector<byte> wrong(257);
-  CheckRec(page::DecodeSessionLedgerRecord(wrong).error, RE::invalid_framing, "257 bytes");
-  CheckRec(page::DecodeSessionLedgerRecord(std::span<const byte>(wrong).first(255)).error, RE::invalid_framing, "255 bytes");
-  std::array<byte, 256> zero{};
+  std::vector<byte> wrong(513);
+  CheckRec(page::DecodeSessionLedgerRecord(wrong).error, RE::invalid_framing, "513 bytes");
+  CheckRec(page::DecodeSessionLedgerRecord(std::span<const byte>(wrong).first(511)).error, RE::invalid_framing, "511 bytes");
+  std::array<byte, 512> zero{};
   Check(!page::DecodeSessionLedgerRecord(zero).ok(), "an all-zero slot is not a record");
 }
 
@@ -249,7 +261,7 @@ void TestValidationCodes() {
   const auto base = OneOfEach();
   const auto expect = [&](SessionLedgerRecord r, RE want, std::string_view why) {
     CheckRec(page::ValidateSessionLedgerRecord(r), want, why);
-    std::array<byte, 256> out{};
+    std::array<byte, 512> out{};
     CheckRec(page::EncodeSessionLedgerRecord(r, out), want, why);
   };
   auto mod = [&](std::size_t i, auto&& fn) {
@@ -275,7 +287,7 @@ void TestValidationCodes() {
     conn(unknown).listener_uuid = Uuid{};
     conn(unknown).parser_instance_uuid = Uuid{};
     CheckRec(page::ValidateSessionLedgerRecord(unknown), RE::none, "nil listener and nil parser instance (unknown) are valid");
-    std::array<byte, 256> out{};
+    std::array<byte, 512> out{};
     CheckRec(page::EncodeSessionLedgerRecord(unknown, out), RE::none, "and encode");
     const auto back = page::DecodeSessionLedgerRecord(out);
     Check(back.ok() && *back.record == unknown, "and round-trip");
@@ -309,6 +321,25 @@ void TestValidationCodes() {
   expect(mod(1, [&](auto& r) { sess(r).auth_context_uuid = V4(3); }), RE::invalid_optional_identity, "v4 auth context");
   expect(mod(1, [&](auto& r) { sess(r).policy_snapshot_uuid = V4(3); }), RE::invalid_optional_identity, "v4 policy snapshot");
   expect(mod(1, [&](auto& r) { sess(r).settings.language_uuid = V4(3); }), RE::invalid_optional_identity, "v4 language");
+  // 2026-11-23: the added fields. A non-zero profile must be v7 (invalid_optional_identity, as the other optional identities);
+  // a zero profile, a zero external-authorization hash and zero generations are valid ("not stated").
+  expect(mod(1, [&](auto& r) { sess(r).parser_profile_uuid = V4(3); }), RE::invalid_optional_identity, "v4 parser profile");
+  expect(mod(1, [&](auto& r) { sess(r).donor_profile_uuid = V4(3); }), RE::invalid_optional_identity, "v4 donor profile");
+  expect(mod(2, [&](auto& r) { sess(r).donor_profile_uuid = V4(3); }), RE::invalid_optional_identity, "v4 donor profile on an end record");
+  {
+    auto unstated = base[1];
+    sess(unstated).parser_profile_uuid = Uuid{};
+    sess(unstated).donor_profile_uuid = Uuid{};
+    sess(unstated).external_authorization_hash = {};
+    sess(unstated).policy_generation = 0;
+    sess(unstated).security_generation = 0;
+    CheckRec(page::ValidateSessionLedgerRecord(unstated), RE::none, "zero profiles, hash and generations are valid");
+    std::array<byte, 512> out{};
+    CheckRec(page::EncodeSessionLedgerRecord(unstated, out), RE::none, "and encode");
+    const auto back = page::DecodeSessionLedgerRecord(out);
+    Check(back.ok() && *back.record == unstated, "and round-trip");
+    Check(std::all_of(out.begin() + 248, out.begin() + 504, [](byte b) { return b == 0; }), "the unstated added fields encode as zero");
+  }
   expect(mod(1, [&](auto& r) { sess(r).opened_at_utc_ns = 0; }), RE::invalid_time, "no open time");
   expect(mod(1, [&](auto& r) { sess(r).end_reason = page::LedgerEndReason::closed_by_client; }), RE::invalid_state,
          "a reason without an end time");
@@ -349,7 +380,7 @@ void TestResealedRefusals() {
     };
     refused(0, 2, RE::invalid_framing, "version");
     refused(2, 1, RE::invalid_framing, "record size low");
-    refused(3, 2, RE::invalid_framing, "record size high");
+    refused(3, 1, RE::invalid_framing, "record size high (256, the former record size)");  // OLD: byte 2 (512 is now the right size)
     refused(4, 0, RE::invalid_kind, "kind 0");
     refused(4, 5, RE::invalid_kind, "kind 5");
     refused(5, 0, RE::invalid_state, "state 0");
@@ -359,12 +390,13 @@ void TestResealedRefusals() {
     // Everything unlisted in the kind's layout is reserved zero.
     const auto kind = good[4];
     std::vector<std::pair<std::size_t, std::size_t>> reserved;  // [from, to)
-    if (kind == 1) reserved = {{110, 112}, {176, 248}};
+    // 2026-11-23: every unlisted byte up to the checksum at +504 (OLD: up to +248).
+    if (kind == 1) reserved = {{110, 112}, {176, 504}};
     // S4e Part 0: session +210..+241 now hold the generations and the parser profile; only
     // +242..+247 stay reserved (OLD: {210, 248}).
-    else if (kind == 2) reserved = {{242, 248}};
-    else if (kind == 3) reserved = {{120, 248}};
-    else reserved = {{136, 248}};
+    else if (kind == 2) reserved = {{242, 248}, {328, 504}};  // +248..+327 are the added spec fields
+    else if (kind == 3) reserved = {{120, 504}};
+    else reserved = {{136, 504}};
     for (const auto& [from, to] : reserved)
       for (std::size_t at = from; at < to; ++at) refused(at, 1, RE::invalid_reserved, "reserved byte");
     // A session record whose state byte disagrees with its end time.
@@ -389,6 +421,48 @@ void TestResealedRefusals() {
     Check(std::all_of(z.begin() + 210, z.begin() + 248, [](byte b) { return b == 0; }), "an unstated digest encodes as zero");
     const auto back = page::DecodeSessionLedgerRecord(z);
     Check(back.ok() && *back.record == Rec(none, 1), "a zero group digest round-trips");
+  }
+  // 2026-11-23 (NEW): the byte table of the added session fields at +248..+327 and the reserved tails.
+  {
+    auto s = Session(2);
+    for (unsigned i = 0; i < 32; ++i) s.external_authorization_hash[i] = static_cast<byte>(0xD0 + i);
+    s.policy_generation = 0x0102030405060708ull;
+    s.security_generation = 0x1112131415161718ull;
+    const auto img = Encode(Rec(s, 2));
+    for (unsigned i = 0; i < 32; ++i) Check(img[248 + i] == static_cast<byte>(0xD0 + i), "external-authorization hash at +248");
+    for (unsigned i = 0; i < 8; ++i) Check(img[280 + i] == static_cast<byte>(8 - i), "policy generation u64 LE at +280");
+    for (unsigned i = 0; i < 8; ++i) Check(img[288 + i] == static_cast<byte>(0x18 - i), "security generation u64 LE at +288");
+    Check(std::equal(img.begin() + 296, img.begin() + 312, s.parser_profile_uuid.bytes.begin()), "parser profile UUID at +296");
+    Check(std::equal(img.begin() + 312, img.begin() + 328, s.donor_profile_uuid.bytes.begin()), "donor profile UUID at +312");
+    Check(std::all_of(img.begin() + 328, img.begin() + 504, [](byte b) { return b == 0; }), "+328..+503 reserved zero");
+    Check(std::all_of(img.begin() + 242, img.begin() + 248, [](byte b) { return b == 0; }), "+242..+247 reserved zero");
+    // The checksum at +504 is the first 8 bytes of SHA-256 over bytes 0..503.
+    const auto d = scratchbird::core::hash::ComputeSha256Digest(img.data(), 504);
+    Check(d.ok() && std::equal(d.digest.begin(), d.digest.begin() + 8, img.begin() + 504), "checksum at +504 over 0..503");
+    // A bad field under a re-sealed checksum: each added field's validation, and the unlisted tails.
+    auto bad_profile = img;
+    bad_profile[296 + 6] = static_cast<byte>((bad_profile[296 + 6] & 0x0F) | 0x40);  // version nibble 4: not a v7 identity
+    Reseal(bad_profile);
+    CheckRec(page::DecodeSessionLedgerRecord(bad_profile).error, RE::invalid_optional_identity, "a re-sealed v4 parser profile");
+    auto bad_donor = img;
+    bad_donor[312 + 6] = static_cast<byte>((bad_donor[312 + 6] & 0x0F) | 0x40);
+    Reseal(bad_donor);
+    CheckRec(page::DecodeSessionLedgerRecord(bad_donor).error, RE::invalid_optional_identity, "a re-sealed v4 donor profile");
+    for (const std::size_t at : {std::size_t{328}, std::size_t{503}}) {
+      auto tail = img;
+      tail[at] = 1;
+      Reseal(tail);
+      CheckRec(page::DecodeSessionLedgerRecord(tail).error, RE::invalid_reserved, "a re-sealed byte in the reserved tail");
+    }
+    // Every added field travels: change each one, the decoded record differs only there.
+    const auto back = page::DecodeSessionLedgerRecord(img);
+    Check(back.ok() && back.record && std::get<page::LedgerSessionRecord>(back.record->body).external_authorization_hash ==
+                                          s.external_authorization_hash &&
+              std::get<page::LedgerSessionRecord>(back.record->body).policy_generation == s.policy_generation &&
+              std::get<page::LedgerSessionRecord>(back.record->body).security_generation == s.security_generation &&
+              std::get<page::LedgerSessionRecord>(back.record->body).parser_profile_uuid == s.parser_profile_uuid &&
+              std::get<page::LedgerSessionRecord>(back.record->body).donor_profile_uuid == s.donor_profile_uuid,
+          "the added fields decode to what was encoded");
   }
   // Settings-block reserved bytes (session +162..+163 and +168..+191; change +90..+91 and +96..+119).
   {
@@ -419,7 +493,7 @@ void TestEveryBitFlip() {
   unsigned flips = 0;
   for (const auto& r : OneOfEach(5)) {
     const auto good = Encode(r);
-    for (std::size_t at = 0; at < 256; ++at)
+    for (std::size_t at = 0; at < 512; ++at)
       for (unsigned bit = 0; bit < 8; ++bit) {
         auto image = good;
         image[at] ^= static_cast<byte>(1u << bit);
@@ -429,13 +503,13 @@ void TestEveryBitFlip() {
         ++flips;
       }
     // A whole-byte change too (complement), at every offset.
-    for (std::size_t at = 0; at < 256; ++at) {
+    for (std::size_t at = 0; at < 512; ++at) {
       auto image = good;
       image[at] = static_cast<byte>(~image[at]);
       Check(!page::DecodeSessionLedgerRecord(image).ok(), "a complemented byte is refused");
     }
   }
-  Check(flips == 5 * 256 * 8, "every bit of every record was flipped");
+  Check(flips == 5 * 512 * 8, "every bit of every record was flipped");
 }
 
 // ---------------------------------------------------------------------------
@@ -465,11 +539,11 @@ SessionLedgerRecord PageRecord(u64 ordinal) {
   return r;
 }
 // The slot bytes a record occupies in a page image.
-std::size_t SlotAt(u32 slot) { return 512 + 256 * slot; }
+std::size_t SlotAt(u32 slot) { return 512 + 512 * slot; }  // OLD: 512 + 256 * slot
 
 void TestGeometry() {
   const u32 sizes[] = {8192, 16384, 32768, 65536, 131072};
-  const u32 slots[] = {30, 62, 126, 254, 510};
+  const u32 slots[] = {15, 31, 63, 127, 255};  // OLD (256-byte record): 30, 62, 126, 254, 510
   for (int i = 0; i < 5; ++i) {
     Check(page::SessionLedgerSlotsPerPage(sizes[i]) == slots[i], "slots per page at each size");
     const auto at = page::LocateSessionLedgerSlot(sizes[i], u64{slots[i]} * 3 + 4);
@@ -522,13 +596,14 @@ void TestAppendFillAndLink() {
       const auto before = image;
       const auto edit = page::AppendSessionLedgerRecord(image, PageRecord(n));
       Check(edit.ok() && edit.changed && edit.slot == n, "append writes the next slot");
-      Check(edit.unit_offset % 512 == 0 && edit.unit_offset <= SlotAt(n) && SlotAt(n) < edit.unit_offset + 512,
-            "the edit's unit holds the slot");
+      // 2026-11-23: the record IS the write unit (OLD: the unit held the slot, two slots per unit).
+      Check(edit.unit_offset % 512 == 0 && edit.unit_offset == SlotAt(n), "the edit's unit is exactly the record's slot");
       // Exactly one 512-byte write unit changed, and the preimage is its old bytes.
       std::size_t first = image.size(), last = 0;
       for (std::size_t i = 0; i < image.size(); ++i)
         if (image[i] != before[i]) { first = std::min(first, i); last = i; }
       Check(first >= edit.unit_offset && last < edit.unit_offset + 512, "only the edit's write unit changed");
+      Check(first == edit.unit_offset && last <= edit.unit_offset + 511, "and the changed bytes lie inside the record");
       Check(std::equal(edit.preimage.begin(), edit.preimage.end(), before.begin() + edit.unit_offset), "preimage is the unit before");
       const auto d = page::DecodeSessionLedgerPage(image);
       Check(d.ok() && d.view->used == n + 1, "the page decodes with n+1 records");
@@ -567,23 +642,23 @@ void TestAppendFillAndLink() {
   }
 }
 
-// The torn-tail rule at the codec's atomic granularity: a record of 256 bytes
-// is written as one write unit; a crash may leave any PREFIX of it over the
+// The torn-tail rule at the codec's atomic granularity: a record of 512 bytes
+// (OLD 256) is written as one write unit; a crash may leave any PREFIX of it over the
 // slot's old bytes (zero, or an earlier torn attempt).
 void TestTornTail() {
   const u32 size = 8192;
   auto base = Format(size, 4, 0);
   for (u32 n = 0; n < 5; ++n) CheckTip(page::AppendSessionLedgerRecord(base, PageRecord(n)).error, TipPageError::none, "seed");
   const auto next = PageRecord(5);
-  std::array<byte, 256> encoded{};
+  std::array<byte, 512> encoded{};
   CheckRec(page::EncodeSessionLedgerRecord(next, encoded), RE::none, "encode the torn record");
   unsigned torn = 0;
-  for (std::size_t prefix = 0; prefix <= 256; ++prefix) {
+  for (std::size_t prefix = 0; prefix <= 512; ++prefix) {
     auto image = base;
     std::copy_n(encoded.begin(), prefix, image.begin() + SlotAt(5));
     const auto d = page::DecodeSessionLedgerPage(image);
     Check(d.ok(), "a torn tail decodes");
-    if (prefix == 256) {
+    if (prefix == 512) {
       Check(d.view->used == 6 && !d.view->torn_slot, "the whole record is complete");
       continue;
     }
@@ -607,13 +682,13 @@ void TestTornTail() {
     beyond[SlotAt(7)] = 1;
     CheckTip(page::DecodeSessionLedgerPage(beyond).error, TipPageError::invalid_slot, "non-zero after a torn slot");
   }
-  Check(torn > 200, "most prefixes were non-trivially torn");
+  Check(torn > 400, "most prefixes were non-trivially torn");  // OLD > 200 of 256 prefixes
   // A complete record AFTER an empty slot is corruption.
   auto gap = base;
   std::copy(encoded.begin(), encoded.end(), gap.begin() + SlotAt(7));
   {
     auto r7 = PageRecord(7);
-    std::array<byte, 256> e7{};
+    std::array<byte, 512> e7{};
     CheckRec(page::EncodeSessionLedgerRecord(r7, e7), RE::none, "ordinal 7");
     std::copy(e7.begin(), e7.end(), gap.begin() + SlotAt(7));
   }
@@ -621,7 +696,7 @@ void TestTornTail() {
   CheckTip(g.error, TipPageError::invalid_slot, "a record after an empty slot");
   Check(g.slot && *g.slot == 7, "the slot at fault is named");
   // A damaged record in the middle (not the tail) is corruption: every byte of slot 2.
-  for (std::size_t at = 0; at < 256; ++at) {
+  for (std::size_t at = 0; at < 512; ++at) {
     auto image = base;
     image[SlotAt(2) + at] ^= 0x01;
     CheckTip(page::DecodeSessionLedgerPage(image).error, TipPageError::invalid_slot, "a damaged middle record refuses the page");
@@ -631,7 +706,7 @@ void TestTornTail() {
     auto image = base;
     auto wrong = PageRecord(6);
     wrong.ordinal = 9;
-    std::array<byte, 256> e{};
+    std::array<byte, 512> e{};
     CheckRec(page::EncodeSessionLedgerRecord(wrong, e), RE::none, "wrong ordinal encodes alone");
     std::copy(e.begin(), e.end(), image.begin() + SlotAt(5));
     const auto d = page::DecodeSessionLedgerPage(image);
@@ -689,7 +764,7 @@ void TestPageStructureRefusals() {
 // The unit-level growth logic: fill page 1, link page 2, fill it, link page 3:
 // ordinals continue across pages and the chain decodes page by page.
 void TestChainOfPages() {
-  const u32 size = 8192, slots = 30;
+  const u32 size = 8192, slots = page::SessionLedgerSlotsPerPage(size);  // 15 (OLD constant 30)
   std::vector<std::vector<byte>> pages;
   u64 ordinal = 0;
   for (u64 p = 0; p < 3; ++p) {

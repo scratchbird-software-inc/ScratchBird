@@ -46,7 +46,10 @@ namespace scratchbird::storage::page {
 // page image of scratch), and keeps one 72-byte entry per record UUID in a
 // std::map (about 90 bytes with the key and the tree node): 90 B x records. It
 // is bounded by `maximum_records` (default 1,048,576 = about 95 MB worst case,
-// reached only by a ledger of a million records; a typical ledger is a few
+// reached only by a ledger of a million records; the entry does not depend on
+// the record size, so the 512-byte record (owner 2026-11-23) leaves this bound
+// unchanged while the records at that bound occupy 512 MiB of file, twice the
+// 256 MiB of the 256-byte record; the load scratch is one page; a typical ledger is a few
 // thousand records = under 1 MB). Append past the bound is refused ledger_full
 // with nothing written. Only the last page is read again per append (one page
 // read; the plan's preimage check then compares the write unit with the disk).

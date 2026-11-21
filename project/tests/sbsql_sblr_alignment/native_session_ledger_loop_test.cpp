@@ -608,12 +608,12 @@ void OneSize(const std::string& self, const fs::path& root, std::uint32_t page_s
     auto bytes = ReadAll(torn_file);
     const std::uint32_t used_on_last = total - slots;
     Check(used_on_last + 1 <= slots, tag + "room for a torn slot");
-    std::array<p::byte, 256> encoded{};
+    std::array<p::byte, 512> encoded{};  // owner 2026-11-23: the record is 512 bytes (OLD 256)
     auto next = Rec(Fixed(3000), Conn(77));
     next.database_uuid = records[0].database_uuid;
     next.ordinal = total;
     Check(pg::EncodeSessionLedgerRecord(next, encoded) == pg::SessionLedgerRecordError::none, tag + "encode a torn candidate");
-    const auto at = pages.back() * page_size + 512 + 256ull * used_on_last;
+    const auto at = pages.back() * page_size + 512 + 512ull * used_on_last;  // 512-byte slots (OLD 256ull)
     std::copy_n(encoded.begin(), 100, bytes.begin() + at);
     WriteAll(torn_file, bytes);
     serve(torn_file, "ledger_reopen_torn", std::to_string(total));
@@ -643,7 +643,7 @@ void OneSize(const std::string& self, const fs::path& root, std::uint32_t page_s
   }
   {
     auto bytes = image;  // a record after an empty slot on the last page
-    bytes[pages.back() * page_size + 512 + 256ull * (slots - 1)] = 1;
+    bytes[pages.back() * page_size + 512 + 512ull * (slots - 1)] = 1;
     refuse("corrupt_slot", bytes, invalid, "chain_unreadable");
   }
   {
@@ -655,14 +655,14 @@ void OneSize(const std::string& self, const fs::path& root, std::uint32_t page_s
   }
   {
     auto bytes = image;  // the cited record (the last one) lost: zeroed
-    const auto at = pages.back() * page_size + 512 + 256ull * (total - slots - 1);
-    std::fill(bytes.begin() + at, bytes.begin() + at + 256, p::byte{0});
+    const auto at = pages.back() * page_size + 512 + 512ull * (total - slots - 1);
+    std::fill(bytes.begin() + at, bytes.begin() + at + 512, p::byte{0});
     refuse("cited_record_zeroed", bytes, invalid, "header_citation");
   }
   {
     auto bytes = image;  // the cited record torn: a prefix of its bytes, the rest zero
-    const auto at = pages.back() * page_size + 512 + 256ull * (total - slots - 1);
-    std::fill(bytes.begin() + at + 100, bytes.begin() + at + 256, p::byte{0});
+    const auto at = pages.back() * page_size + 512 + 512ull * (total - slots - 1);
+    std::fill(bytes.begin() + at + 100, bytes.begin() + at + 512, p::byte{0});
     refuse("cited_record_torn", bytes, invalid, "header_citation");
   }
   // ---- a failed write, then the reopen: the record is either whole or never visible, and the file opens ----
