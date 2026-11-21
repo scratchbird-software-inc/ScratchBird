@@ -6,11 +6,18 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// SEARCH_KEY: SB_NATIVE_LOGIN_REFUSAL_TEST (S3f0, owner Q301 = yes, 2026-11-19). Native login does not exist until
-// S4, so a login handoff on a NATIVE database refuses, specifically and first, with
-// SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE (fields: reason=native_login_s4; the binary database identity;
-// no prose, no principal text) instead of reaching the legacy security loader (which ends in
-// SECURITY.CATALOG.PRIVATE_LIFECYCLE_CORRUPT / bootstrap_security_catalog_invalid on a native file).
+// SEARCH_KEY: SB_NATIVE_LOGIN_REFUSAL_TEST (S3f0, owner Q301 = yes, 2026-11-19; EXPECTATIONS FLIPPED by S4c, owner Q312,
+// 2026-11-22). WAS: native login did not exist until S4, so a login handoff on a NATIVE database refused, specifically
+// and first, with SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE (reason=native_login_s4) instead of reaching the legacy
+// security loader. Q312: "keep SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE until S4c replaces it". S4c replaced it:
+//   * a database a SERVER SERVES (the marker, mode `served`): a login with a claim that names nobody now returns the ONE
+//     generic credential failure SECURITY.AUTHENTICATION.LOGIN_FAILED (reason=login_failed; the binary database
+//     identity; no prose, no principal text) through HandleAuthHandoff and EngineAuthenticate; the legacy loader is still
+//     never reached. (The accepted / every-cause / throttle / strace cases are native_login_test; this file keeps the S3f0
+//     test's structure and its no-echo, no-session, unchanged-bytes checks.)
+//   * a native file NOBODY serves in this process (mode `path`: a path with no marker): there is no loop to read through,
+//     so it still refuses specifically, with its own code SECURITY.AUTHENTICATION.NATIVE_DATABASE_NOT_SERVED
+//     (reason=native_database_not_served) - not a credential verdict.
 // Modes (a child process each; the strace half is native_login_strace.py):
 //   create <path> <page_size>
 //   served <path>   the real StartHostedEngine, then the REAL login handoff (HandleAuthHandoff, the function the
@@ -133,14 +140,14 @@ bool HasField(const api::EngineApiDiagnostic& diagnostic, std::string_view key, 
 }
 
 // A refusal vector must be structured only: no prose, no echo of the principal claim anywhere.
-void CheckRefusalVector(const api::EngineAuthenticateResult& result, const p::Uuid& database, const std::string& what) {
+void CheckRefusalVector(const api::EngineAuthenticateResult& result, const p::Uuid& database, const std::string& what,
+                        const std::string& expected_code, const std::string& expected_reason) {
   Check(!result.ok && !result.authenticated, what + ": not authenticated");
   Check(!result.diagnostics.empty(), what + ": a diagnostic exists");
   const auto& diagnostic = result.diagnostics.front();
-  Check(diagnostic.code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE",
-        what + ": specific code, got " + diagnostic.code);
+  Check(diagnostic.code == expected_code, what + ": specific code " + expected_code + ", got " + diagnostic.code);
   Check(diagnostic.detail.empty(), what + ": no prose detail");
-  Check(HasField(diagnostic, "reason", "native_login_s4"), what + ": reason=native_login_s4");
+  Check(HasField(diagnostic, "reason", expected_reason), what + ": reason=" + expected_reason);
   Check(std::any_of(diagnostic.identity_fields.begin(), diagnostic.identity_fields.end(),
                     [&](const auto& field) { return field.first == "database_uuid" && field.second == database; }),
         what + ": the binary database identity");
@@ -201,17 +208,17 @@ int ServedMode(const fs::path& path) {
   frame.header.payload_schema_id = 3001;
   frame.payload = AuthPayload(connection);
   const auto result = srv::HandleAuthHandoff(&registry, started.state, frame);
-  Check(!result.accepted, "the login handoff on a native database is not accepted");
+  Check(!result.accepted, "the login handoff with a claim that names nobody is not accepted");
   Check(!result.diagnostics.empty(), "the handoff returns a diagnostic");
   bool found = false;
   for (const auto& diagnostic : result.diagnostics) {
-    if (diagnostic.code != "SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE") continue;
+    if (diagnostic.code != "SECURITY.AUTHENTICATION.LOGIN_FAILED") continue;
     found = true;
     Check(std::any_of(diagnostic.fields.begin(), diagnostic.fields.end(),
-                      [](const auto& field) { return field.key == "detail" && field.value == "native_login_s4"; }),
-          "the handoff's diagnostic carries the structured reason native_login_s4");
+                      [](const auto& field) { return field.key == "detail" && field.value == "login_failed"; }),
+          "the handoff's diagnostic carries the structured reason login_failed");
   }
-  Check(found, "the handoff diagnostics hold SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE (first: " +
+  Check(found, "the handoff diagnostics hold SECURITY.AUTHENTICATION.LOGIN_FAILED (first: " +
                    (result.diagnostics.empty() ? std::string("none") : result.diagnostics.front().code) + ")");
   for (const auto& diagnostic : result.diagnostics) {
     Check(diagnostic.code.find(kPrincipalClaim) == std::string::npos &&
@@ -220,7 +227,7 @@ int ServedMode(const fs::path& path) {
   }
   const std::string payload(result.payload.begin(), result.payload.end());
   Check(payload.find(kPrincipalClaim) == std::string::npos, "no principal text in the handoff's payload");
-  Check(payload.find("native_login_s4") != std::string::npos, "the handoff's payload names the reason");
+  Check(payload.find("login_failed") != std::string::npos, "the handoff's payload names the reason");
   Check(registry.sessions_by_uuid.empty() && registry.auth_contexts_by_uuid.empty(), "no session and no auth context were created");
 
   // The engine call with the server's marker, directly.
@@ -229,12 +236,14 @@ int ServedMode(const fs::path& path) {
   context.database_uuid = facts->database_uuid;
   context.native_served_facts = facts;
   context.trust_mode = api::EngineTrustMode::server_isolated;
-  CheckRefusalVector(api::EngineAuthenticate(LoginRequest(context)), facts->database_uuid, "EngineAuthenticate with the marker");
-  // With a no-credential request (a provider that needs no local password) the refusal is the same.
+  CheckRefusalVector(api::EngineAuthenticate(LoginRequest(context)), facts->database_uuid, "EngineAuthenticate with the marker",
+                     "SECURITY.AUTHENTICATION.LOGIN_FAILED", "login_failed");
+  // With a no-credential request the failure is the same generic one (an empty password is inadmissible: a credential cause).
   auto no_credential = LoginRequest(context);
   no_credential.credential_evidence.clear();
   no_credential.credential_evidence_present = false;
-  CheckRefusalVector(api::EngineAuthenticate(no_credential), facts->database_uuid, "EngineAuthenticate without credential evidence");
+  CheckRefusalVector(api::EngineAuthenticate(no_credential), facts->database_uuid, "EngineAuthenticate without credential evidence",
+                     "SECURITY.AUTHENTICATION.LOGIN_FAILED", "login_failed");
 
   Check(Snapshot(directory) == before, "the directory and every file's bytes are unchanged");
   for (const auto& entry : fs::directory_iterator(directory))
@@ -254,8 +263,9 @@ int PathMode(const fs::path& path) {
   context.trust_mode = api::EngineTrustMode::server_isolated;
   const auto result = api::EngineAuthenticate(LoginRequest(context));
   Check(!result.diagnostics.empty() &&
-            result.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE",
-        "a path-only context on a native file: the engine's own read-only discovery refuses specifically");
+            result.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_DATABASE_NOT_SERVED",
+        "a path-only context on a native file (WAS NATIVE_LOGIN_UNAVAILABLE, Q301): the engine's own read-only discovery refuses specifically, "
+        "with its own code (nobody serves this file: no loop to read through)");
   // The binary identity is page zero's (read-only discovery), whatever the caller's context said.
   p::Uuid page_zero_database;
   {
@@ -264,7 +274,8 @@ int PathMode(const fs::path& path) {
       if (field.first == "database_uuid") page_zero_database = field.second;
   }
   Check(!page_zero_database.is_nil(), "the refusal names page zero's database identity");
-  CheckRefusalVector(result, page_zero_database, "EngineAuthenticate by path");
+  CheckRefusalVector(result, page_zero_database, "EngineAuthenticate by path", "SECURITY.AUTHENTICATION.NATIVE_DATABASE_NOT_SERVED",
+                     "native_database_not_served");
   Check(Snapshot(directory) == before, "the directory and every file's bytes are unchanged");
   for (const auto& entry : fs::directory_iterator(directory))
     Check(entry.path().filename().string().find(".sb.") == std::string::npos, "no .sb.* file exists");

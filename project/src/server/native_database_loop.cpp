@@ -36,6 +36,7 @@
 #include "transaction_snapshot.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <chrono>
 #include <array>
 #include <exception>
@@ -537,6 +538,158 @@ void NativeDatabaseLoop::HandleLogin(LoginWork& work) noexcept {
   work.request.password = {};          // released on this thread
   work.done.set_value(std::move(result));
 }
+
+// ===================================================================================================================
+// SEARCH_KEY: SB_NATIVE_LOGIN_SOURCE (thin-slice S4c, plan 40; owner 2026-11-21: login reads at an in-memory snapshot
+// point, the user's transaction only on approval). See the header. Runs on the loop thread, inside one snapshot-point
+// scope: the engine's `select` (names read, resolver, hidden policy; these are READS ending before the next starts),
+// then the S4a credential read (PBKDF2 included). Nothing is written, no transaction number is taken.
+// ===================================================================================================================
+void NativeDatabaseLoop::LoginInScope(const LoginSelect& select, std::string& password,
+                                      engine::internal_api::NativeLoginAttemptResult* out) noexcept {
+  using engine::internal_api::NativeLoginSelectionError;
+  try {
+    out->selection = select ? select() : engine::internal_api::NativeLoginSelection{};
+  } catch (...) {
+    out->selection = {};
+    out->selection.error = NativeLoginSelectionError::resolver_failed;
+    out->selection.resolver_code = "SELECT_THREW";
+  }
+  const auto sel = out->selection.error;
+  // A failed selection that is a CREDENTIAL cause still burns one credential read (see the header); an
+  // infrastructure selection failure does not read credentials at all.
+  const bool credential_cause = sel == NativeLoginSelectionError::none || sel == NativeLoginSelectionError::name_not_found ||
+                                sel == NativeLoginSelectionError::name_hidden || sel == NativeLoginSelectionError::name_ambiguous;
+  if (!credential_cause) {
+    out->material_error = NativeLoginMaterialError::invalid_request;  // not read
+    return;
+  }
+  NativeLoopLoginRequest request;
+  if (out->selection.ok()) {
+    request.principal_uuid = out->selection.principal_uuid;
+  } else {
+    const auto burn = core::uuid::IssueRuntimeIdentityV7();
+    if (!burn) {
+      out->material_error = NativeLoginMaterialError::crypto_failure;
+      return;
+    }
+    request.principal_uuid = *burn;
+  }
+  // The password into protected memory ON THIS THREAD (the loop's own credential memory); longer than the S4a limit
+  // is handed over as limit + 1 bytes (the read refuses it as inadmissible without a file read).
+  constexpr std::size_t kLimit = 1024;
+  const std::size_t length = password.size() > kLimit ? kLimit + 1 : password.size();
+  core::memory::ProtectedMemoryRequest protect;
+  protect.bytes = std::max<std::size_t>(length, 1);
+  if (!serving_ || !serving_->credential_memory) {
+    out->material_error = NativeLoginMaterialError::database_not_serving;
+    return;
+  }
+  protect.tag = serving_->tag;
+  protect.material_class = "native login password";
+  protect.platform_policy = core::memory::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump;
+  auto allocated = serving_->credential_memory->AllocateProtected(protect);
+  if (!allocated.ok()) {
+    out->material_error = NativeLoginMaterialError::memory_failure;
+    return;
+  }
+  if (length > 0) std::memcpy(allocated.buffer.data(), password.data(), length);
+  request.password = std::move(allocated.buffer);
+  request.password_length = length;
+  auto result = ReadLoginMaterialNow(request);
+  ConsumeLoginPassword(request);
+  request.password = {};
+  out->material_error = result.error;
+  out->security_error = static_cast<std::uint32_t>(result.security_error);
+  out->source_error = static_cast<std::uint32_t>(result.source_error);
+  out->custody_error = static_cast<std::uint32_t>(result.custody_error);
+  // Only a verdict for a SELECTED principal may carry material; a burn read's material (it cannot succeed) is dropped.
+  if (out->selection.ok() && result.ok()) out->material = std::move(result.material);
+  else if (result.error == NativeLoginMaterialError::none) out->material_error = NativeLoginMaterialError::principal_absent;
+}
+
+namespace {
+void ScrubLoginPassword(std::string& password) noexcept {
+  if (!password.empty()) OPENSSL_cleanse(password.data(), password.size());
+  password.clear();
+}
+}  // namespace
+
+std::future<NativeLoopReadScopeResult> NativeDatabaseLoop::SubmitLoginAttempt(
+    const LoginSelect& select, std::string& password, engine::internal_api::NativeLoginAttemptResult* out) {
+  return SubmitReadScope(
+      [this, &select, &password, out](const NativeLoopReadTransaction&) { LoginInScope(select, password, out); },
+      NativeLoopReadScopeMode::snapshot_point);
+}
+
+void NativeDatabaseLoop::FinishLoginAttempt(const NativeLoopReadScopeResult& scope, std::string& password,
+                                            engine::internal_api::NativeLoginAttemptResult* out) noexcept {
+  using engine::internal_api::NativeLoginScopeError;
+  ScrubLoginPassword(password);  // whatever happened; the work copied what it needed into protected memory
+  if (!scope.begin.ok()) {
+    switch (scope.begin.error) {
+      case NativeLoopTransactionError::database_not_serving: out->scope_error = NativeLoginScopeError::database_not_serving; break;
+      case NativeLoopTransactionError::database_failed: out->scope_error = NativeLoginScopeError::database_failed; break;
+      case NativeLoopTransactionError::busy: out->scope_error = NativeLoginScopeError::busy; break;
+      default: out->scope_error = NativeLoginScopeError::scope_refused; break;
+    }
+    return;
+  }
+  out->scope_error = (scope.work_ran && !scope.work_threw) ? NativeLoginScopeError::none : NativeLoginScopeError::work_failed;
+}
+
+engine::internal_api::NativeLoginAttemptResult NativeDatabaseLoop::AttemptLoginOnLoopThread(
+    const LoginSelect& select, std::string& password) noexcept {
+  engine::internal_api::NativeLoginAttemptResult out;
+  if (!on_loop_thread()) {
+    ScrubLoginPassword(password);
+    out.scope_error = engine::internal_api::NativeLoginScopeError::scope_refused;
+    return out;
+  }
+  const auto scope = RunReadScopeNow(
+      [this, &select, &password, &out](const NativeLoopReadTransaction&) { LoginInScope(select, password, &out); },
+      NativeLoopReadScopeMode::snapshot_point);
+  FinishLoginAttempt(scope, password, &out);
+  return out;
+}
+
+namespace {
+// SB_NATIVE_LOGIN_SOURCE: the source the served facts carry (as the names source). The attempt is queued under the
+// binding's lock (the loop clears the binding when it starts to close) and awaited outside it.
+class NativeLoopLoginSource final : public engine::internal_api::NativeLoginSource {
+ public:
+  explicit NativeLoopLoginSource(std::shared_ptr<NativeNamesBinding> binding) : binding_(std::move(binding)) {}
+  engine::internal_api::NativeLoginAttemptResult Login(
+      const std::function<engine::internal_api::NativeLoginSelection()>& select, std::string& password) const noexcept override {
+    engine::internal_api::NativeLoginAttemptResult out;
+    try {
+      NativeDatabaseLoop* loop = nullptr;
+      std::future<NativeLoopReadScopeResult> future;
+      {
+        std::lock_guard<std::mutex> guard(binding_->mutex);
+        loop = binding_->loop;
+        if (loop == nullptr) {
+          ScrubLoginPassword(password);
+          out.scope_error = engine::internal_api::NativeLoginScopeError::database_not_serving;  // the loop closed
+          return out;
+        }
+        if (!loop->on_loop_thread()) future = loop->SubmitLoginAttempt(select, password, &out);
+      }
+      if (!future.valid()) return loop->AttemptLoginOnLoopThread(select, password);  // the loop is alive: it is this thread
+      const auto scope = future.get();
+      NativeDatabaseLoop::FinishLoginAttempt(scope, password, &out);
+      return out;
+    } catch (...) {
+      ScrubLoginPassword(password);
+      out.scope_error = engine::internal_api::NativeLoginScopeError::work_failed;
+      return out;
+    }
+  }
+
+ private:
+  std::shared_ptr<NativeNamesBinding> binding_;
+};
+}  // namespace
 
 // SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework "Part A"). Same admission as the login-material read: serving and
 // restricted are allowed (Q309), failed and not-serving are refused before anything is queued.
@@ -1148,11 +1301,20 @@ NativeLoopReadScopeResult NativeDatabaseLoop::RunReadScopeNow(
 NativeLoopReadScopeResult NativeDatabaseLoop::RunInEngineReadTransaction(
     std::function<void(const NativeLoopReadTransaction&)> work, NativeLoopReadScopeMode mode) {
   if (on_loop_thread()) return RunReadScopeNow(work, mode);
-  const auto refused = [](NativeLoopTransactionError error) {
+  return SubmitReadScope(std::move(work), mode).get();
+}
+
+// The queueing half (S4c: the login source queues under the names binding's lock and waits outside it).
+std::future<NativeLoopReadScopeResult> NativeDatabaseLoop::SubmitReadScope(
+    std::function<void(const NativeLoopReadTransaction&)> work, NativeLoopReadScopeMode mode) {
+  std::promise<NativeLoopReadScopeResult> refused;
+  const auto refuse = [&](NativeLoopTransactionError error) {
     NativeLoopReadScopeResult result;
     result.begin.error = error;
-    return result;
+    refused.set_value(std::move(result));
+    return refused.get_future();
   };
+  if (on_loop_thread()) return refuse(NativeLoopTransactionError::database_not_serving);  // never waits on itself
   ReadScopeWork item{std::move(work), mode, {}};
   auto future = item.done.get_future();
   {
@@ -1161,11 +1323,11 @@ NativeLoopReadScopeResult NativeDatabaseLoop::RunInEngineReadTransaction(
     // snapshot_point is a read: a restricted database serves it (Q309), only the queue bound and failed refuse.
     if (mode == NativeLoopReadScopeMode::snapshot_point && error == NativeLoopTransactionError::database_restricted)
       error = queue_.size() >= kQueueCapacity ? NativeLoopTransactionError::busy : NativeLoopTransactionError::none;
-    if (error != NativeLoopTransactionError::none) return refused(error);
+    if (error != NativeLoopTransactionError::none) return refuse(error);
     queue_.emplace_back(std::move(item));
   }
   wake_.notify_one();
-  return future.get();
+  return future;
 }
 
 void NativeDatabaseLoop::HandleReadScope(ReadScopeWork& work) noexcept { work.done.set_value(RunReadScopeNow(work.work, work.mode)); }
@@ -1726,6 +1888,7 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
           static_cast<std::uint8_t>(serving.facts.serving_state));
       marker->serving_diagnostic_code = serving.facts.serving_diagnostic.code;
       marker->names_source = std::make_shared<NativeLoopNamesSource>(names_binding_);
+      marker->login_source = std::make_shared<NativeLoopLoginSource>(names_binding_);
       serving.facts.served_facts = std::move(marker);
     }
     result.facts = serving.facts;

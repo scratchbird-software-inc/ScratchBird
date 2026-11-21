@@ -512,6 +512,10 @@ constexpr std::string_view kTwinBootstrap = "TwinName";
 constexpr std::string_view kTwinService = "TWINNAME";
 constexpr std::string_view kAliasDrop = "Drop_Alias";
 constexpr std::string_view kNeverCommitted = "Never_Committed";
+// S4c (native login) forge kind "login": names the login test needs, written by the same production writers.
+constexpr std::string_view kLoginAlias = "owner_login_alias";        // an alias-class name on the bootstrap principal
+constexpr std::string_view kLoginHidden = "owner_hidden_login";      // a hidden-class name on the bootstrap principal
+constexpr std::string_view kLoginHiddenOnly = "hidden_only_login";   // a hidden name that nothing else shares
 
 // Forge kinds (each is cumulative on the file as it stands):
 //   names        one committed transaction: an English alias, a French name, a quoted name and a quoted case twin on the
@@ -520,7 +524,27 @@ constexpr std::string_view kNeverCommitted = "Never_Committed";
 //   uncommitted  names, then a transaction that inserts a name and is left ACTIVE (the served open's Restart kills it)
 int ForgeMode(const fs::path& path, const std::string& kind, const p::Uuid& bootstrap, const p::Uuid& service) {
   ProcessMemory();
-  if (kind != "names" && kind != "dead" && kind != "uncommitted") return 2;
+  if (kind != "names" && kind != "dead" && kind != "uncommitted" && kind != "login") return 2;
+  if (kind == "login") {
+    // SB_NATIVE_LOGIN_TEST (S4c): one committed transaction with the names the login cases need. The hidden class
+    // (CatalogNameClass::hidden) is written through the engine's own entry writer; nothing is hand-patched.
+    const auto before = ReadOffline(path);
+    const auto* base_boot = EntryOf(before, bootstrap, std::string(kBootstrapName));
+    const auto* base_svc = EntryOf(before, service, std::string(kServiceName));
+    Check(base_boot && base_svc, "the create wrote the principals' name entries");
+    auto w = BeginWriting(path, before);
+    Touch(*w, before.security.at(bootstrap));
+    Touch(*w, before.security.at(service));
+    std::vector<db::CatalogInsertRow> rows;
+    rows.push_back(EntryRow(*w, *base_boot, {std::string(kLoginAlias), false, std::nullopt, cat::CatalogNameClass::alias, false}));
+    rows.push_back(EntryRow(*w, *base_boot, {std::string(kLoginHidden), false, std::nullopt, cat::CatalogNameClass::hidden, false}));
+    rows.push_back(EntryRow(*w, *base_svc, {std::string(kLoginHiddenOnly), false, std::nullopt, cat::CatalogNameClass::hidden, false}));
+    Insert(*w, std::move(rows));
+    Commit(*w);
+    Check(w->device.Close().ok(), "close");
+    std::cout << "FORGED kind=login" << std::endl;
+    return 0;
+  }
   {
     const auto before = ReadOffline(path);
     const auto* base_boot = EntryOf(before, bootstrap, std::string(kBootstrapName));

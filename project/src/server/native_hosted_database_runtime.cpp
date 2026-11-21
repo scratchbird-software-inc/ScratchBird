@@ -859,68 +859,8 @@ NativeHostedDatabaseRuntime::AuthenticateStartupService(
 }
 
 // SEARCH_KEY: SB_NATIVE_LOGIN_MATERIAL (thin-slice S4a). See the declaration and NativeLoginMaterialError.
-const char* NativeLoginMaterialErrorName(NativeLoginMaterialError e) noexcept {
-  using E=NativeLoginMaterialError;
-  switch(e){
-    case E::none: return "none";
-    case E::invalid_request: return "invalid_request";
-    case E::password_inadmissible: return "password_inadmissible";
-    case E::database_not_serving: return "database_not_serving";
-    case E::database_failed: return "database_failed";
-    case E::wrong_owner: return "wrong_owner";
-    case E::busy: return "busy";
-    case E::closed: return "closed";
-    case E::preparation_failure: return "preparation_failure";
-    case E::custody_failure: return "custody_failure";
-    case E::crypto_failure: return "crypto_failure";
-    case E::memory_failure: return "memory_failure";
-    case E::security_source_failure: return "security_source_failure";
-    case E::security_binding_failure: return "security_binding_failure";
-    case E::protected_workspace_required: return "protected_workspace_required";
-    case E::verifier_provider_failure: return "verifier_provider_failure";
-    case E::principal_absent: return "principal_absent";
-    case E::principal_wrong_family: return "principal_wrong_family";
-    case E::principal_not_active: return "principal_not_active";
-    case E::credential_absent: return "credential_absent";
-    case E::credential_unsupported: return "credential_unsupported";
-    case E::password_mismatch: return "password_mismatch";
-    case E::principal_generation_invalid: return "principal_generation_invalid";
-    case E::external_binding_refused: return "external_binding_refused";
-  }
-  return "unknown";
-}
-
-const char* NativeLoginMaterialErrorCode(NativeLoginMaterialError e) noexcept {
-  using E=NativeLoginMaterialError;
-  switch(e){
-    case E::none: return "";
-    case E::invalid_request: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_REQUEST_INVALID";
-    case E::password_inadmissible: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PASSWORD_INADMISSIBLE";
-    case E::database_not_serving: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_DATABASE_NOT_SERVING";
-    case E::database_failed: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_DATABASE_FAILED";
-    case E::wrong_owner: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_WRONG_OWNER";
-    case E::busy: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_BUSY";
-    case E::closed: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_CLOSED";
-    case E::preparation_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_PREPARATION_FAILED";
-    case E::custody_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_CUSTODY_FAILED";
-    case E::crypto_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_CRYPTO_SCOPE_FAILED";
-    case E::memory_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_MEMORY_FAILED";
-    case E::security_source_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_SECURITY_SOURCE_FAILED";
-    case E::security_binding_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_SECURITY_BINDING_FAILED";
-    case E::protected_workspace_required: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PROTECTED_WORKSPACE_REQUIRED";
-    case E::verifier_provider_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_VERIFIER_PROVIDER_FAILED";
-    case E::principal_absent: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_ABSENT";
-    case E::principal_wrong_family: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_WRONG_FAMILY";
-    case E::principal_not_active: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_NOT_ACTIVE";
-    case E::credential_absent: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_CREDENTIAL_ABSENT";
-    case E::credential_unsupported: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_CREDENTIAL_UNSUPPORTED";
-    case E::password_mismatch: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PASSWORD_MISMATCH";
-    case E::principal_generation_invalid: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_GENERATION_INVALID";
-    // Q274: the SAME code CheckExternalAuthenticationBinding returns for a service principal.
-    case E::external_binding_refused: return "SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED";
-  }
-  return "";
-}
+// SB_NATIVE_LOGIN_SOURCE (S4c): NativeLoginMaterialErrorName / NativeLoginMaterialErrorCode moved, inline, to
+// engine/internal_api/native_login_material.hpp with the enum.
 
 namespace {
 // What phase A (the file read) copies out before the lease and the custody operation end. Owning values only.

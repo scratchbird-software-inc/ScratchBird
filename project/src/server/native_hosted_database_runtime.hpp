@@ -15,6 +15,7 @@
 #include "native_owned_checkpoint_writer.hpp"
 #include "native_catalog_cohort_lease_reader.hpp"
 #include "engine/internal_api/native_served_database_facts.hpp"
+#include "engine/internal_api/native_login_material.hpp"
 #include "engine/internal_api/security/native_local_service_authentication.hpp"
 #include "engine/internal_api/security/native_local_service_session.hpp"
 #include "engine/internal_api/catalog/native_catalog_metadata_verification.hpp"
@@ -157,73 +158,14 @@ struct NativeServiceIdentityResult {
   bool ok() const noexcept { return error == NativeServiceIdentityError::none && identity.has_value(); }
 };
 
-// SEARCH_KEY: SB_NATIVE_LOGIN_MATERIAL (thin-slice S4a, plan 40; owner Q306-Q312). A native credential read with
-// NO session: given a principal UUID and a supplied password, read that principal's committed native security rows
-// from the served file, verify the password against the stored PBKDF2 verifier in constant time and report the
-// facts the later native authorization adapter (Q307) needs, or a specific refusal. Every refusal is an enum value
-// with its own stable code (NativeLoginMaterialErrorCode); no refusal carries text, a name, a path or a secret.
-// The codes are INTERNAL: the later wire layer decides which of them a client may see (owner question).
-enum class NativeLoginMaterialError : std::uint8_t {
-  none,
-  // The request itself: a nil / non-identity principal UUID, a missing database binding, a protected buffer that is
-  // not usable. Never reached for a well-formed request.
-  invalid_request,
-  // The supplied password cannot be a local password (empty, longer than 1024 bytes, or holds a NUL). Decided from
-  // the input alone, before the file is read.
-  password_inadmissible,
-  // The database is not serving (the loop has no serving database to read). `failed` is refused (Q299 / Q309);
-  // `restricted` is NOT refused: login material reads on a restricted database (Q309).
-  database_not_serving,
-  database_failed,
-  // Reading the file failed; no credential verdict exists. These are infrastructure causes, not answers.
-  wrong_owner, busy, closed, preparation_failure, custody_failure, crypto_failure, memory_failure,
-  security_source_failure, security_binding_failure, protected_workspace_required, verifier_provider_failure,
-  // The verdicts, each its own cause.
-  principal_absent,
-  principal_wrong_family,     // the UUID names a row that is not a principal
-  principal_not_active,       // deleted, not active, or its active flag is false
-  credential_absent,          // the principal row carries no verifier
-  credential_unsupported,     // a scheme or parameters this build does not verify
-  password_mismatch,
-  principal_generation_invalid,
-  external_binding_refused    // an agent / service principal: refused on every external path (Q274)
-};
-const char* NativeLoginMaterialErrorName(NativeLoginMaterialError) noexcept;
-// The stable refusal code (SECURITY.AUTHENTICATION.NATIVE_LOGIN_*; the external-binding refusal carries Q274's own
-// SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED, the code CheckExternalAuthenticationBinding returns).
-const char* NativeLoginMaterialErrorCode(NativeLoginMaterialError) noexcept;
-
-// One direct edge or privilege row of the authenticated principal, copied (binary identities and constants only).
-// NOT resolved: no transitive membership, no deny/allow evaluation, no effective privilege.
-struct NativeLoginGrantEdge {
-  core::platform::Uuid grant_uuid;
-  core::catalog::CatalogSecurityGrantClass grant_class = core::catalog::CatalogSecurityGrantClass::none;
-  // privilege: subject_* and right/effect/target; membership: member -> parent.
-  core::platform::Uuid subject_uuid, member_uuid, parent_uuid, target_uuid;
-  core::catalog::CatalogSecuritySubjectKind subject_kind = core::catalog::CatalogSecuritySubjectKind::none;
-  core::catalog::CatalogSecuritySubjectKind member_kind = core::catalog::CatalogSecuritySubjectKind::none;
-  core::catalog::CatalogSecuritySubjectKind parent_kind = core::catalog::CatalogSecuritySubjectKind::none;
-  std::optional<core::catalog::CatalogSecurityEffect> effect;
-  std::optional<core::catalog::CatalogSecurityRight> right;
-  core::platform::u64 security_generation = 0;
-};
-// What an authenticated login read reports. Owning copies only: no verifier, salt or password byte is in it.
-struct NativeLoginMaterial {
-  core::platform::Uuid database_uuid, principal_uuid, principal_version_uuid;
-  core::catalog::CatalogSecurityPrincipalKind principal_kind = core::catalog::CatalogSecurityPrincipalKind::none;
-  std::optional<core::catalog::CatalogSecurityAuthorityClass> authority_class;
-  bool bootstrap_principal = false;
-  core::platform::u64 definition_generation = 0, security_context_authority_version = 0,
-      security_context_generation = 0, security_generation = 0, policy_generation = 0;
-  // The selected catalog the rows were read from (descriptive; a fence for the later adapter).
-  core::platform::u64 catalog_generation = 0, schema_epoch = 0, security_epoch = 0;
-  // Direct role / group memberships of the principal (member = the principal), active and not retired, in object
-  // order. The rows behind them are in `edges`.
-  std::vector<core::platform::Uuid> role_uuids, group_uuids;
-  // Every committed, active grant-family row that names the principal as subject or member (privileges,
-  // memberships, agent bindings): the later adapter's input.
-  std::vector<NativeLoginGrantEdge> edges;
-};
+// SB_NATIVE_LOGIN_SOURCE (S4c): the S4a login-material types MOVED to engine/internal_api/native_login_material.hpp (the engine's
+// EngineAuthenticate must see them); their definitions are there verbatim. Re-exported here so every server caller and test
+// keeps its names.
+using engine::internal_api::NativeLoginMaterialError;
+using engine::internal_api::NativeLoginMaterialErrorName;
+using engine::internal_api::NativeLoginMaterialErrorCode;
+using engine::internal_api::NativeLoginGrantEdge;
+using engine::internal_api::NativeLoginMaterial;
 struct NativeLoginMaterialResult {
   NativeLoginMaterialError error = NativeLoginMaterialError::invalid_request;
   // Structured detail of an infrastructure refusal (enum numbers, never text).

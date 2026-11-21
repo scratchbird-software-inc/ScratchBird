@@ -4407,6 +4407,60 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
       TIMEOUT 1800)
   endforeach()
 endif()
+# SB_NATIVE_LOGIN_TEST (thin-slice S4c, plan 40; owner Q306-Q312, 2026-11-21 snapshot-point ruling, Firebird login review):
+# native login through the real handoff (HandleAuthHandoff, EngineAuthenticate): name -> principal through the existing resolver,
+# then the S4a credential read, on the loop thread in ONE snapshot-point scope. REPLACES the S3f0 NATIVE_LOGIN_UNAVAILABLE
+# expectation (Q312). Production-created databases at the five page sizes; per size one served child each for serving,
+# restricted, failed, disabled and nocredential; one `common` entry (page-size independent) for the throttle that sits before
+# the loop. The create, the forges and the offline derivation are the sibling binaries' own modes. One ctest entry per
+# page size, each its own process and temp directory; the strace half checks 0 .sb.* and 0 write-class syscalls.
+add_executable(sbsql_sblr_alignment_native_login native_login_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_login sbsql_sblr_alignment_native_serving
+  sbsql_sblr_alignment_native_login_material sbsql_sblr_alignment_native_name_resolve)
+target_compile_definitions(sbsql_sblr_alignment_native_login PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_login PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_login PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_login PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_login PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"
+  SB_NATIVE_LOGIN_MATERIAL_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_login_material>"
+  SB_NATIVE_NAME_RESOLVE_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_name_resolve>")
+add_test(NAME sbsql_sblr_alignment_native_login_common COMMAND sbsql_sblr_alignment_native_login common)
+set_tests_properties(sbsql_sblr_alignment_native_login_common PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;database_ownership;binary_uuid"
+  TIMEOUT 1800)
+foreach(sb_nl_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_nl_parts "${sb_nl_size}")
+  list(GET sb_nl_parts 0 sb_nl_bytes)
+  list(GET sb_nl_parts 1 sb_nl_label)
+  add_test(NAME sbsql_sblr_alignment_native_login_${sb_nl_label}
+    COMMAND sbsql_sblr_alignment_native_login size ${sb_nl_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_login_${sb_nl_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;database_ownership;binary_uuid"
+    TIMEOUT 1800)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_nl_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_nl_parts "${sb_nl_size}")
+    list(GET sb_nl_parts 0 sb_nl_bytes)
+    list(GET sb_nl_parts 1 sb_nl_label)
+    add_test(NAME sbsql_sblr_alignment_native_login_strace_${sb_nl_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_login_strace_s4c.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login>
+        --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --names-bin $<TARGET_FILE:sbsql_sblr_alignment_native_name_resolve>
+        --serving-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>
+        --size ${sb_nl_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_login_strace_${sb_nl_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;strace"
+      TIMEOUT 1800)
+  endforeach()
+endif()
 # SB_NATIVE_LOOP_TRANSACTION_TEST (thin-slice S4d, plan 40; owner Q305, Q309, Q315): the database loop's transaction queue
 # (BeginWork / CompleteWork / CompleteAndBeginWork), its ownership table and the engine-owned read-transaction scope.
 # Production-created databases at the five page sizes, served by StartHostedEngine; per size one driver process runs

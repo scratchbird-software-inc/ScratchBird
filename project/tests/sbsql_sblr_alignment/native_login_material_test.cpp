@@ -792,7 +792,39 @@ void OneSize(const std::string& self, const fs::path& root, std::uint32_t page_s
 }
 }  // namespace
 
+// derive <path> <binding_hex>: (S4c, used by native_login_test) prints "DERIVED <uuid_hex>:<password_hex>..." for every
+// principal that carries a password seed (the agents and L5): database UUID XOR the stored seed, read offline through the
+// production observer BEFORE any server owns the file. The password is a test secret: it goes to the parent's capture
+// (never argv, never a log) and the parent hands it to its served child through the environment.
+int DeriveMode(const fs::path& path, const p::Uuid& binding) {
+  srv::ServerBootstrapConfig config;
+  config.database_policy_seed_pack_root = SB_DEFAULT_POLICY_PACK_ROOT;
+  config.memory_enable_platform_memory_probe = false;
+  const auto policy = srv::ResolveServerMemoryAllocationPolicy(config);
+  srv::ServerProcessCryptoOwner crypto;
+  if (!policy.ok() || !mem::ConfigureDefaultMemoryManager(policy.policy, config.memory_policy_provenance).ok() ||
+      !crypto.Start(config, policy).ok()) {
+    std::fprintf(stderr, "process setup failed\n");
+    return 3;
+  }
+  const auto offline = ReadOffline(path, binding);
+  std::string out = "DERIVED";
+  for (const auto& fact : offline.principals) {
+    if (!fact.has_seed) continue;
+    std::string pw;
+    static constexpr char kHex[] = "0123456789abcdef";
+    for (const auto byte : fact.derived) {
+      pw.push_back(kHex[byte >> 4]);
+      pw.push_back(kHex[byte & 15]);
+    }
+    out += " " + Hex(fact.uuid) + ":" + pw;
+  }
+  std::cout << out << std::endl;
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc == 4 && std::string(argv[1]) == "derive") return DeriveMode(argv[2], FromHex(argv[3]));
   if (argc == 4 && std::string(argv[1]) == "create") return CreateMode(argv[2], static_cast<std::uint32_t>(std::stoul(argv[3])));
   if (argc == 5 && std::string(argv[1]) == "forge") return ForgeMode(argv[2], argv[3], FromHex(argv[4]));
   if (argc == 8 && std::string(argv[1]) == "serve")

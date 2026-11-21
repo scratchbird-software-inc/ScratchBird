@@ -9,8 +9,10 @@
 """SEARCH_KEY: SB_NATIVE_LOGIN_STRACE (S3f0, owner Q301 = yes, 2026-11-19).
 
 The login refusal on a native database (native_login_refusal_test, modes "served" and "path") run under strace -f
-at each of the five page sizes. Asserts: the child reports LOGIN_OK (the specific code
-SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE came back through the real login handoff and EngineAuthenticate);
+at each of the five page sizes. Asserts: the child reports LOGIN_OK (S4c, owner Q312: the child's expectations were
+FLIPPED - it was SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE; now the generic LOGIN_FAILED for a served database and
+NATIVE_DATABASE_NOT_SERVED for an unserved file, through the real login handoff and EngineAuthenticate; this script's own
+assertions are unchanged);
 0 syscalls name a ".sb." path (no legacy security / lifecycle side file was read or created); the directory holds
 only the data file, byte-identical (nothing created); 0 write-class syscalls on any descriptor of the data file.
 A negative control shows the detector sees the create's writes.

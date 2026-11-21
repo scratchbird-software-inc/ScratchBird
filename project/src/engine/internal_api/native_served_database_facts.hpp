@@ -123,6 +123,9 @@ class NativeNamesSource {
   virtual NativeNamesSnapshot Read() const noexcept = 0;
 };
 
+// SB_NATIVE_LOGIN_SOURCE (S4c): defined in native_login_material.hpp (which includes this header).
+class NativeLoginSource;
+
 struct NativeServedDatabaseFacts {
   // Identity, from page zero as the loop verified it.
   core::platform::Uuid database_uuid;
@@ -155,6 +158,9 @@ struct NativeServedDatabaseFacts {
   // SB_NATIVE_NAMES_SOURCE: the committed name rows of this database's single file (see NativeNamesSource). Set by
   // the loop with the marker; null only in a marker built without a loop.
   std::shared_ptr<const NativeNamesSource> names_source;
+  // SB_NATIVE_LOGIN_SOURCE (S4c): the one way a native login reaches the loop (snapshot-point scope, names then
+  // credential read). Set by the loop with the marker; null only in a marker built without a loop.
+  std::shared_ptr<const NativeLoginSource> login_source;
 };
 
 }  // namespace scratchbird::engine::internal_api

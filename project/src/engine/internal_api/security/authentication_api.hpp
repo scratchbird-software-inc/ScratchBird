@@ -29,7 +29,20 @@ struct EngineAuthenticateRequest : EngineApiRequest {
   bool credential_invalid_claim = false;
   bool mfa_evidence_present = false;
 };
+// SEARCH_KEY: SB_NATIVE_LOGIN_AUDIT (S4c). What a NATIVE login says to the SERVER layer and to nobody else: the
+// SPECIFIC cause (owner S4a Q2: the client sees ONE failure for every credential cause; the specific code stays in the
+// audit trail). Never serialized to a client; carries no name text and no password. `principal_uuid` is the principal
+// the presented name resolved to (nil when it resolved to none). `credential_failure` is true for the causes the wire
+// layer folds into the one client failure (they count toward the login throttle); false for success and for the
+// infrastructure causes (database failed / not serving / busy / ...), which keep their own client-visible codes.
+struct EngineNativeLoginAudit {
+  bool native = false;                  // this result came from the native login
+  bool credential_failure = false;
+  std::string internal_code;            // the specific code ("SECURITY.AUTHENTICATION.NATIVE_LOGIN_PASSWORD_MISMATCH", ...)
+  EngineUuid principal_uuid;
+};
 struct EngineAuthenticateResult : EngineApiResult {
+  EngineNativeLoginAudit native_login_audit;
   ConnectionSecurityContextRecord connection_security_context;
   // One immutable view loaded by the authentication authority.  Server-side
   // role/group projection for this same handoff may consume it, avoiding a

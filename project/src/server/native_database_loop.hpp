@@ -395,6 +395,27 @@ class NativeDatabaseLoop final {
   // committed state at read time: it has no captured value (see the .cpp for what remains).
   NativeLoopReadScopeResult RunInEngineReadTransaction(std::function<void(const NativeLoopReadTransaction&)> work,
                                                        NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::snapshot_point);
+  // SB_NATIVE_LOGIN_SOURCE (S4c): the queueing half of RunInEngineReadTransaction, without the wait: the future is
+  // always satisfied (a refusal is a result whose begin.error says why). Refused (invalid_request is not a scope
+  // error, so database_not_serving is used) on the loop thread: the loop never waits on itself.
+  std::future<NativeLoopReadScopeResult> SubmitReadScope(std::function<void(const NativeLoopReadTransaction&)> work,
+                                                         NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::snapshot_point);
+
+  // SEARCH_KEY: SB_NATIVE_LOGIN_SOURCE (S4c). One native login ATTEMPT = one snapshot-point scope whose work runs on
+  // the loop thread: `select` (name -> principal, supplied by the engine) then the S4a credential read for the
+  // selected principal, the password copied into protected memory on this thread and the caller's bytes scrubbed.
+  // For a selection that fails as a CREDENTIAL cause (unknown, hidden or ambiguous name) the credential read still
+  // runs, for a well-formed identity that is guaranteed absent, so a name that does not exist costs the same PBKDF2
+  // as a wrong password (a timing equaliser; its verdict is discarded). Infrastructure failures skip the burn.
+  // Never throws. `Submit...` is the queueing form (non-loop threads, completed by `Finish...`); the direct form runs
+  // on the loop thread (login as loop work). The password string is zeroed in every form.
+  using LoginSelect = std::function<engine::internal_api::NativeLoginSelection()>;
+  std::future<NativeLoopReadScopeResult> SubmitLoginAttempt(const LoginSelect& select, std::string& password,
+                                                            engine::internal_api::NativeLoginAttemptResult* out);
+  static void FinishLoginAttempt(const NativeLoopReadScopeResult& scope, std::string& password,
+                                 engine::internal_api::NativeLoginAttemptResult* out) noexcept;
+  engine::internal_api::NativeLoginAttemptResult AttemptLoginOnLoopThread(const LoginSelect& select,
+                                                                         std::string& password) noexcept;
 
   // Queue a close: tear down on the loop thread (read, runtime, credential),
   // then leave the loop. Idempotent.
@@ -457,6 +478,8 @@ class NativeDatabaseLoop final {
   void HandleLogin(LoginWork&) noexcept;
   void HandleNames(NamesWork&) noexcept;
   NativeLoginMaterialResult ReadLoginMaterialNow(NativeLoopLoginRequest&) noexcept;  // loop thread only
+  void LoginInScope(const LoginSelect& select, std::string& password,
+                    engine::internal_api::NativeLoginAttemptResult* out) noexcept;  // loop thread, inside a scope
   // S4d: admission shared by every transaction request (loop thread only; checked again when the work runs).
   NativeLoopTransactionError AdmitTransactionWork() noexcept;
   // Admission at the queue (any thread, lock held): the refusal of a request that must not be queued, or none.

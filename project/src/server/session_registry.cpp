@@ -15,6 +15,7 @@
 #include "session_metadata_context.hpp"
 #include "native_identity_selector.hpp"
 #include "hash_digest.hpp"
+#include "login_throttle.hpp"
 #include <stdexcept>
 #include "statement_receipt_release.hpp"
 
@@ -1055,10 +1056,15 @@ engine_api::DurableAuthorizationState DurableAuthorizationStateFromLifecycle(
       context.catalog_generation_id == 0 ? std::max<std::uint64_t>(1, session.catalog_generation)
                                          : context.catalog_generation_id;
   auto state = engine_api::ProjectDurableAuthorizationState(lifecycle, binding);
-  const auto sysarch_identity =
-      engine_api::ResolveEngineOwnedSysarchRoleIdentity(context);
-  if (sysarch_identity.ok) {
-    state.engine_owned_sysarch_role_uuid = sysarch_identity.role_uuid;
+  // SB_NATIVE_LOGIN (S4c): ResolveEngineOwnedSysarchRoleIdentity reads the LEGACY bootstrap security catalog from the
+  // database PATH; a native session has no such file read (the SYSARCH role is not part of the native login's
+  // authorization input in this slice: no engine-owned sysarch role UUID is set for a native session).
+  if (context.native_served_facts == nullptr) {
+    const auto sysarch_identity =
+        engine_api::ResolveEngineOwnedSysarchRoleIdentity(context);
+    if (sysarch_identity.ok) {
+      state.engine_owned_sysarch_role_uuid = sysarch_identity.role_uuid;
+    }
   }
   return state;
 }
@@ -1069,6 +1075,8 @@ engine_api::EngineRequestContext DurableProjectionContextForSession(
   context.trust_mode = TrustModeForSession(session);
   context.database_path = session.database_path;
   context.served_route_owner = session.served_route_owner;
+  // SB_NATIVE_LOGIN (S4c): the marker travels so no legacy security / bootstrap read is made for a native session.
+  context.native_served_facts = session.native_served_facts;
   context.database_uuid = session.database_uuid;
   context.principal_uuid = engine_api::EngineUuid{session.effective_user_uuid};
   context.session_uuid = engine_api::EngineUuid{session.session_uuid};
@@ -1089,6 +1097,12 @@ engine_api::DurableAuthorizationMaterializeResult MaterializeDurableAuthorizatio
   engine_api::DurableAuthorizationMaterializeResult result;
   engine_api::EngineLoadSecurityPrincipalLifecycleStateResult loaded;
   const engine_api::EngineSecurityPrincipalLifecycleState* state = retained_state;
+  // SB_NATIVE_AUTH_ADAPTER_DELETE_WHEN_NATIVE_AUTHORIZATION (S4c): a native session never loads legacy security state;
+  // without a retained snapshot it uses the adapter state its login built (none: no durable authorization).
+  if (state == nullptr && session.native_served_facts != nullptr) {
+    state = session.native_login_security_state.get();
+    if (state == nullptr) return result;
+  }
   if (state == nullptr) {
     loaded = engine_api::LoadSecurityPrincipalLifecycleState(context);
     if (!loaded.ok) return result;
@@ -1137,6 +1151,13 @@ bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
                                                   engine_api::EngineSecurityPrincipalLifecycleState*
                                                       loaded_state = nullptr) {
   if (session == nullptr) return true;
+  // SB_NATIVE_LOGIN (S4c): a requested role is a role NAME, resolved against role_name text of the legacy lifecycle
+  // state. A native session's authorization state holds no names (definitions hold no names), so a requested role
+  // by name cannot be activated; refuse it specifically rather than let it fall through to "not found".
+  if (session->native_served_facts != nullptr && !session->requested_role_name.empty()) {
+    if (rejection_detail != nullptr) *rejection_detail = "native_requested_role_unavailable";
+    return false;
+  }
   const auto context = DurableProjectionContextForSession(*session);
   engine_api::EngineSecurityPrincipalLifecycleState local_lifecycle;
   auto* lifecycle_destination =
@@ -1296,6 +1317,9 @@ engine_api::EngineRequestContext EngineContextForSessionProjection(
   context.database_page_size_bytes = DatabasePageSizeBytesForSession(session, engine_state);
   context.principal_uuid = engine_api::EngineUuid{session.effective_user_uuid};
   context.session_uuid = engine_api::EngineUuid{session.session_uuid};
+  // SB_NATIVE_LOGIN (S4c): a native session's context carries the marker, so no legacy security or bootstrap read is made
+  // for it (the legacy readers stat the database path's .sb.* side-file names and read page zero as a legacy header).
+  context.native_served_facts = session.native_served_facts;
   // The parser package was authenticated during HELLO and admitted onto this
   // exact session.  Project that server-owned identity into the engine
   // statement receipt so private binders can bind nested canonical SBLR to
@@ -5763,6 +5787,31 @@ void MarkServerRequestClosedByCursor(ServerSessionRegistry* registry,
   }
 }
 
+// SEARCH_KEY: SB_NATIVE_LOGIN (thin-slice S4c). The client-visible rejection of a NATIVE login. One builder for every
+// native rejection (the engine's generic LOGIN_FAILED for every credential cause, the early throttled rejection, and
+// the infrastructure codes), so the bytes a client sees depend only on the client-visible code and reason, never on
+// the specific internal cause; the cause goes to result->native_login_audit only.
+void RejectNativeLogin(ServerSessionRegistry* registry, const sbps::Frame& request, SessionOperationResult* result,
+                       const std::string& code, const std::string& reason) {
+  result->diagnostics.push_back(AuthDiagnostic(code, "Authentication failed.", reason));
+  AddAttachAdmissionDenied(&result->diagnostics, "auth_handoff", reason);
+  result->payload = EncodeAuthResultPayload("rejected", nullptr, reason);
+  result->frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+  result->accepted = false;
+  registry->channel_state = ServerChannelState::kFailed;
+  RecordFinality(registry, request, {}, {}, "auth_handoff", "rejected", reason);
+}
+
+// The throttle digest: SHA-256 over the database identity and the presented text. Never stored with the text.
+LoginThrottle::Digest NativeLoginNameDigest(const std::array<std::uint8_t, 16>& database, const std::string& name) {
+  std::vector<scratchbird::core::platform::byte> bytes(database.begin(), database.end());
+  bytes.insert(bytes.end(), name.begin(), name.end());
+  LoginThrottle::Digest out{};
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(bytes);
+  if (digest.ok() && digest.digest.size() >= out.size()) std::copy_n(digest.digest.begin(), out.size(), out.begin());
+  return out;
+}
+
 SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
                                          const HostedEngineState& engine_state,
                                          const sbps::Frame& request) {
@@ -5914,21 +5963,58 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
     auth_request.option_envelopes.push_back("tls_transport_denial:" + tls_denial.detail);
     auth_request.option_envelopes.push_back("transport_security_evidence:present");
   }
-  const auto auth_result = engine_api::EngineAuthenticate(auth_request);
-  if (!auth_result.ok || !auth_result.authenticated) {
-    // SB_NATIVE_LOGIN_UNAVAILABLE (Q301): the refusal's cause is its structured `reason` field
-    // (native_login_s4), not the generic credential_rejected the handoff reports for an empty detail.
-    std::string native_login_reason;
-    if (!auth_result.diagnostics.empty() &&
-        auth_result.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE") {
-      for (const auto& field : auth_result.diagnostics.front().fields)
-        if (field.key == "reason") native_login_reason = field.value;
+  // SB_NATIVE_LOGIN_THROTTLE (S4c): BEFORE the loop. A native login that would reach the database loop (one PBKDF2 is
+  // ~0.2 s of loop time) is first checked against the in-memory failed-login throttle; a throttled key is rejected
+  // here, early, with the same generic LOGIN_FAILED a wrong password gets (the client is not told it was throttled;
+  // the throttled rejection is its own internal code in result.native_login_audit).
+  const bool native_login = auth_request.context.native_served_facts != nullptr;
+  LoginThrottle::Digest native_name_digest{};
+  if (native_login) {
+    native_name_digest = NativeLoginNameDigest(auth_request.context.database_uuid.bytes, auth_request.principal_claim);
+    if (NativeLoginThrottle().IsThrottled(auth_request.context.database_uuid.bytes, registry->login_source_key,
+                                          native_name_digest, NativeLoginThrottleNow())) {
+      result.native_login_audit.present = true;
+      result.native_login_audit.throttled = true;
+      result.native_login_audit.internal_code = "SECURITY.AUTHENTICATION.NATIVE_LOGIN_THROTTLED";
+      RejectNativeLogin(registry, request, &result, "SECURITY.AUTHENTICATION.LOGIN_FAILED", "login_failed");
+      return result;
     }
+  }
+  const auto auth_result = engine_api::EngineAuthenticate(auth_request);
+  if (native_login) {
+    // The login reached the loop (or was refused on the way): account for it, and keep the specific cause for the
+    // audit trail only. Only a CREDENTIAL failure counts; infrastructure failures and successes do not.
+    result.native_login_audit.present = true;
+    result.native_login_audit.reached_loop = true;
+    result.native_login_audit.accepted = auth_result.ok && auth_result.authenticated;
+    result.native_login_audit.internal_code = auth_result.native_login_audit.internal_code;
+    result.native_login_audit.principal_uuid = auth_result.native_login_audit.principal_uuid.bytes;
+    if (auth_result.native_login_audit.credential_failure) {
+      NativeLoginThrottle().RecordFailure(auth_request.context.database_uuid.bytes, registry->login_source_key,
+                                          native_name_digest, NativeLoginThrottleNow());
+    } else if (result.native_login_audit.accepted) {
+      NativeLoginThrottle().RecordSuccess(auth_request.context.database_uuid.bytes, registry->login_source_key,
+                                          native_name_digest);
+    }
+  }
+  if (native_login && (!auth_result.ok || !auth_result.authenticated)) {
+    // The client-visible vector is the engine's single diagnostic: its code and its structured `reason` field. For
+    // every credential cause both are the same constants (LOGIN_FAILED / login_failed).
+    std::string code = "SECURITY.AUTHENTICATION.LOGIN_FAILED";
+    std::string reason = "login_failed";
+    if (!auth_result.diagnostics.empty()) {
+      code = auth_result.diagnostics.front().code;
+      reason.clear();
+      for (const auto& field : auth_result.diagnostics.front().fields)
+        if (field.key == "reason") reason = field.value;
+    }
+    RejectNativeLogin(registry, request, &result, code, reason);
+    return result;
+  }
+  if (!auth_result.ok || !auth_result.authenticated) {
     const auto detail = tls_denial.denied
                             ? tls_denial.detail
-                            : !native_login_reason.empty()
-                                  ? native_login_reason
-                                  : EngineDiagnosticDetail(auth_result.diagnostics, "credential_rejected");
+                            : EngineDiagnosticDetail(auth_result.diagnostics, "credential_rejected");
     if (detail == "mfa_evidence_required") {
       result.diagnostics.push_back(AuthDiagnostic("SECURITY.AUTHENTICATION.CHALLENGE_REQUIRED",
                                                   "Additional authentication evidence is required.",
@@ -6025,6 +6111,9 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   session.database_path = FirstOpenDatabasePath(engine_state);
   session.served_route_owner = ServedRouteOwnerFor(engine_state, session.database_path);
   session.native_served_facts = ServedNativeFactsFor(engine_state, session.database_path);
+  // SB_NATIVE_AUTH_ADAPTER_DELETE_WHEN_NATIVE_AUTHORIZATION (S4c): the login's adapter state, kept for the attach's
+  // projection (see ServerSessionRecord::native_login_security_state).
+  if (native_login) session.native_login_security_state = auth_result.durable_security_state;
   session.database_uuid = FirstOpenDatabaseUuid(engine_state);
   ApplyRequestedLanguageProfile(&session, decoded->requested_language);
   ApplyDatabaseHealthToSession(&session, *database);
@@ -6358,10 +6447,28 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
   // lifecycle while still observing the exact same attach authority.
   engine_api::EngineSecurityPrincipalLifecycleState attach_security_state;
   std::string role_group_projection_rejection;
+  // SB_NATIVE_AUTH_ADAPTER_DELETE_WHEN_NATIVE_AUTHORIZATION (S4c): the third legacy load's counterpart. A session
+  // authenticated on a native database projects from the adapter state its login built (no legacy security load, no
+  // file read); a session that lacks it (cannot happen through the handoff) refuses instead of loading legacy state.
+  if (session.native_served_facts != nullptr) {
+    if (!session.native_login_security_state) {
+      result.diagnostics.push_back(AuthDiagnostic("SECURITY.AUTHENTICATION.NATIVE_LOGIN_STATE_ABSENT",
+                                                  "The native login state for this session is absent.",
+                                                  "native_login_state_absent"));
+      AddAttachAdmissionDenied(&result.diagnostics, "attach_database", "native_login_state_absent");
+      result.payload = EncodeAttachResultPayload("rejected", nullptr, "native_login_state_absent");
+      result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+      registry->channel_state = ServerChannelState::kFailed;
+      RecordFinality(registry, request, session.session_uuid, session.auth_context_uuid, "attach_database", "rejected",
+                     "native_login_state_absent");
+      return result;
+    }
+    attach_security_state = *session.native_login_security_state;
+  }
   if (!ApplyDurableAuthorizationProjectionToSession(&session,
                                                     &role_group_projection_rejection,
-                                                    nullptr,
-                                                    &attach_security_state)) {
+                                                    session.native_served_facts != nullptr ? &attach_security_state : nullptr,
+                                                    session.native_served_facts != nullptr ? nullptr : &attach_security_state)) {
     const std::string detail = role_group_projection_rejection.empty()
                                    ? "requested_role_rejected"
                                    : role_group_projection_rejection;
@@ -6411,6 +6518,22 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
   }
   std::string transaction_diagnostic_code;
   std::string transaction_diagnostic_detail;
+  // SB_NATIVE_ATTACH_TRANSACTION_UNAVAILABLE (S4c; owner Q305-Q308: the session's first transaction is S4e's, begun
+  // through the loop with the authenticated principal in header +64). StartAlwaysActiveTransactionForSession ->
+  // EngineBeginTransaction is the LEGACY inventory keyed on the database path and must not run for a native session:
+  // refused here, specifically, after the connect authorization, before anything is begun or written.
+  if (session.native_served_facts != nullptr) {
+    result.diagnostics.push_back(AuthDiagnostic("PARSER_SERVER_IPC.NATIVE_ATTACH_TRANSACTION_UNAVAILABLE",
+                                                "A native session's first transaction is not built yet.",
+                                                "native_attach_requires_s4e"));
+    AddAttachAdmissionDenied(&result.diagnostics, "attach_database", "native_attach_requires_s4e");
+    result.payload = EncodeAttachResultPayload("rejected", nullptr, "native_attach_requires_s4e");
+    result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+    registry->channel_state = ServerChannelState::kFailed;
+    RecordFinality(registry, request, session.session_uuid, session.auth_context_uuid, "attach_database", "rejected",
+                   "native_attach_requires_s4e");
+    return result;
+  }
   if (!StartAlwaysActiveTransactionForSession(&session,
                                               engine_state,
                                               request,
@@ -6532,6 +6655,19 @@ SessionOperationResult HandleEmbeddedSysarchAttach(ServerSessionRegistry* regist
                                                 "cluster_authority_unavailable"));
     AddAttachAdmissionDenied(&result.diagnostics, "embedded_attach", "cluster_authority_unavailable");
     result.payload = EncodeAttachResultPayload("rejected", nullptr, "cluster_authority_unavailable");
+    result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+    registry->channel_state = ServerChannelState::kFailed;
+    return result;
+  }
+  // SB_NATIVE_EMBEDDED_ATTACH_REFUSED (S4c; owner Q285 / Q311: embedded opens stay refused until S4h lifts them on the
+  // same code path). This entry authenticates NOTHING (it synthesizes the "sysarch" principal) and begins the legacy
+  // transaction; for a native database it refuses, specifically, before any of that.
+  if (ServedNativeFactsFor(engine_state, database->database_path) != nullptr) {
+    result.diagnostics.push_back(AuthDiagnostic("PARSER_SERVER_IPC.EMBEDDED_ATTACH_NATIVE_UNAVAILABLE",
+                                                "Embedded attach to a native database is not built yet.",
+                                                "embedded_native_s4h"));
+    AddAttachAdmissionDenied(&result.diagnostics, "embedded_attach", "embedded_native_s4h");
+    result.payload = EncodeAttachResultPayload("rejected", nullptr, "embedded_native_s4h");
     result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
     registry->channel_state = ServerChannelState::kFailed;
     return result;

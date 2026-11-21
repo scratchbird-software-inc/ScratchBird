@@ -1839,20 +1839,25 @@ int main(int argc, char** argv) {
       // SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED / "NodeService".
       // (Was, until Q301: SECURITY.CATALOG.PRIVATE_LIFECYCLE_CORRUPT /
       // bootstrap_security_catalog_invalid from the legacy lifecycle loader.)
+      // S4c (owner Q312, 2026-11-22): NATIVE_LOGIN_UNAVAILABLE was replaced. A native file a server SERVES now logs in
+      // through the loop (native_login). This context is a bare path, with no marker: nobody serves the file in this
+      // process, so there is no loop to read through, and the refusal is its own code,
+      // SECURITY.AUTHENTICATION.NATIVE_DATABASE_NOT_SERVED (reason native_database_not_served). (The old expectation
+      // here: NATIVE_LOGIN_UNAVAILABLE / native_login_s4.) Even a service principal's name would not be reached.
       sec::EngineAuthenticateRequest auth;
       auth.context = Context(path);
       auth.principal_claim = "NodeService";
       auth.credential_evidence = "a-password-that-is-not-checked-1234";
       const auto verdict = sec::EngineAuthenticate(auth);
-      const bool reason_native_login_s4 =
+      const bool reason_not_served =
           !verdict.diagnostics.empty() &&
           std::any_of(verdict.diagnostics.front().fields.begin(), verdict.diagnostics.front().fields.end(),
-                      [](const auto& field) { return field.key == "reason" && field.value == "native_login_s4"; });
+                      [](const auto& field) { return field.key == "reason" && field.value == "native_database_not_served"; });
       Check(!verdict.ok && !verdict.authenticated && !verdict.diagnostics.empty() &&
-                verdict.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE" &&
-                verdict.diagnostics.front().detail.empty() && reason_native_login_s4,
-            "Q301 (until S4): the external path refuses the native file with NATIVE_LOGIN_UNAVAILABLE "
-            "(reason native_login_s4) before any security loader, principal resolution or password check");
+                verdict.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_DATABASE_NOT_SERVED" &&
+                verdict.diagnostics.front().detail.empty() && reason_not_served,
+            "S4c (Q312; was Q301 NATIVE_LOGIN_UNAVAILABLE / native_login_s4): an unserved native file refuses with "
+            "NATIVE_DATABASE_NOT_SERVED (reason native_database_not_served) before any security loader, principal resolution or password check");
     }
     Check(RowUuid(created, "database_language_uuid") == language && RowUuid(created, "page_size_profile_uuid") == profile.uuid,
           "S2: the result reports the language constant and page profile it used");

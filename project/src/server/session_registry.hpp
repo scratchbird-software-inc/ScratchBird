@@ -43,6 +43,8 @@ struct EngineSecurityPrincipalLifecycleState;
 struct EngineTransactionInventoryObservation;
 }
 
+namespace scratchbird::engine::internal_api { struct EngineSecurityPrincipalLifecycleState; }
+
 namespace scratchbird::server {
 
 enum class ServerChannelState {
@@ -160,6 +162,12 @@ struct ServerSessionRecord {
   // database this session attached to, resolved once at attach from the hosted engine state exactly like the
   // owner above; null for a legacy database. Handed only to OpenServedEngine. Process-local, never serialized.
   std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> native_served_facts;
+  // SB_NATIVE_AUTH_ADAPTER_DELETE_WHEN_NATIVE_AUTHORIZATION (S4c, owner Q307): for a session authenticated on a NATIVE
+  // database, the lifecycle-state-shaped adapter built from the login's native material (binary identities,
+  // generations; no names). The attach's authorization projection (the third legacy load's counterpart) reads THIS
+  // snapshot instead of loading a legacy security state; it is the state as of the login (staleness between login and
+  // attach is S4e's to close: the session's own transaction then reads through the loop). Null on a legacy session.
+  std::shared_ptr<const scratchbird::engine::internal_api::EngineSecurityPrincipalLifecycleState> native_login_security_state;
   scratchbird::core::platform::Uuid database_uuid;
   std::string resource_seed_pack_root;
   std::string policy_seed_pack_root;
@@ -723,6 +731,10 @@ RetainAdmittedParserChannelIdentity(const sbps::HelloRequest& hello) noexcept {
 }
 
 struct ServerSessionRegistry {
+  // SB_NATIVE_LOGIN_THROTTLE (S4c): a SERVER-VERIFIED identity of where this connection's login attempts come from (a
+  // remote address once the listener hands one down); empty = unavailable, and then only the per-name throttle entry
+  // applies. Never a parser-claimed value. Nothing sets it today.
+  std::string login_source_key;
   ServerChannelState channel_state = ServerChannelState::kProtocolAdmitted;
   std::map<scratchbird::core::platform::Uuid, ServerSessionRecord> sessions_by_uuid;
   std::map<scratchbird::core::platform::Uuid, ServerSessionRecord> auth_contexts_by_uuid;
@@ -820,7 +832,22 @@ struct ServerTransactionResponseState {
   std::string diagnostic_code;
 };
 
+// SEARCH_KEY: SB_NATIVE_LOGIN_AUDIT (S4c). What a NATIVE login handoff says to the SERVER's own audit trail and to no
+// client: the specific internal cause code (the client sees one generic failure for every credential cause), the
+// principal the presented name resolved to (binary; nil when none), whether the attempt was rejected by the throttle
+// before the loop, and whether it reached the database loop. Never serialized into a payload or a diagnostic; carries
+// no name text and no password. (The server has no durable audit sink for a native database yet: this structure is
+// what a future sink, or a server log line, is fed from.)
+struct ServerNativeLoginAudit {
+  bool present = false;
+  bool accepted = false;
+  bool throttled = false;
+  bool reached_loop = false;
+  std::string internal_code;
+  std::array<std::uint8_t, 16> principal_uuid{};
+};
 struct SessionOperationResult {
+  ServerNativeLoginAudit native_login_audit;
   bool accepted = false;
   // Set by the authoritative execute ingress handler. Serializers use this
   // typed decision instead of attempting to recover the request schema after
