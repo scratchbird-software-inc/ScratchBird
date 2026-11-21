@@ -749,7 +749,7 @@ int ServeMode(const fs::path& path, const std::string& scenario, const p::Uuid& 
       Check(c.Complete(k1, probe.begun_order, srv::NativeLoopCompletion::commit).ok(), "its commit");
       Expect(probe.begun_order, "committed");
 
-      // SB_READ_TXN_SNAPSHOT_SEAM probe: a transaction begun and committed BETWEEN the capture and the read. The capture
+      // (Formerly the SB_READ_TXN_SNAPSHOT_SEAM probe; the seam is closed for snapshot_point by SB_SNAPSHOT_POINT_VIEW, see native_snapshot_view_test.) A transaction begun and committed BETWEEN the capture and the read. The capture
       // (Next, horizons) is a memory value and does not move; the readers take no snapshot parameter, so what they
       // read is committed state at read time, not the capture. (No catalog row is changed here, so the rows are the
       // same either way: the seam is a property of the reader's signature, shown by the capture staying behind.)

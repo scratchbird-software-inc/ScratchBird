@@ -526,15 +526,18 @@ class NativeHostedDatabaseRuntime final {
   // usable real one). Result: the principal's facts or one specific NativeLoginMaterialError.
   static NativeLoginMaterialResult ReadNativeLoginMaterial(std::shared_ptr<NativeHostedDatabaseRuntime>,
       const NativeLoginMaterialRequest&, const core::memory::ScopedProtectedBuffer& password,
-      core::platform::usize password_length, const core::memory::ScopedProtectedBuffer& derived) noexcept;
+      core::platform::usize password_length, const core::memory::ScopedProtectedBuffer& derived,
+      const transaction::mga::VisibilitySnapshot* view = nullptr) noexcept;
 
   // SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework). Read the committed names (role 2) and identifier profiles (role 5)
   // of the single file as values: the same read-only custody operation and fixed-root lease as ReadNativeLoginMaterial,
   // the existing MGA-visibility reader, everything copied out before the lease ends. Takes no lock, writes nothing,
   // issues no session or transaction (SB_NAME_SNAPSHOT_OWN_TXN seam: the committed snapshot until S4e). The names
   // workspace is the SCAN tier, acquired for the call and released at its end.
+  // SB_SNAPSHOT_POINT_VIEW: `view` (both reads) null = committed state as the inventory stands at read time; non-null = the
+  // snapshot value captured earlier decides every row version's visibility (the true snapshot-view reader entry).
   static engine::internal_api::NativeNamesSnapshot ReadNativeNamesSnapshot(std::shared_ptr<NativeHostedDatabaseRuntime>,
-      const NativeNamesSnapshotRequest&) noexcept;
+      const NativeNamesSnapshotRequest&, const transaction::mga::VisibilitySnapshot* view = nullptr) noexcept;
 
   // Transfer the exact initial writer reservation into the private comparison
   // owner, then retire its selected device guards. Retained catalog/grant views,

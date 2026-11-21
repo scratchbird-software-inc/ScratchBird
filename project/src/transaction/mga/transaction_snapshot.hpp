@@ -153,6 +153,29 @@ PublishedSnapshotHorizonResult PublishedSnapshotRetentionHorizons(
 
 TransactionSnapshotResult CreateLocalTransactionSnapshot(const LocalTransactionInventory& inventory,
                                                          LocalTransactionId reader_transaction);
+// SB_SNAPSHOT_POINT_VIEW (owner 2026-11-21: the true snapshot-view reader entry). A visibility snapshot VALUE for a
+// reader that is NOT a transaction (an in-memory snapshot point, like Firebird's system transaction 0 for the
+// authentication read), built from an inventory image once, at the capture. Meaning of each field, by the native TIP
+// state of every slot below Next at the capture:
+//   visible_through_local_transaction_id = Next - 1, a boundary: a creator numbered above it began after the capture
+//     (or is the capture's own successor) and is never visible.
+//   active_excluded  = slots in state active or read_only_active at the capture: they may commit later and must stay
+//     invisible.
+//   in_doubt_excluded = slots in state created (starting), preparing, prepared, committing, rolling_back, limbo or
+//     recovering at the capture: their outcome is not settled, so they stay invisible whatever happens next.
+//   committed / rolled_back / failed_terminal (dead) / archived slots are in neither list: the row version's own creator
+//     state decides (committed -> visible, rolled back or dead -> never visible), and a terminal state cannot change.
+//   reader_transaction is NONE and allow_reader_own_uncommitted is false (the snapshot point owns no rows).
+//   visible_through_commit_sequence is the last commit sequence at the capture, recorded for the caller but NOT a
+//     boundary: commit sequences are rebuilt from commit times at every inventory read, so a later commit whose clock
+//     stamp is earlier would shift them; the order boundary and the two lists above are complete without it.
+struct SnapshotPointVisibilityResult {
+  Status status;
+  VisibilitySnapshot snapshot;
+  DiagnosticRecord diagnostic;
+  bool ok() const { return status.ok(); }
+};
+SnapshotPointVisibilityResult CreateSnapshotPointVisibility(const LocalTransactionInventory& inventory);
 SnapshotVectorResult PublishStatementStableSnapshotVector(
     const LocalTransactionInventory& inventory,
     LocalTransactionId owning_transaction,

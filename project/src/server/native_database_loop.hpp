@@ -61,6 +61,7 @@
 #include "database_ownership.hpp"
 #include "native_hosted_database_runtime.hpp"
 #include "process_crypto_owner.hpp"
+#include "row_version.hpp"
 #include "uuid.hpp"
 
 #include <atomic>
@@ -71,6 +72,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -289,6 +291,10 @@ struct NativeLoopReadTransaction {
   NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::durable_transaction;
   // snapshot_point: the inventory as it stood at the capture (order stays 0, transaction_uuid nil).
   std::uint64_t snapshot_next_transaction = 0, snapshot_oit = 0, snapshot_oat = 0, snapshot_ost = 0;
+  // snapshot_point: the snapshot value the scope's reads decide visibility from (SB_SNAPSHOT_POINT_VIEW): rows whose
+  // creator is numbered above visible_through, or listed active / in doubt at the capture, are invisible; the counts are
+  // the lengths of those two lists.
+  std::uint64_t snapshot_visible_through = 0, snapshot_active_count = 0, snapshot_in_doubt_count = 0;
   std::uint64_t order = 0;
   core::platform::Uuid transaction_uuid;
   core::platform::Uuid owner_key;            // the scope's own key, issued per scope
@@ -351,6 +357,13 @@ class NativeDatabaseLoop final {
   // when the loop is not accepting). It exists so the direct in-loop names path has a real caller before S4c's login
   // (the first real loop work that needs it) exists; S4c's own loop work replaces its use. `work` must not throw.
   bool RunOnLoopThreadForTest(std::function<void()> work);
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+  // SB_TEST_SEAM (snapshot view): from the loop thread only, run `body` with the careful-write sink every loop
+  // transaction request writes through (the same write door and writer), so a test can make a real catalog change
+  // between a scope's capture and its read. False (body not run) off the loop thread, when not serving, or when failed.
+  // Compiled only when a test target defines SB_NATIVE_LOOP_TEST_SEAMS; sb_server_core has no such symbol.
+  bool RunWithTransactionSinkOnLoopThreadForTest(const std::function<void(storage::disk::CarefulWriteSink&)>& body);
+#endif
 
   // SEARCH_KEY: SB_NATIVE_LOOP_TRANSACTIONS (S4d). The direct in-loop login read: the S4a credential read (the same
   // code the submit runs), run now. Callable ONLY on the loop thread (refused with invalid_request elsewhere); it
@@ -376,8 +389,10 @@ class NativeDatabaseLoop final {
   // waits; ON the loop thread it runs the scope directly (login is loop work). `work` may throw (absorbed, reported)
   // and may call the OnLoopThread reads above. Refused (the work does not run, begin.error says why) exactly as the
   // transactions are: not serving, failed, restricted (Q299), queue full.
-  // SB_READ_TXN_SNAPSHOT_SEAM: the reads inside this scope see COMMITTED state as the catalog visibility reader
-  // computes it from the file's inventory at read time, not THIS transaction's snapshot (see the .cpp).
+  // SB_SNAPSHOT_POINT_VIEW (closes the former SB_READ_TXN_SNAPSHOT_SEAM for snapshot_point): inside a snapshot_point scope
+  // the OnLoopThread reads below (login material, names) decide row-version visibility from the snapshot VALUE captured
+  // at the scope's start, not from the inventory at read time. durable_transaction mode (an optional mode) still reads
+  // committed state at read time: it has no captured value (see the .cpp for what remains).
   NativeLoopReadScopeResult RunInEngineReadTransaction(std::function<void(const NativeLoopReadTransaction&)> work,
                                                        NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::snapshot_point);
 
@@ -481,6 +496,9 @@ class NativeDatabaseLoop final {
   ServerProcessCryptoOwner* delegated_crypto_ = nullptr;
   // Created, used and destroyed on the loop thread only.
   std::unique_ptr<Serving> serving_;
+  // SB_SNAPSHOT_POINT_VIEW: the snapshot value of the snapshot-point scope that is running its work right now (loop
+  // thread only; empty outside a scope). ReadLoginMaterialNow and ReadNamesSnapshotNow pass it to the runtime reads.
+  std::optional<transaction::mga::VisibilitySnapshot> scope_view_;
   // SB_NATIVE_NAMES_SOURCE: what the NativeNamesSource handed out in the served facts points at.
   std::shared_ptr<NativeNamesBinding> names_binding_ = std::make_shared<NativeNamesBinding>();
 };

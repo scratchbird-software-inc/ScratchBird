@@ -359,6 +359,41 @@ TransactionSnapshotResult CreateLocalTransactionSnapshot(const LocalTransactionI
   return result;
 }
 
+SnapshotPointVisibilityResult CreateSnapshotPointVisibility(const LocalTransactionInventory& inventory) {
+  SnapshotPointVisibilityResult result;
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    const auto invalid = SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
+                                             "transaction.snapshot_vector.inventory_invalid", reason);
+    result.status = invalid.status;
+    result.diagnostic = invalid.diagnostic;
+    return result;
+  }
+  if (inventory.next_local_transaction_id == 0 || inventory.next_commit_sequence == 0) {
+    const auto invalid = SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
+                                             "transaction.snapshot_vector.inventory_invalid");
+    result.status = invalid.status;
+    result.diagnostic = invalid.diagnostic;
+    return result;
+  }
+  result.status = SnapshotOkStatus();
+  auto& view = result.snapshot;
+  view.allow_reader_own_uncommitted = false;
+  view.recovery_context = false;
+  view.visible_through_local_transaction_id = inventory.next_local_transaction_id - 1;
+  view.visible_through_local_transaction_id_is_boundary = true;
+  view.visible_through_commit_sequence = inventory.next_commit_sequence - 1;
+  view.visible_through_commit_sequence_is_boundary = false;
+  for (const auto& entry : inventory.entries) {
+    if (IsActiveSnapshotExclusion(entry.state))
+      view.active_excluded_local_transaction_ids.push_back(entry.identity.local_id.value);
+    else if (IsInDoubtSnapshotExclusion(entry.state))
+      view.in_doubt_excluded_local_transaction_ids.push_back(entry.identity.local_id.value);
+  }
+  std::sort(view.active_excluded_local_transaction_ids.begin(), view.active_excluded_local_transaction_ids.end());
+  std::sort(view.in_doubt_excluded_local_transaction_ids.begin(), view.in_doubt_excluded_local_transaction_ids.end());
+  return result;
+}
+
 const char* SnapshotVectorKindName(const SnapshotVectorKind kind) {
   switch (kind) {
     case SnapshotVectorKind::statement_stable:

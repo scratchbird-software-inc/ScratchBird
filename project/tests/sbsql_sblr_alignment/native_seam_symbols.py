@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 
-SYMBOLS = ("SetNativeRestartSinkWrapperForTest", "NativeRestartSinkWrapperForTest")
+SYMBOLS = ("SetNativeRestartSinkWrapperForTest", "NativeRestartSinkWrapperForTest", "RunWithTransactionSinkOnLoopThreadForTest")
 
 
 def names(path):

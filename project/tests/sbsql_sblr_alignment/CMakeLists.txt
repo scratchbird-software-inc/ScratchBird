@@ -4471,6 +4471,48 @@ if(Python3_EXECUTABLE)
   set_tests_properties(sbsql_sblr_alignment_native_seam_symbols PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;test_seam" TIMEOUT 600)
 endif()
+# SB_SNAPSHOT_POINT_VIEW_TEST (owner 2026-11-21): the snapshot-point scope's reads decide visibility from the snapshot value
+# captured at the scope's start, not from the inventory at read time. Production-created databases at the five page sizes,
+# served by StartHostedEngine; per size one ctest entry (serving cases + the restricted in-doubt capture), each its own
+# process and temp directory; the strace half checks 0 .sb.* and 0 write-class syscalls on the data descriptor in every
+# read region. Compiles native_database_loop.cpp itself with SB_NATIVE_LOOP_TEST_SEAMS (the write-door seam).
+add_executable(sbsql_sblr_alignment_native_snapshot_view native_snapshot_view_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_snapshot_view sbsql_sblr_alignment_native_serving)
+target_compile_definitions(sbsql_sblr_alignment_native_snapshot_view PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_snapshot_view PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_snapshot_view PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_snapshot_view PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_snapshot_view PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+foreach(sb_snap_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_snap_parts "${sb_snap_size}")
+  list(GET sb_snap_parts 0 sb_snap_bytes)
+  list(GET sb_snap_parts 1 sb_snap_label)
+  add_test(NAME sbsql_sblr_alignment_native_snapshot_view_${sb_snap_label}
+    COMMAND sbsql_sblr_alignment_native_snapshot_view size ${sb_snap_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_snapshot_view_${sb_snap_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_snapshot_view;database_ownership;binary_uuid"
+    TIMEOUT 1800)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_snap_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_snap_parts "${sb_snap_size}")
+    list(GET sb_snap_parts 0 sb_snap_bytes)
+    list(GET sb_snap_parts 1 sb_snap_label)
+    add_test(NAME sbsql_sblr_alignment_native_snapshot_view_strace_${sb_snap_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_snapshot_view_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_snapshot_view>
+        --size ${sb_snap_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_snapshot_view_strace_${sb_snap_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_snapshot_view;strace"
+      TIMEOUT 1800)
+  endforeach()
+endif()
 # SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): owned-source adoption and the
 # native writer over a production create, with real OS/provider fault sweeps.
 add_executable(sbsql_sblr_alignment_native_owned_adoption

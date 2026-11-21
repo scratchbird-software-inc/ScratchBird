@@ -101,21 +101,39 @@ class NativeCatalogVisibilityLeaseReader {
   template<class Lease> static NativeCatalogVisibilityLeaseResult ReadCommitted(const Lease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,u64 image_budget,
       NativeCatalogVisibilityPreparedMemory& w) noexcept {
-    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,nullptr,nullptr,image_budget,w);
+    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,nullptr,nullptr,nullptr,image_budget,w);
   }
   template<class Lease> static NativeCatalogVisibilityLeaseResult ReadCommittedSelected(const Lease& source,
       u16 selector,u16 role,u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
-    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,nullptr,nullptr,nullptr,image_budget,w);
+    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,nullptr,nullptr,nullptr,nullptr,image_budget,w);
+  }
+  // SB_SNAPSHOT_POINT_VIEW: the same two reads, but row-version visibility is decided from a snapshot VALUE captured
+  // earlier (mga::CreateSnapshotPointVisibility, built from the TIP at the capture), NOT from the inventory as it
+  // stands at read time. A transaction that began, committed or rolled back after the capture, or that was active or
+  // in doubt at it, is judged by the view; the same single decision function (ObserveVersionEffectVisibility) runs.
+  // The view must outlive the call. Navigation-page creators must still be committed now (structure, not data).
+  template<class Lease> static NativeCatalogVisibilityLeaseResult ReadCommittedAt(const Lease& source,
+      const transaction::mga::VisibilitySnapshot& view,u16 selector,u16 role,const NativeCatalogRelationBinding& binding,
+      u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
+    const auto borrowed=transaction::mga::BorrowVisibilitySnapshot(view);
+    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,&borrowed,nullptr,nullptr,image_budget,w);
+  }
+  template<class Lease> static NativeCatalogVisibilityLeaseResult ReadCommittedSelectedAt(const Lease& source,
+      const transaction::mga::VisibilitySnapshot& view,u16 selector,u16 role,u64 image_budget,
+      NativeCatalogVisibilityPreparedMemory& w) noexcept {
+    const auto borrowed=transaction::mga::BorrowVisibilitySnapshot(view);
+    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,nullptr,&borrowed,nullptr,nullptr,image_budget,w);
   }
   template<class Lease> static NativeCatalogVisibilityLeaseResult ReadPinned(const Lease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,
       const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,
       u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
-    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,&reader,&pin,image_budget,w);
+    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,nullptr,&reader,&pin,image_budget,w);
   }
  private:
   static NativeCatalogVisibilityLeaseResult Read(const detail::NativeLeaseReadSource& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding* binding,
+      const transaction::mga::VisibilitySnapshotView* point,
       const transaction::mga::TransactionIdentity* reader,const transaction::mga::PublishedSnapshotPin* pin,
       u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
     namespace mga=transaction::mga;namespace catalog=core::catalog;
@@ -151,9 +169,12 @@ class NativeCatalogVisibilityLeaseReader {
       }else{
         if(source.cluster_authority_required){out.source.error=NativeCatalogRelationLeaseError::cluster_requires_authority;fail(E::source_failure);return out;}
         for(const auto n:out.source.navigation_creators)if(!mga::HasCommittedInventoryOutcome(inventory.entries[n])){fail(E::navigation_not_committed);return out;}
-        snapshot.allow_reader_own_uncommitted=false;snapshot.visible_through_local_transaction_id=inventory.next_local_transaction_id-1;
-        snapshot.visible_through_local_transaction_id_is_boundary=true;snapshot.visible_through_commit_sequence=inventory.next_commit_sequence-1;
-        snapshot.visible_through_commit_sequence_is_boundary=true;
+        if(point){snapshot=*point;}
+        else{
+          snapshot.allow_reader_own_uncommitted=false;snapshot.visible_through_local_transaction_id=inventory.next_local_transaction_id-1;
+          snapshot.visible_through_local_transaction_id_is_boundary=true;snapshot.visible_through_commit_sequence=inventory.next_commit_sequence-1;
+          snapshot.visible_through_commit_sequence_is_boundary=true;
+        }
       }
       const auto sources=out.source.row_creators;const auto count=sources.size();
       if(count>w.rows_.size()){fail(E::resource_exhausted);return out;}

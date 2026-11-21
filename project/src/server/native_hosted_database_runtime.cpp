@@ -942,7 +942,7 @@ constexpr std::array<unsigned char,32> kDummyVerifier{0x53,0x42,0x4c,0x4f,0x47,0
 NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
     std::shared_ptr<NativeHostedDatabaseRuntime> owner, const NativeLoginMaterialRequest& request,
     const core::memory::ScopedProtectedBuffer& password, core::platform::usize password_length,
-    const core::memory::ScopedProtectedBuffer& derived) noexcept {
+    const core::memory::ScopedProtectedBuffer& derived, const transaction::mga::VisibilitySnapshot* view) noexcept {
   using E=NativeLoginMaterialError;namespace api=engine::internal_api;namespace db=storage::database;
   namespace c=core::catalog;
   NativeLoginMaterialResult out;
@@ -1012,7 +1012,7 @@ NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
         read.runtime_binding_generation=request.runtime_binding_generation;
         read.maximum_retained_image_bytes=request.limits.maximum_verification_image_bytes;
         read.catalog_selection=api::NativeRuntimeCatalogSelection::discover_selected;
-        const auto observed=api::ReadCommittedNativeRuntimeSecurityOnLease(lease,read,preparation.workspace.security);
+        const auto observed=api::ReadCommittedNativeRuntimeSecurityOnLease(lease,read,preparation.workspace.security,view);
         using R=api::NativeRuntimeSecurityReadError;
         if(!observed.ok()) {
           out.security_error=observed.error;out.source_error=observed.source_error;
@@ -1184,7 +1184,8 @@ bool NativeNameRowLive(const storage::database::NativeCatalogVisibleRow& row) no
 }  // namespace
 
 engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativeNamesSnapshot(
-    std::shared_ptr<NativeHostedDatabaseRuntime> owner, const NativeNamesSnapshotRequest& request) noexcept {
+    std::shared_ptr<NativeHostedDatabaseRuntime> owner, const NativeNamesSnapshotRequest& request,
+    const transaction::mga::VisibilitySnapshot* view) noexcept {
   using E=engine::internal_api::NativeNamesSnapshotError;namespace db=storage::database;namespace c=core::catalog;
   engine::internal_api::NativeNamesSnapshot out;
   try {
@@ -1226,7 +1227,7 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
     if(!operation.ok()) {out.error=E::custody_failure;return out;}
 
     // ---- the committed read, no lock, nothing written; everything is copied out before the lease ends ----
-    // SB_NAME_SNAPSHOT_OWN_TXN: no transaction exists yet (S4e); this is the committed snapshot, as S4a/S4b read it.
+    // SB_NAME_SNAPSHOT_OWN_TXN: no transaction exists yet (S4e). `view` null: committed state at read time; non-null: the captured snapshot value.
     E phase=E::none;
     const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&] {
       auto source=operation.operation.ReadFixedRootWithMemory(request.limits,self.reading_,self.reading_.binding());
@@ -1234,7 +1235,9 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
       const auto& lease=source.lease.source();
       // 1. The configuration relation (role 5): identifier profiles, and the security schema the principals live under.
       {
-        const auto config=db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,5,
+        const auto config=view?db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelectedAt(lease,*view,2,5,
+            request.limits.maximum_verification_image_bytes,prepared.workspace)
+            :db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,5,
             request.limits.maximum_verification_image_bytes,prepared.workspace);
         if(!config.ok()) {
           out.source_error=static_cast<std::uint32_t>(config.error);out.relation_error=static_cast<std::uint32_t>(config.source.error);
@@ -1257,7 +1260,9 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
       }
       // 2. The names relation (role 2; the same workspace: nothing borrowed from the configuration read is used below).
       {
-        const auto names=db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,2,
+        const auto names=view?db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelectedAt(lease,*view,2,2,
+            request.limits.maximum_verification_image_bytes,prepared.workspace)
+            :db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,2,
             request.limits.maximum_verification_image_bytes,prepared.workspace);
         if(!names.ok()) {
           out.source_error=static_cast<std::uint32_t>(names.error);out.relation_error=static_cast<std::uint32_t>(names.source.error);

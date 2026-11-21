@@ -109,7 +109,8 @@ concept NativeRuntimeSecurityLease =
     std::same_as<Lease,storage::database::NativeFixedRootMemoryLease>;
 template<NativeRuntimeSecurityLease Lease>
 NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurityOnLease(
-    const Lease&,const NativeRuntimeSecurityReadRequest&,NativeRuntimeSecurityPreparedMemory&) noexcept;
+    const Lease&,const NativeRuntimeSecurityReadRequest&,NativeRuntimeSecurityPreparedMemory&,
+    const transaction::mga::VisibilitySnapshot* =nullptr) noexcept;
 
 // Preparation allocates only from the real binary-bound retained storage grant,
 // before any device/source guard. No grant, epoch or security authority is issued.
@@ -131,7 +132,8 @@ class NativeRuntimeSecurityPreparedMemory {
       const storage::database::NativeStorageMemoryBinding&) noexcept;
   template<NativeRuntimeSecurityLease Lease>
   friend NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurityOnLease(
-      const Lease&,const NativeRuntimeSecurityReadRequest&,NativeRuntimeSecurityPreparedMemory&) noexcept;
+      const Lease&,const NativeRuntimeSecurityReadRequest&,NativeRuntimeSecurityPreparedMemory&,
+      const transaction::mga::VisibilitySnapshot*) noexcept;
 };
 inline core::platform::usize NativeRuntimeSecurityWorkspaceBytes(
     const storage::database::NativeCatalogRelationMemoryLimits& limits) noexcept {
@@ -185,7 +187,10 @@ inline NativeRuntimeSecurityPreparedResult PrepareNativeRuntimeSecurityRead(
 template<NativeRuntimeSecurityLease Lease>
 inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurityOnLease(
     const Lease& source,
-    const NativeRuntimeSecurityReadRequest& request,NativeRuntimeSecurityPreparedMemory& w) noexcept {
+    const NativeRuntimeSecurityReadRequest& request,NativeRuntimeSecurityPreparedMemory& w,
+    const transaction::mga::VisibilitySnapshot* point_view) noexcept {
+  // SB_SNAPSHOT_POINT_VIEW: `point_view` null = visibility computed from the inventory at read time (startup and every
+  // caller without a snapshot); non-null = BOTH relation reads below judge row versions from that captured value.
   namespace db=storage::database;namespace c=core::catalog;namespace mga=transaction::mga;
   using E=NativeRuntimeSecurityReadError;NativeRuntimeSecurityObservationResult out;
   // Database, catalog root (kind 2) and inventory, the same for either source.
@@ -206,10 +211,14 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
       else if(!rows.source.tree.io.ok()){out.io_failure=rows.source.tree.io;out.io_failure_filespace_uuid=rows.source.tree.io_filespace_uuid;}
       else if(!rows.source.leaf_failure.io.ok()){out.io_failure=rows.source.leaf_failure.io;out.io_failure_filespace_uuid=rows.source.leaf_failure.io_filespace_uuid;}
     };
-    const auto configuration=request.catalog_selection==NativeRuntimeCatalogSelection::discover_selected?
-        db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(source,2,5,request.maximum_retained_image_bytes,w.visibility_):
-        db::NativeCatalogVisibilityLeaseReader::ReadCommitted(source,2,5,request.configuration_relation,
-            request.maximum_retained_image_bytes,w.visibility_);
+    const auto configuration=
+        request.catalog_selection==NativeRuntimeCatalogSelection::discover_selected?
+          (point_view?db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelectedAt(source,*point_view,2,5,request.maximum_retained_image_bytes,w.visibility_)
+               :db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(source,2,5,request.maximum_retained_image_bytes,w.visibility_)):
+          (point_view?db::NativeCatalogVisibilityLeaseReader::ReadCommittedAt(source,*point_view,2,5,request.configuration_relation,
+                    request.maximum_retained_image_bytes,w.visibility_)
+               :db::NativeCatalogVisibilityLeaseReader::ReadCommitted(source,2,5,request.configuration_relation,
+                    request.maximum_retained_image_bytes,w.visibility_));
     out.physical_bytes_read=configuration.source.physical_bytes_read;
     out.source_error=configuration.error;out.relation_error=configuration.source.error;
     out.visibility_diagnostic=configuration.visibility_diagnostic;
@@ -288,10 +297,14 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
     if(!committed_origin(binding.origin_local_transaction_id,binding.origin_transaction_uuid.value)){
       fail(E::origin_not_committed);return out;
     }
-    const auto rows=request.catalog_selection==NativeRuntimeCatalogSelection::discover_selected?
-        db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(source,2,4,request.maximum_retained_image_bytes,w.visibility_):
-        db::NativeCatalogVisibilityLeaseReader::ReadCommitted(source,2,4,request.security_relation,
-            request.maximum_retained_image_bytes,w.visibility_);
+    const auto rows=
+        request.catalog_selection==NativeRuntimeCatalogSelection::discover_selected?
+          (point_view?db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelectedAt(source,*point_view,2,4,request.maximum_retained_image_bytes,w.visibility_)
+               :db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(source,2,4,request.maximum_retained_image_bytes,w.visibility_)):
+          (point_view?db::NativeCatalogVisibilityLeaseReader::ReadCommittedAt(source,*point_view,2,4,request.security_relation,
+                    request.maximum_retained_image_bytes,w.visibility_)
+               :db::NativeCatalogVisibilityLeaseReader::ReadCommitted(source,2,4,request.security_relation,
+                    request.maximum_retained_image_bytes,w.visibility_));
     out.physical_bytes_read+=rows.source.physical_bytes_read;out.source_error=rows.error;
     out.relation_error=rows.source.error;out.visibility_diagnostic=rows.visibility_diagnostic;
     if(!rows.ok()){

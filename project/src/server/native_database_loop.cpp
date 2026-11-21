@@ -31,7 +31,9 @@
 #include "native_hosted_careful_write_sink.hpp"
 #include "node_uuid_issuer.hpp"
 #include "startup_credential_source_adapter.hpp"
+#include "transaction_inventory_reader.hpp"
 #include "transaction_inventory_writer.hpp"
+#include "transaction_snapshot.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -506,7 +508,7 @@ NativeLoginMaterialResult NativeDatabaseLoop::ReadLoginMaterialNow(NativeLoopLog
       read.runtime_binding_generation = serving.runtime_binding_generation;
       read.limits = serving.login_limits;
       result = Host::ReadNativeLoginMaterial(serving.runtime, read, request.password, request.password_length,
-                                             serving.derived);
+                                             serving.derived, scope_view_ ? &*scope_view_ : nullptr);
     }
   } catch (...) {
     result = {};
@@ -585,7 +587,7 @@ engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotN
       NativeNamesSnapshotRequest request;
       request.limits = serving.login_limits;
       request.catalog = serving.name_scan_limits;
-      result = Host::ReadNativeNamesSnapshot(serving.runtime, request);
+      result = Host::ReadNativeNamesSnapshot(serving.runtime, request, scope_view_ ? &*scope_view_ : nullptr);
     }
   } catch (...) {
     result = {};
@@ -593,6 +595,7 @@ engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotN
   }
   return result;
 }
+
 
 bool NativeDatabaseLoop::RunOnLoopThreadForTest(std::function<void()> work) {
   if (on_loop_thread() || !work) return false;
@@ -955,6 +958,17 @@ std::future<NativeLoopTransactionResult> NativeDatabaseLoop::SubmitCompleteAndBe
   return SubmitTransaction<CompleteAndBeginWork>(std::move(request));
 }
 
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+bool NativeDatabaseLoop::RunWithTransactionSinkOnLoopThreadForTest(
+    const std::function<void(storage::disk::CarefulWriteSink&)>& body) {
+  if (!on_loop_thread() || !body || !serving_ || state() != NativeLoopState::serving ||
+      serving_state() == NativeServingState::failed)
+    return false;
+  NativeLoopTransactionResult door;
+  return WithTransactionSink(*serving_, door, [&](storage::disk::CarefulWriteSink& sink) { body(sink); });
+}
+#endif
+
 NativeLoopTransactionResult NativeDatabaseLoop::BeginWorkOnLoopThread(const NativeLoopBeginRequest& request) noexcept {
   if (!on_loop_thread()) {
     NativeLoopTransactionResult refused;
@@ -1003,22 +1017,19 @@ void NativeDatabaseLoop::HandleTransaction(CompleteAndBeginWork& work) noexcept 
 // facts' service_principal_uuid), which this scope must not borrow (L5 is an agent with its own session and
 // transactions), and a principal may not be minted here. So the least-invented value is zero.
 //
-// SB_READ_TXN_SNAPSHOT_SEAM: the reads the work makes (ReadLoginMaterialOnLoopThread, ReadNamesSnapshotOnLoopThread)
-// are NOT bound to this transaction's snapshot. They call the catalog visibility reader's committed entries
-// (ReadCommittedSelected / ReadCommitted), which compute visibility from the inventory read at that moment:
-// "committed through next_transaction - 1 / next_commit_sequence - 1, own uncommitted rows hidden". The reader's
-// only snapshot-bound entry, ReadPinned, needs a mga::TransactionIdentity and a published snapshot pin
-// (mga::PublishedSnapshotPin from the MGA snapshot publisher: descriptor with visible_committed_high_watermark and
-// the active / in-doubt exclusion lists); the native TIP writer publishes no snapshot, a native transaction has no
-// TransactionIdentity of that kind, and neither security read passes a pin. What IS true today: the loop is the only
-// writer and runs the reads right after the begin with nothing interleaved, so "committed now" equals "committed as
-// of this transaction's start" for this scope. That is a property of the loop's serialisation, not of the
-// transaction. A scope that spans loop turns, or a session transaction, needs the snapshot (built from the file's
-// TIP at BEGIN: visible-through order, commit sequence and the active list) passed to the reader.
+// SB_SNAPSHOT_POINT_VIEW (owner 2026-11-21: the true snapshot-view reader entry, built before S4e). In durable_transaction
+// mode the reads the work makes (ReadLoginMaterialOnLoopThread, ReadNamesSnapshotOnLoopThread) are NOT bound to the
+// transaction's snapshot: they use the catalog visibility reader's committed entries, which compute visibility from the
+// inventory read at that moment. That holds, correctly, for isolation read_committed_statement (each read sees the
+// latest committed state) and it relied on the loop's serialisation. A durable scope has no captured value and no
+// own-rows read yet; that is what still remains of the former SB_READ_TXN_SNAPSHOT_SEAM, for S4e.
 // SB_NATIVE_ENGINE_READ_TRANSACTION mode snapshot_point: NO header, NO write, NO transaction number. The capture is
 // the TIP counters (Next and the stored horizons) read through the write door's sink (reads only) once, held in
 // memory for the work, like Firebird's in-memory system transaction 0. Needs only a served, not failed database
-// (restricted included). What a snapshot-bound read still needs from the visibility reader: see SB_READ_TXN_SNAPSHOT_SEAM.
+// (restricted included). THE VIEW: from the same chains read the capture also builds the inventory image and, from it,
+// a visibility snapshot VALUE (mga::CreateSnapshotPointVisibility; fields and TIP states documented there): the reads
+// the work makes through this loop (login material, names) decide every row version's visibility from that value, via
+// the visibility reader's ...At entries, never from the inventory at read time. Memory only; no write.
 NativeLoopReadScopeResult NativeDatabaseLoop::RunSnapshotScopeNow(
     const std::function<void(const NativeLoopReadTransaction&)>& work) noexcept {
   NativeLoopReadScopeResult out;
@@ -1035,6 +1046,7 @@ NativeLoopReadScopeResult NativeDatabaseLoop::RunSnapshotScopeNow(
     auto& serving = *serving_;
     NativeLoopReadTransaction info;
     info.mode = NativeLoopReadScopeMode::snapshot_point;
+    transaction::mga::VisibilitySnapshot captured_view;
     if (!WithTransactionSink(serving, out.begin, [&](storage::disk::CarefulWriteSink& sink) {
           const auto chains = pg::ReadTransactionChainsThroughSink(sink, serving.txn_binding);
           if (!chains.ok()) {
@@ -1042,6 +1054,19 @@ NativeLoopReadScopeResult NativeDatabaseLoop::RunSnapshotScopeNow(
             out.begin.writer_error = pg::TransactionWriterErrorName(chains.error);
             return;
           }
+          const auto built = pg::BuildLocalTransactionInventoryFromImages(chains.page_size, chains.state_images, chains.header_images);
+          if (!built.ok()) {
+            out.begin.error = NativeLoopTransactionError::writer_refused;
+            out.begin.writer_error = pg::TipPageErrorName(built.error);
+            return;
+          }
+          auto view = transaction::mga::CreateSnapshotPointVisibility(built.inventory);
+          if (!view.ok()) {
+            out.begin.error = NativeLoopTransactionError::writer_refused;
+            out.begin.writer_error = "snapshot_view_refused";
+            return;
+          }
+          captured_view = std::move(view.snapshot);
           info.snapshot_next_transaction = chains.counters.next_transaction;
           info.snapshot_oit = chains.counters.horizons.oldest_interesting;
           info.snapshot_oat = chains.counters.horizons.oldest_active;
@@ -1051,6 +1076,16 @@ NativeLoopReadScopeResult NativeDatabaseLoop::RunSnapshotScopeNow(
       return out;
     if (!out.begin.ok()) return out;
     out.snapshot_next_transaction = info.snapshot_next_transaction;
+    info.snapshot_visible_through = captured_view.visible_through_local_transaction_id;
+    info.snapshot_active_count = captured_view.active_excluded_local_transaction_ids.size();
+    info.snapshot_in_doubt_count = captured_view.in_doubt_excluded_local_transaction_ids.size();
+    // The captured value is the scope's view for exactly the work's duration (a scope inside a scope restores the outer).
+    struct ScopeView {
+      std::optional<transaction::mga::VisibilitySnapshot>& slot;
+      std::optional<transaction::mga::VisibilitySnapshot> outer;
+      ~ScopeView() { slot = std::move(outer); }
+    } scope_view{scope_view_, std::move(scope_view_)};
+    scope_view_ = std::move(captured_view);
     if (work) {
       try {
         work(info);
