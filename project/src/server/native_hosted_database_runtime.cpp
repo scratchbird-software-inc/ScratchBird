@@ -1274,8 +1274,6 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
           if(!row.name_payload||!NativeNameRowLive(row)) return true;
           const auto* entry=std::get_if<c::CatalogNameEntryView>(&*row.name_payload);
           if(!entry||entry->lifecycle_state!=c::CatalogNameLifecycle::active||entry->dropped_transaction_uuid) return true;
-          retained+=sizeof(engine::internal_api::NativeNameRowValue)+entry->raw_name_text.size();
-          if(retained>request.maximum_retained_bytes) {over=true;return false;}
           engine::internal_api::NativeNameRowValue v;
           v.name_entry_uuid=entry->name_entry_uuid.value;v.object_uuid=entry->object_uuid.value;v.scope_uuid=entry->scope_uuid.value;
           v.language_uuid=entry->language_uuid.value;v.dialect_profile_uuid=entry->dialect_profile_uuid.value;
@@ -1289,6 +1287,16 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
           v.raw_name_text.assign(entry->raw_name_text.data(),entry->raw_name_text.size());
           v.catalog_generation_id=entry->catalog_generation_id;v.resource_epoch=entry->resource_epoch;
           v.name_resolution_epoch=entry->name_resolution_epoch;
+          // SB_NAMES_SCOPE_ARGUMENT: every live row feeds the digest, the count and the maxima; only the selected ones are kept.
+          out.names_digest+=engine::internal_api::NativeNameRowDigest(v);
+          ++out.visible_entry_count;
+          out.max_catalog_generation_id=std::max(out.max_catalog_generation_id,v.catalog_generation_id);
+          out.max_name_resolution_epoch=std::max(out.max_name_resolution_epoch,v.name_resolution_epoch);
+          const auto& f=request.filter;
+          if(!f.all_scopes&&std::find(f.scopes.begin(),f.scopes.end(),v.scope_uuid)==f.scopes.end()&&
+              std::find(f.objects.begin(),f.objects.end(),v.object_uuid)==f.objects.end()) return true;
+          retained+=sizeof(engine::internal_api::NativeNameRowValue)+v.raw_name_text.size();
+          if(retained>request.maximum_retained_bytes) {over=true;return false;}
           out.rows.push_back(std::move(v));
           return true;
         };
@@ -1308,6 +1316,109 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
     return out;
   } catch(const std::bad_alloc&) {out.rows.clear();out.error=E::memory_failure;return out;}
     catch(...) {out.rows.clear();out.error=E::names_source_failure;return out;}
+}
+
+// SEARCH_KEY: SB_OPEN_SIZED_FROM_FILE (owner Q287, 2026-11-26). See the declaration.
+std::size_t NativeHostedDatabaseRuntime::credential_workspace_bytes() const noexcept {
+  return NativeRuntimePrincipalCredentialWorkspaceBytes(limits_.catalog);
+}
+
+NativeHostedRuntimeError NativeHostedDatabaseRuntime::SizeCredentialTierFromFile(
+    std::shared_ptr<NativeHostedDatabaseRuntime> owner, storage::database::NativeFixedRootMemoryLimits limits) noexcept {
+  namespace db=storage::database;using E=NativeHostedRuntimeError;
+  try {
+    if(!owner) return E::invalid_request;
+    auto& self=*owner;
+    if(!self.SameOwner()) return E::wrong_owner;
+    if(self.entering_||self.read_active_) return E::busy;
+    if(self.closed_||self.writer_retired_) return E::closed;
+    if(!self.writer_adopted_||!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes||
+        limits.maximum_backing_bytes>self.limits_.writer.source.maximum_backing_bytes||
+        limits.maximum_verification_image_bytes>self.limits_.writer.source.maximum_verification_image_bytes) return E::invalid_request;
+    const auto* profile=storage::disk::FindCanonicalFilespacePageProfile(self.limits_.catalog.maximum_profile);
+    if(!profile) return E::invalid_request;
+    self.entering_=true;
+    struct Leave {bool& flag;~Leave(){flag=false;}} leave{self.entering_};
+
+    // The measuring pass: the stream's fixed workspace, no row retained.
+    db::NativeCatalogStreamLimits stream_limits;
+    stream_limits.maximum_profile=self.limits_.catalog.maximum_profile;stream_limits.maximum_devices=self.limits_.catalog.maximum_devices;
+    stream_limits.window_pages=4;stream_limits.history_versions=16384;
+    const auto stream_bytes=db::NativeCatalogStreamWorkspaceBytes(stream_limits);
+    if(!stream_bytes) return E::invalid_request;
+    auto workspace_allocation=self.Acquire(stream_bytes,NativeBootstrapMemoryKind::storage);
+    if(!workspace_allocation.ok()) return E::memory_failure;
+    auto workspace_memory=db::AdoptNativeStorageMemory(StorageBinding(*workspace_allocation.admission.resource),workspace_allocation.admission.resource);
+    if(!workspace_memory.ok()) return E::memory_failure;
+    auto prepared=db::PrepareNativeCatalogStreamRead(stream_limits,workspace_memory.memory,workspace_memory.memory.binding());
+    if(!prepared.ok()) return E::preparation_failure;
+    if(!self.reading_.Matches(self.reading_.binding())) {
+      auto allocation=self.Acquire(self.limits_.writer.source.maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
+      if(!allocation.ok()) return E::memory_failure;
+      auto memory=db::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
+      if(!memory.ok()) return E::memory_failure;
+      self.reading_=std::move(memory.memory);
+    }
+    const auto id=core::uuid::IssueRuntimeIdentityV7();
+    if(!id) return E::custody_failure;
+    auto operation=NativeHostedDatabaseCustody::TryBeginOperation(self.custody_,*id);
+    if(!operation.ok()) return E::custody_failure;
+    std::uint64_t versions=0,leaves=0,tree_pages=0;E phase=E::none;
+    const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&] {
+      auto source=operation.operation.ReadFixedRootWithMemory(limits,self.reading_,self.reading_.binding());
+      if(!source.ok()) {phase=E::custody_failure;return;}
+      const auto& lease=source.lease.source();
+      for(const std::uint16_t role:{std::uint16_t{4},std::uint16_t{5}}) {
+        const auto pass=db::NativeCatalogVisibilityStreamReader::StreamCommittedSelected(lease,2,role,
+            limits.maximum_verification_image_bytes,prepared.workspace,[](const db::NativeCatalogVisibleRow&) {return true;});
+        if(!pass.ok()) {
+          phase=pass.error==db::NativeCatalogStreamError::history_exhausted?E::resource_exhausted:E::catalog_failure;
+          source.lease.Reset();return;
+        }
+        // Stored row versions: one index cell per row, plus the versions of the rows that have history (the registry holds each
+        // of those once), minus those rows' own cell. An upper bound (a version registered twice is counted twice).
+        const std::uint64_t stored=pass.cells-std::min(pass.cells,pass.history_rows)+pass.history_versions;
+        versions=std::max<std::uint64_t>(versions,std::max({pass.versions_examined,pass.cells,stored}));
+        leaves=std::max<std::uint64_t>(leaves,pass.leaf_reads);
+        tree_pages=std::max<std::uint64_t>(tree_pages,pass.tree_page_reads);
+      }
+      source.lease.Reset();
+    });
+    if(!crypto.ok()) return E::crypto_failure;
+    if(phase!=E::none) return phase;
+
+    // The measure plus a quarter of headroom (writes after the open add rows), never below the built-in tier.
+    const auto with_headroom=[](std::uint64_t n,std::uint64_t floor) {return std::max<std::uint64_t>(floor,n+n/4+8);};
+    auto grown=self.limits_.catalog;
+    const std::size_t rows=static_cast<std::size_t>(with_headroom(versions,grown.maximum_rows));
+    const std::size_t base_pages=static_cast<std::size_t>(with_headroom(leaves,grown.maximum_base_pages));
+    const auto shape=db::NativeCatalogNavigationLimitsFor(profile->page_size_bytes,rows);
+    if(!shape.maximum_pages) return E::invalid_request;
+    const std::size_t index_pages=std::max<std::size_t>({self.limits_.catalog.navigation.maximum_pages,shape.maximum_pages,
+        static_cast<std::size_t>(with_headroom(tree_pages,0))});
+    if(rows==grown.maximum_rows&&base_pages==grown.maximum_base_pages&&index_pages==grown.navigation.maximum_pages) return E::none;
+    grown.maximum_rows=grown.maximum_bindings=rows;
+    grown.maximum_base_pages=base_pages;
+    grown.navigation={index_pages,index_pages*profile->page_size_bytes};
+    auto authorization=self.limits_.authorization;
+    authorization.maximum_records=std::max<std::size_t>(authorization.maximum_records,rows);
+    const auto credential_bytes=NativeRuntimePrincipalCredentialWorkspaceBytes(grown);
+    const auto authorization_bytes=engine::internal_api::NativeRuntimeAuthorizationWorkspaceBytes(authorization);
+    if(!credential_bytes||!authorization_bytes) return E::invalid_request;
+    // The old workspaces are released first so the budget is asked for the new size alone; a refusal leaves the open to fail
+    // with the governed-budget code (nothing reads with a half-grown tier: the limits change only after both are held).
+    self.catalog_={};self.authorization_={};
+    for(auto [bytes,destination] : {std::pair{credential_bytes,&self.catalog_},std::pair{authorization_bytes,&self.authorization_}}) {
+      auto got=self.Acquire(bytes,NativeBootstrapMemoryKind::storage);
+      if(!got.ok()) return E::memory_failure;
+      auto adopted=db::AdoptNativeStorageMemory(StorageBinding(*got.admission.resource),got.admission.resource);
+      if(!adopted.ok()) return E::memory_failure;
+      *destination=std::move(adopted.memory);
+    }
+    self.limits_.catalog=grown;self.limits_.authorization=authorization;
+    return E::none;
+  } catch(const std::bad_alloc&) {return E::resource_exhausted;}
+    catch(...) {return E::catalog_failure;}
 }
 
 } // namespace scratchbird::server

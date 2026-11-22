@@ -1059,6 +1059,12 @@ DifferentialCounts DifferentialAgainstModule(const Offline& offline, const p::Uu
   return counts;
 }
 
+#ifdef SB_OPEN_BIG_TEST
+// SB_NATIVE_OPEN_BIG_TEST (2026-11-26): native_open_big_test.cpp includes this file as its harness and supplies the served
+// checks of a file past the old open tiers through this hook (defined in its own anonymous namespace).
+int OpenBigServe(const std::string& state, const Offline& offline, srv::NativeDatabaseLoop& loop, const fs::path& directory,
+                 const p::Uuid& database, const p::Uuid& bootstrap, const p::Uuid& service, double start_ms);
+#endif
 #ifdef SB_NAME_LIST_TEST
 // SB_ENGINE_NAME_LIST_API (Part B S4): native_name_list_test.cpp includes this file as its harness (create, forge, serve,
 // strace driver) and supplies the served checks of ListNames / UuidToName through this hook, defined in its own
@@ -1095,11 +1101,21 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
       return std::make_unique<FailFirstWriteSink>(inner);
     });
   const auto before_start = Snapshot(directory);
+#ifdef SB_OPEN_BIG_TEST
+  if (const char* budget = std::getenv("SB_OPEN_BIG_BUDGET")) srv::SetNativeCatalogSizingBudgetForTest(std::stoull(budget));
+#endif
+  const auto start_clock = std::chrono::steady_clock::now();
   auto started = srv::StartHostedEngine(config, nullptr, &crypto);
+  const double start_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_clock).count();
+  if (std::getenv("SB_OPEN_TIMING")) std::fprintf(stderr, "OPEN_MS %.1f\n", start_ms);
   if (state == "failed") {
     Check(!started.ok() && started.diagnostics.front().code == "DATABASE.RESTART_WRITE_FAILED",
           "the seam produced a REAL failed Restart: " + (started.diagnostics.empty() ? std::string("no diagnostic") : started.diagnostics.front().code));
   } else {
+#ifdef SB_OPEN_BIG_TEST
+    if (!started.ok())
+      for (const auto& field : started.diagnostics.front().fields) std::fprintf(stderr, "  diagnostic field %s=%s\n", field.key.c_str(), field.value.c_str());
+#endif
     Check(started.ok(), "the server serves the file: " + (started.diagnostics.empty() ? std::string() : started.diagnostics.front().code));
   }
   Check(!started.state.database_runtimes.empty() && started.state.database_runtimes.front() &&
@@ -1120,6 +1136,9 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
   env.database = database;
   env.security_scope = offline.security_schema;
   Check(env.facts != nullptr && env.facts->names_source != nullptr, "the loop published served facts with a names source");
+#ifdef SB_OPEN_BIG_TEST
+  return OpenBigServe(state, offline, loop, directory, database, bootstrap, service, start_ms);
+#endif
 #ifdef SB_NAME_LIST_TEST
   return NameListServe(state, offline, loop, directory, before, database, bootstrap, service);
 #endif

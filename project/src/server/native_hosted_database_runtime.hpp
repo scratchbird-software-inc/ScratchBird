@@ -218,6 +218,8 @@ struct NativeNamesSnapshotRequest {
   // two has its own code: names_history_exhausted, names_retained_budget_exceeded).
   std::size_t stream_window_pages = 4, stream_history_versions = 4096;
   std::uint64_t maximum_retained_bytes = 256ull * 1024 * 1024;
+  // SB_NAMES_SCOPE_ARGUMENT: which rows the snapshot retains (all rows are visited; digest, count and maxima cover all).
+  engine::internal_api::NativeNamesReadFilter filter;
 };
 
 // Owning native host resource path. The original route, selected inode,
@@ -505,6 +507,21 @@ class NativeHostedDatabaseRuntime final {
   // snapshot value captured earlier decides every row version's visibility (the true snapshot-view reader entry).
   static engine::internal_api::NativeNamesSnapshot ReadNativeNamesSnapshot(std::shared_ptr<NativeHostedDatabaseRuntime>,
       const NativeNamesSnapshotRequest&, const transaction::mga::VisibilitySnapshot* view = nullptr) noexcept;
+
+  // SEARCH_KEY: SB_OPEN_SIZED_FROM_FILE (owner Q287, 2026-11-26): the hosted CREDENTIAL tier (the security and configuration
+  // relations the L5 identity read, the L5 credential read, every login-material read and the authorization projection
+  // use) is sized from the file instead of fixed at 1024 rows / 1 MiB. One read-only streaming pass over each of the two
+  // relations (no row is retained: memory is the stream's fixed workspace) measures their row versions, leaf pages and
+  // index pages; when the measure plus a quarter of headroom exceeds the tier, the tier (and the authorization projection's
+  // record bound) grows to it and the governed workspaces are acquired again at the new size. A tier never shrinks below the
+  // built-in one, so a normal file is unchanged. Call after OpenAdmission and before the first credential read. A refusal
+  // for size is memory_failure (the governed budget would not admit the larger workspace) or resource_exhausted (the
+  // history registry of the pass filled); nothing is half-grown.
+  static NativeHostedRuntimeError SizeCredentialTierFromFile(std::shared_ptr<NativeHostedDatabaseRuntime>,
+      storage::database::NativeFixedRootMemoryLimits) noexcept;
+  // The credential tier as it stands (after SizeCredentialTierFromFile): rows, leaf pages and workspace bytes.
+  const storage::database::NativeCatalogRelationMemoryLimits& credential_catalog_limits() const noexcept { return limits_.catalog; }
+  std::size_t credential_workspace_bytes() const noexcept;
 
   // Transfer the exact initial writer reservation into the private comparison
   // owner, then retire its selected device guards. Retained catalog/grant views,

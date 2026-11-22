@@ -96,6 +96,11 @@ NativeTransactionSinkWrapperForTest() {
   std::lock_guard<std::mutex> guard(test_transaction_wrapper_mutex);
   return test_transaction_wrapper;
 }
+namespace {
+std::atomic<std::uint64_t> test_catalog_sizing_budget{0};
+}  // namespace
+void SetNativeCatalogSizingBudgetForTest(std::uint64_t bytes) { test_catalog_sizing_budget.store(bytes); }
+std::uint64_t NativeCatalogSizingBudgetForTest() { return test_catalog_sizing_budget.load(); }
 #endif
 
 const char* NativeLoopTransactionErrorName(NativeLoopTransactionError error) noexcept {
@@ -343,24 +348,40 @@ struct OpenLimits {
   db::NativeCatalogCaptureLimits capture;
   NativeOpenVerificationLimits verification;
 };
-bool BuildLimits(std::uint32_t page_size, std::uint64_t total_pages, OpenLimits& out) {
+// SB_OPEN_SIZED_FROM_FILE (owner Q287, 2026-11-19: size the capture and verification limits from the file; done 2026-11-26):
+// the scan tier and the capture bounds below are the FIRST sizing, for a freshly created database; `scale` multiplies every
+// bound that grows with the catalog (relation rows, leaf bytes, navigation and name-tree pages, captured rows, text, name-tree
+// cells, physical pages, transactions). The open retries at the next power of two while the cohort scan or the capture reports a
+// size bound as the cause (CohortFilled below), up to the governed memory budget, so there is no fixed tier: the first sizing is
+// all a normal file ever needs and costs nothing extra.
+bool BuildLimits(std::uint32_t page_size, std::uint64_t total_pages, OpenLimits& out, std::uint32_t scale = 1) {
   const auto* profile = storage::disk::FindCanonicalFilespacePageProfileForSize(page_size);
   if (profile == nullptr || total_pages == 0 || total_pages > UINT64_MAX / 8 / page_size) return false;
   const std::size_t ps = page_size;
   out.budget = db::NativeHostedSourceBackingBytes(ps);
   constexpr auto rows = db::kNativeHostedCatalogRelationMaximumRows;
+  // SB_OPEN_SIZED_FROM_FILE: the verification image bound of the fixed-root reads (the bytes of page images one read may verify
+  // in all) is the file's own size times eight, the rule the open verification already used below, no longer the 8 MiB
+  // backing floor (a names relation past about 5000 rows verifies more than that). It is an accounting bound, not memory:
+  // the workspaces are sized by the scan limits and the capture bounds.
+  const std::uint64_t image_bound = std::max<std::uint64_t>(out.budget, 8 * total_pages * page_size);
   const db::NativeCatalogRelationMemoryLimits credential_catalog{
       profile->uuid, 1, db::NativeHostedCatalogBasePages(ps), rows, rows,
       db::NativeHostedCatalogNavigationLimits(ps)};
-  out.host = NativeHostedRuntimeLimits{{64 * 1024, {out.budget, 32 * 1024 * 1024}}, credential_catalog,
+  out.host = NativeHostedRuntimeLimits{{64 * 1024, {image_bound, 32 * 1024 * 1024}}, credential_catalog,
                                        2 * 1024 * 1024, {rows, 128u, 1000000u}};
-  out.fixed_root = {out.budget, 32 * 1024 * 1024};
-  out.catalog = {out.budget, 12 * 1024 * 1024};
+  out.fixed_root = {image_bound, 32 * 1024 * 1024};
+  out.catalog = {image_bound, 12 * 1024 * 1024};
+  if (scale == 0) return false;
+  const std::size_t sc = scale;
+  const std::size_t scan_rows = db::kNativeCatalogScanRelationMaximumRows * sc;
   out.scan = db::NativeCatalogRelationMemoryLimits{
-      profile->uuid, 1, db::NativeCatalogScanBasePages(ps), db::kNativeCatalogScanRelationMaximumRows,
-      db::kNativeCatalogScanRelationMaximumRows, db::NativeCatalogScanNavigationLimits(ps),
-      db::NativeNameTreeNavigationLimits(ps, db::kNativeCatalogScanRelationMaximumRows)};
-  out.capture = {4096, 8 * 1024 * 1024, 1, 1024, 1024, 128, 8192};
+      profile->uuid, 1, db::NativeCatalogBasePagesFor(ps, db::kNativeCatalogScanRelationMaximumBytes * sc), scan_rows,
+      scan_rows, db::NativeCatalogNavigationLimitsFor(ps, scan_rows), db::NativeNameTreeNavigationLimits(ps, scan_rows)};
+  // The initial-control-page bound follows the file: the allocation map's pages grow with the page count (measured 2026-11-26:
+  // 142 control pages at 8192 pages of 8 KiB, 37 at 4096 of 16 KiB, 4 at 512 of 128 KiB), so a large file is not made to retry.
+  const std::size_t control_pages = 128 * sc + static_cast<std::size_t>(total_pages * 192 / page_size);
+  out.capture = {4096 * sc, 8 * 1024 * 1024 * sc, 1, 1024 * sc, 1024 * sc, control_pages, 8192 * sc};
   // Eight times the file: the verification image bound.
   const std::uint64_t image_budget = 8 * total_pages * page_size;
   out.verification = NativeOpenVerificationLimits{{image_budget, 64 * 1024 * 1024}, 8 * 1024 * 1024};
@@ -726,7 +747,8 @@ class NativeLoopLoginSource final : public engine::internal_api::NativeLoginSour
 
 // SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework "Part A"). Same admission as the login-material read: serving and
 // restricted are allowed (Q309), failed and not-serving are refused before anything is queued.
-std::future<engine::internal_api::NativeNamesSnapshot> NativeDatabaseLoop::SubmitReadNamesSnapshot() {
+std::future<engine::internal_api::NativeNamesSnapshot> NativeDatabaseLoop::SubmitReadNamesSnapshot(
+    const engine::internal_api::NativeNamesReadFilter& filter) {
   using Snapshot = engine::internal_api::NativeNamesSnapshot;
   using Error = engine::internal_api::NativeNamesSnapshotError;
   std::promise<Snapshot> refused;
@@ -737,7 +759,7 @@ std::future<engine::internal_api::NativeNamesSnapshot> NativeDatabaseLoop::Submi
     return refused.get_future();
   };
   if (on_loop_thread()) return refuse(Error::invalid_request);  // the loop never waits on itself
-  NamesWork work{{}};
+  NamesWork work{{}, filter};
   auto future = work.done.get_future();
   {
     std::lock_guard<std::mutex> guard(mutex_);
@@ -750,16 +772,43 @@ std::future<engine::internal_api::NativeNamesSnapshot> NativeDatabaseLoop::Submi
   return future;
 }
 
-engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotOnLoopThread() noexcept {
+engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotOnLoopThread(
+    const engine::internal_api::NativeNamesReadFilter& filter) noexcept {
   if (!on_loop_thread()) {
     engine::internal_api::NativeNamesSnapshot refused;
     refused.error = engine::internal_api::NativeNamesSnapshotError::invalid_request;
     return refused;
   }
-  return ReadNamesSnapshotNow();
+  return ReadNamesSnapshotNow(filter);
 }
 
-engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotNow() noexcept {
+namespace {
+// SB_NAMES_SCOPE_ARGUMENT: the rows a filter retains out of an all-scopes snapshot (the totals are kept as they are).
+engine::internal_api::NativeNamesSnapshot RetainedBy(const engine::internal_api::NativeNamesSnapshot& all,
+                                                      const engine::internal_api::NativeNamesReadFilter& f) {
+  if (f.all_scopes) return all;
+  engine::internal_api::NativeNamesSnapshot out;
+  out.error = all.error;
+  out.source_error = all.source_error;
+  out.relation_error = all.relation_error;
+  out.custody_error = all.custody_error;
+  out.database_uuid = all.database_uuid;
+  out.profiles = all.profiles;
+  out.principal_schemas = all.principal_schemas;
+  out.names_digest = all.names_digest;
+  out.visible_entry_count = all.visible_entry_count;
+  out.max_catalog_generation_id = all.max_catalog_generation_id;
+  out.max_name_resolution_epoch = all.max_name_resolution_epoch;
+  for (const auto& row : all.rows)
+    if (std::find(f.scopes.begin(), f.scopes.end(), row.scope_uuid) != f.scopes.end() ||
+        std::find(f.objects.begin(), f.objects.end(), row.object_uuid) != f.objects.end())
+      out.rows.push_back(row);
+  return out;
+}
+}  // namespace
+
+engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotNow(
+    const engine::internal_api::NativeNamesReadFilter& filter) noexcept {
   using Error = engine::internal_api::NativeNamesSnapshotError;
   engine::internal_api::NativeNamesSnapshot result;
   try {
@@ -773,9 +822,20 @@ engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotN
       NativeNamesSnapshotRequest request;
       request.limits = serving.login_limits;
       request.catalog = serving.name_scan_limits;
-      if (scope_view_ && scope_names_) return *scope_names_;  // the same view, the same rows: no second scan (see scope_names_)
-      result = Host::ReadNativeNamesSnapshot(serving.runtime, request, scope_view_ ? &*scope_view_ : nullptr);
-      if (scope_view_ && result.ok()) scope_names_ = result;
+      // Inside a snapshot-point scope the cache holds the ALL-scopes rows of that view (one scan per scope); a filtered read
+      // is cut from it.
+      if (scope_view_ && scope_names_) return RetainedBy(*scope_names_, filter);  // the same view, the same rows: no second scan (see scope_names_)
+      if (scope_view_) {
+        request.filter = {};
+        result = Host::ReadNativeNamesSnapshot(serving.runtime, request, &*scope_view_);
+        if (result.ok()) {
+          scope_names_ = result;
+          return RetainedBy(result, filter);
+        }
+      } else {
+        request.filter = filter;
+        result = Host::ReadNativeNamesSnapshot(serving.runtime, request, nullptr);
+      }
     }
   } catch (...) {
     result = {};
@@ -800,7 +860,7 @@ bool NativeDatabaseLoop::RunOnLoopThreadForTest(std::function<void()> work) {
 }
 
 void NativeDatabaseLoop::HandleNames(NamesWork& work) noexcept {
-  work.done.set_value(ReadNamesSnapshotNow());
+  work.done.set_value(ReadNamesSnapshotNow(work.filter));
 }
 
 namespace {
@@ -810,7 +870,7 @@ class NativeLoopNamesSource final : public engine::internal_api::NativeNamesSour
  public:
   explicit NativeLoopNamesSource(std::shared_ptr<NativeNamesBinding> binding)
       : binding_(std::move(binding)) {}
-  engine::internal_api::NativeNamesSnapshot Read() const noexcept override {
+  engine::internal_api::NativeNamesSnapshot Read(const engine::internal_api::NativeNamesReadFilter& filter) const noexcept override {
     using Error = engine::internal_api::NativeNamesSnapshotError;
     engine::internal_api::NativeNamesSnapshot closed;
     closed.error = Error::closed;
@@ -821,10 +881,10 @@ class NativeLoopNamesSource final : public engine::internal_api::NativeNamesSour
         std::lock_guard<std::mutex> guard(binding_->mutex);
         loop = binding_->loop;
         if (loop == nullptr) return closed;
-        if (!loop->on_loop_thread()) future = loop->SubmitReadNamesSnapshot();
+        if (!loop->on_loop_thread()) future = loop->SubmitReadNamesSnapshot(filter);
       }
       // On the loop thread the loop is alive by construction: read directly, outside the binding lock.
-      if (!future.valid()) return loop->ReadNamesSnapshotOnLoopThread();
+      if (!future.valid()) return loop->ReadNamesSnapshotOnLoopThread(filter);
       return future.get();
     } catch (...) {
       engine::internal_api::NativeNamesSnapshot failed;
@@ -2113,6 +2173,19 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
     state_.store(NativeLoopState::verifying, std::memory_order_release);
 
     // ---- the L5 identity, from the file (no receipt exists) ----
+    // SB_OPEN_SIZED_FROM_FILE: the hosted credential tier (security and configuration relations) sized from the file before
+    // any credential read; a governed budget that will not admit it is its own refusal.
+    {
+      const auto tier = Host::SizeCredentialTierFromFile(serving.runtime, limits.fixed_root);
+      if (tier != NativeHostedRuntimeError::none)
+        return fail(Refusal(tier == NativeHostedRuntimeError::memory_failure ? "DATABASE.OPEN_NATIVE_CREDENTIAL_BUDGET_EXCEEDED"
+                                                                             : StepCode("credential_tier"),
+                            "credential_tier", {{"error", RuntimeErrorName(tier)}}));
+      const auto& tier_limits = serving.runtime->credential_catalog_limits();
+      serving.facts.open_credential_rows = tier_limits.maximum_rows;
+      serving.facts.open_credential_base_pages = tier_limits.maximum_base_pages;
+      serving.facts.open_credential_workspace_bytes = serving.runtime->credential_workspace_bytes();
+    }
     const auto identity = Host::ReadStartupServiceIdentity(serving.runtime, limits.fixed_root);
     if (!identity.ok())
       return fail(Refusal(StepCode("l5_identity"), "l5_identity",
@@ -2215,7 +2288,21 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
                            {"configuration_error", Num(static_cast<unsigned>(read.configuration().error))},
                            {"agents_error", Num(static_cast<unsigned>(read.agents().error))},
                            {"authorization_error", Num(static_cast<unsigned>(read.authorization().error))}}));
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+    // SB_TEST_SEAM (2026-11-26): SB_OPEN_STAGE_TIMES=1 prints the time between consecutive open stages to stderr (a test binary only).
+    const bool stage_times = std::getenv("SB_OPEN_STAGE_TIMES") != nullptr;
+    auto stage_last = std::chrono::steady_clock::now();
+    const auto stage_mark = [&](const char* name) {
+      const auto now = std::chrono::steady_clock::now();
+      if (stage_times)
+        std::fprintf(stderr, "STAGE %s %.1f ms\n", name, std::chrono::duration<double, std::milli>(now - stage_last).count());
+      stage_last = now;
+    };
+#else
+    const auto stage_mark = [](const char*) {};
+#endif
     const auto step = [&](const char* name, NativeHostedRuntimeError error) -> bool {
+      stage_mark(name);
       if (error == NativeHostedRuntimeError::none) return true;
       fail(Refusal(StepCode(name), name, {{"error", RuntimeErrorName(error)}}));
       return false;
@@ -2241,10 +2328,82 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
                           {{"error", "authenticated_principal_differs_from_binding"}}));
 
     // ---- the catalog, verified ----
-    if (!step("catalog_scan", Host::ReadStartupCatalogs(read, limits.catalog, limits.scan))) return;
-    if (!step("catalog_capture", Host::ReadStartupCatalogs(read, limits.catalog, limits.scan, limits.capture))) return;
+    // SB_OPEN_SIZED_FROM_FILE: the scan and the capture at the file's own size (see BuildLimits). A scan or capture that stops
+    // because a SIZE bound filled is retried at twice the bounds; any other failure ends the open as before. The retry stops
+    // when the governed memory budget will not admit the larger workspaces (memory_failure at a scale above the first, or the
+    // seam's explicit ceiling in a test), with its own code, and when the scan already covers twice the file's pages (then
+    // the bound is not what is wrong and the original refusal stands).
+    std::uint32_t scale = 1;
+    const auto cohort_filled = [&]() {
+      using CE = db::NativeCatalogCohortError;
+      const auto& c = read.catalogs();
+      switch (c.capture_bound) {
+        case db::NativeCatalogCaptureBound::rows:
+        case db::NativeCatalogCaptureBound::text_bytes:
+        case db::NativeCatalogCaptureBound::name_tree_cells:
+        case db::NativeCatalogCaptureBound::physical_pages:
+        case db::NativeCatalogCaptureBound::initial_control_pages:
+        case db::NativeCatalogCaptureBound::transactions: return c.error == CE::resource_exhausted;
+        case db::NativeCatalogCaptureBound::none: break;
+        default: return false;  // filespaces, relation slots, the verification image bound, a missing tree workspace: not a scale
+      }
+      return c.error == CE::resource_exhausted ||
+             (c.error == CE::relation_failure && (c.relation_error == db::NativeCatalogRelationLeaseError::resource_exhausted ||
+                                                  c.visibility_error == db::NativePinnedCatalogReadError::resource_exhausted ||
+                                                  c.relation_tree_error == storage::database::NativeBtreeTreeMemoryError::resource_exhausted)) ||
+             ((c.error == CE::name_tree_failure || c.error == CE::comment_tree_failure) &&
+              c.name_tree_error == storage::database::NativeBtreeTreeMemoryError::resource_exhausted);
+    };
+    const auto sized_catalog_step = [&](const char* name, bool with_capture) -> bool {
+      for (;; scale *= 2) {
+        OpenLimits sized;
+        if (!BuildLimits(request.page_size_bytes, request.total_pages, sized, scale)) {
+          fail(Refusal(StepCode(name), name, {{"error", "limits_overflow"}, {"scale", Num(scale)}}));
+          return false;
+        }
+        const auto bytes = db::NativeCatalogCohortWorkspaceBytes(sized.scan) +
+                           (with_capture ? db::NativeCatalogCaptureWorkspaceBytes(sized.capture) : 0) + sized.catalog.maximum_backing_bytes;
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+        if (const auto ceiling = NativeCatalogSizingBudgetForTest(); ceiling != 0 && bytes > ceiling) {
+          fail(Refusal("DATABASE.OPEN_NATIVE_CATALOG_BUDGET_EXCEEDED", name,
+                       {{"scale", Num(scale)}, {"bytes_required", Num(bytes)}, {"budget", Num(ceiling)}}));
+          return false;
+        }
+#endif
+        stage_mark(name);
+        const auto error = with_capture ? Host::ReadStartupCatalogs(read, limits.catalog, sized.scan, sized.capture)
+                                        : Host::ReadStartupCatalogs(read, limits.catalog, sized.scan);
+        if (error == NativeHostedRuntimeError::none) {
+          serving.name_scan_limits = sized.scan;
+          return true;
+        }
+        if (error == NativeHostedRuntimeError::memory_failure && scale > 1) {
+          fail(Refusal("DATABASE.OPEN_NATIVE_CATALOG_BUDGET_EXCEEDED", name,
+                       {{"scale", Num(scale)}, {"bytes_required", Num(bytes)}, {"budget", "governed_memory"}}));
+          return false;
+        }
+        const bool covers_file = static_cast<std::uint64_t>(sized.scan.maximum_base_pages) >= 2 * request.total_pages;
+        if (error != NativeHostedRuntimeError::catalog_failure || !cohort_filled() || covers_file || scale >= (1u << 20)) {
+          fail(Refusal(StepCode(name), name, {{"error", RuntimeErrorName(error)}, {"scale", Num(scale)}}));
+          return false;
+        }
+      }
+    };
+    if (!sized_catalog_step("catalog_scan", false)) return;
+    if (!sized_catalog_step("catalog_capture", true)) return;
     {
+      OpenLimits final_limits;
+      if (BuildLimits(request.page_size_bytes, request.total_pages, final_limits, scale)) {
+        serving.facts.open_catalog_scale = scale;
+        serving.facts.open_catalog_workspace_bytes = db::NativeCatalogCohortWorkspaceBytes(final_limits.scan) +
+                                                     db::NativeCatalogCaptureWorkspaceBytes(final_limits.capture) +
+                                                     final_limits.catalog.maximum_backing_bytes;
+      }
+    }
+    {
+      stage_mark("catalog_capture_to_metadata");
       const auto metadata = Host::VerifyStartupCatalogMetadata(read);
+      stage_mark("catalog_metadata_verification");
       if (metadata != NativeHostedRuntimeError::none) {
         const auto& m = read.catalog_metadata();
         return fail(Refusal(StepCode("catalog_metadata"), "catalog_metadata",
@@ -2271,7 +2430,9 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
                             {{"error", Num(static_cast<unsigned>(attached.error))}}));
     }
     if (!step("transaction_policies", Host::ResolveStartupTransactionPolicies(read))) return;
+    stage_mark("before_open_verification");
     const auto verified = Host::VerifyStartupDatabaseFile(read, limits.verification);
+    stage_mark("open_verification");
     if (!verified.ok())
       return fail(Refusal(
           verified.error == NativeOpenVerificationError::finding           ? "DATABASE.OPEN_VERIFICATION_FINDING"

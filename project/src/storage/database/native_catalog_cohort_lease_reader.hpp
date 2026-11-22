@@ -6,6 +6,7 @@
 #include "native_lease_read_source.hpp"
 #include "catalog_comment_record_codec.hpp"
 #include <concepts>
+#include <numeric>
 
 namespace scratchbird::storage::database {
 enum class NativeCatalogCohortError {
@@ -51,6 +52,8 @@ struct NativeCatalogCohortInspection {
   bool comment_tree_present=false;
   usize comment_tree_pages=0,comment_tree_cells=0;
   NativeBtreeTreeMemoryError name_tree_error=NativeBtreeTreeMemoryError::none;
+  // SB_OPEN_SIZED_FROM_FILE: the failed relation's own index tree read result (resource_exhausted: the navigation bound filled).
+  NativeBtreeTreeMemoryError relation_tree_error=NativeBtreeTreeMemoryError::none;
   page::NativeBtreeError name_tree_page_error=page::NativeBtreeError::none;
   u16 failing_selector=0,failing_role=0;
   // SB_NATIVE_CATALOG_CAPTURE_BOUND (owner Q219 = yes, 2026-11-15): on
@@ -164,7 +167,7 @@ class NativeCatalogCohortLeaseReader {
         const auto read=NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(source,selector,relation.role,
           allowance,workspace.visibility);
         out.physical_bytes_read+=read.source.physical_bytes_read;
-        out.visibility_error=read.error;out.relation_error=read.source.error;
+        out.visibility_error=read.error;out.relation_error=read.source.error;out.relation_tree_error=read.source.tree.error;
         if(!read.ok())return fail(E::relation_failure);
         if(read.source.retained_image_bytes<source.retained_image_bytes())return fail(E::binding_mismatch);
         const auto additional=read.source.retained_image_bytes-source.retained_image_bytes();
@@ -205,21 +208,57 @@ class NativeCatalogCohortLeaseReader {
           if(const auto b=capture->Append(selector,relation.role,row);b!=Bound::none)return exhausted(b);
         if(capture)if(const auto b=capture->AppendRelation({selector,relation.role,read.source.relation.relation_uuid,
             read.source.relation.index_dependencies});b!=Bound::none)return exhausted(b);
-        if(selector==2&&(relation.role==2||relation.role==page::kNativeCommentRelationRole)){
-          // SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1): at most one
-          // version per (row, creator transaction) in the names and comments
-          // relations, whatever the creator's state. Rows x rows over the
-          // relation's base leaves (heap-free; a few milliseconds on the
-          // default pack).
-          const auto& bases=read.source.bases;
-          for(usize a=0;a<bases.size();++a)for(usize i=0;i<bases[a].page.body.rows.size();++i){
-            const auto& x=bases[a].page.body.rows[i];
-            for(usize b=a;b<bases.size();++b)for(usize j=(b==a?i+1:0);j<bases[b].page.body.rows.size();++j){
-              const auto& y=bases[b].page.body.rows[j];
-              if(x.row_uuid.value==y.row_uuid.value&&x.local_transaction_id==y.local_transaction_id)
-                return fail(E::own_version_repeated);
-            }}
+        // SB_OPEN_VERIFY_SORTED (2026-11-26): the verifications below that were rows x rows, cells x pages and rows x cells are
+        // sorted or counted passes over the index arrays of the read just finished (rebuilt by every read, so they are free
+        // scratch). Same refusals, O(n log n) time, no memory beyond the relation workspace the read already holds.
+        const bool names_or_comments=selector==2&&(relation.role==2||relation.role==page::kNativeCommentRelationRole);
+        auto page_order=std::span<usize>{};
+        auto counters=std::span<usize>{};
+        if(names_or_comments){
+          const auto& bases=read.source.bases;const auto& sources=read.source.row_creators;
+          auto& scratch=workspace.visibility;
+          if(sources.size()>scratch.row_order_.size()||bases.size()>scratch.version_order_.size()||sources.size()>scratch.object_order_.size())
+            return exhausted(Bound::rows);
+          // SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1): at most one version per (row, creator transaction) in the
+          // names and comments relations, whatever the creator's state. Sorted by (row, creator), a repeat is adjacent.
+          const auto row_of=[&](usize n)->const page::RowDataRecordView&{
+            const auto& b=sources[n];return bases[b.catalog_page_index].page.body.rows[b.catalog_row_index];};
+          auto order=scratch.row_order_.first(sources.size());
+          std::iota(order.begin(),order.end(),usize{0});
+          std::sort(order.begin(),order.end(),[&](usize x,usize y){
+            const auto& a=row_of(x);const auto& b=row_of(y);
+            return a.row_uuid.value==b.row_uuid.value?a.local_transaction_id<b.local_transaction_id:a.row_uuid.value<b.row_uuid.value;});
+          for(usize n=1;n<order.size();++n){
+            const auto& a=row_of(order[n-1]);const auto& b=row_of(order[n]);
+            if(a.row_uuid.value==b.row_uuid.value&&a.local_transaction_id==b.local_transaction_id)return fail(E::own_version_repeated);
+          }
+          // The base pages by identity, for the cell-to-page binding.
+          page_order=scratch.version_order_.first(bases.size());
+          std::iota(page_order.begin(),page_order.end(),usize{0});
+          std::sort(page_order.begin(),page_order.end(),[&](usize x,usize y){
+            const auto& a=bases[x].page.header;const auto& b=bases[y].page.header;
+            return a.filespace_uuid==b.filespace_uuid?a.page_number<b.page_number:a.filespace_uuid<b.filespace_uuid;});
+          counters=scratch.object_order_.first(sources.size());
         }
+        const auto find_base=[&](const auto& ref)->usize{
+          const auto& bases=read.source.bases;
+          const auto found=std::lower_bound(page_order.begin(),page_order.end(),ref,[&](usize x,const auto& r){
+            const auto& h=bases[x].page.header;
+            return h.filespace_uuid==r.filespace_uuid?h.page_number<r.page_number:h.filespace_uuid<r.filespace_uuid;});
+          if(found==page_order.end())return std::numeric_limits<usize>::max();
+          const auto& h=bases[*found].page.header;
+          return h.filespace_uuid==ref.filespace_uuid&&h.page_number==ref.page_number?*found:std::numeric_limits<usize>::max();
+        };
+        // The creator slot of a stored row (its ordinal among the relation's row versions: they are sorted by page, row).
+        const auto ordinal_of=[&](usize base_index,usize row_index)->usize{
+          const auto& sources=read.source.row_creators;
+          const auto found=std::lower_bound(sources.begin(),sources.end(),std::pair<usize,usize>{base_index,row_index},
+            [](const auto& c,const std::pair<usize,usize>& k){
+              return c.catalog_page_index==k.first?c.catalog_row_index<k.second:c.catalog_page_index<k.first;});
+          if(found==sources.end()||found->catalog_page_index!=base_index||found->catalog_row_index!=row_index)
+            return std::numeric_limits<usize>::max();
+          return static_cast<usize>(found-sources.begin());
+        };
         if(selector==2&&relation.role==2){
           // SB_NATIVE_NAME_TREES: the two name trees over this relation, read
           // from page zero (kinds 22 and 23) while the relation's base leaves
@@ -246,17 +285,17 @@ class NativeCatalogCohortLeaseReader {
               // leaf, that version in it, the row's identity and creator; the
               // row is a name row (an entry, for the authoritative tree).
               usize cells=0;
+              std::fill(counters.begin(),counters.end(),usize{0});
               for(const auto n:tree.leaves){const auto& page=*tree.pages[n].page;
                 for(const auto& cell:page.cells){
                   ++cells;
                   if(!cell.base_page)return fail(E::name_tree_mismatch);
-                  const NativeReadCatalogLeafImage* base=nullptr;
-                  for(const auto& candidate:bases){const auto& h=candidate.page.header;
-                    if(h.filespace_uuid==cell.base_page->filespace_uuid&&h.page_number==cell.base_page->page_number){
-                      if(h.page_generation!=cell.base_page->page_generation||h.page_size_profile_uuid!=cell.base_page->page_size_profile_uuid)
-                        return fail(E::name_tree_mismatch);
-                      base=&candidate;break;}}
-                  if(!base)return fail(E::name_tree_mismatch);
+                  const auto base_index=find_base(*cell.base_page);
+                  if(base_index==std::numeric_limits<usize>::max())return fail(E::name_tree_mismatch);
+                  const auto* base=&bases[base_index];
+                  {const auto& h=base->page.header;
+                    if(h.page_generation!=cell.base_page->page_generation||h.page_size_profile_uuid!=cell.base_page->page_size_profile_uuid)
+                      return fail(E::name_tree_mismatch);}
                   const auto& metadata=base->page.metadata;
                   const auto found=std::lower_bound(metadata.begin(),metadata.end(),cell.key.version_uuid,
                       [](const auto& m,const Uuid& id){return m.version_uuid<id;});
@@ -265,14 +304,17 @@ class NativeCatalogCohortLeaseReader {
                   if(row.row_uuid.value!=cell.key.row_uuid||row.local_transaction_id!=cell.creator_local_transaction_id)
                     return fail(E::name_tree_mismatch);
                   if(t==0&&!std::holds_alternative<core::catalog::CatalogNameEntryView>(*found->name))return fail(E::name_tree_mismatch);
+                  {const auto ordinal=ordinal_of(base_index,found->row_index);
+                    if(ordinal==std::numeric_limits<usize>::max())return fail(E::name_tree_mismatch);
+                    ++counters[ordinal];}
                   if(capture)if(const auto b=capture->AppendNameTreeCell(static_cast<u16>(t),cell);b!=Bound::none)return exhausted(b);
                 }}
               // Every row version has its cells: one in the authoritative tree
               // per entry, one in the UUID-to-name tree per name row (a deleted
-              // version none). Counted
-              // by scanning the tree for each row (rows x cells, a few
-              // milliseconds on the default pack); with the cell count above
-              // this is a bijection. The page manager rebuild can index it.
+              // version none). The cells were counted per row version as they
+              // were bound above, so this is one pass over the versions
+              // (was rows x cells); with the cell count above this is a
+              // bijection.
               usize expected=0;
               for(usize bi=0;bi<bases.size();++bi)for(const auto& m:bases[bi].page.metadata){
                 if(!m.name)continue;
@@ -280,9 +322,9 @@ class NativeCatalogCohortLeaseReader {
                 // version it retired keeps its stamped ones (owner Q42, N4a).
                 const bool wants=!m.metadata.record.header.deleted&&
                     (t==1||std::holds_alternative<core::catalog::CatalogNameEntryView>(*m.name));
-                usize matches=0;
-                for(const auto n:tree.leaves)for(const auto& cell:tree.pages[n].page->cells)
-                  if(cell.key.version_uuid==m.version_uuid)++matches;
+                const auto ordinal=ordinal_of(bi,m.row_index);
+                if(ordinal==std::numeric_limits<usize>::max())return fail(E::name_tree_mismatch);
+                const usize matches=counters[ordinal];
                 if(matches!=(wants?1u:0u)){
                   // SB_NATIVE_NAME_CASCADE (N4b): a writer puts its base leaves
                   // before its tree pages, so a write that stopped between them
@@ -292,16 +334,15 @@ class NativeCatalogCohortLeaseReader {
                   // version may lack its cell (garbage a sweep removes); any other
                   // creator's may not.
                   bool admitted=false;
-                  if(wants&&matches==0)
-                    for(const auto& creator:read.source.row_creators){
-                      if(creator.catalog_page_index!=bi||creator.catalog_row_index!=m.row_index)continue;
-                      if(creator.inventory_entry_index>=inventory.entries.size())break;
+                  if(wants&&matches==0){
+                    const auto& creator=read.source.row_creators[ordinal];
+                    if(creator.inventory_entry_index<inventory.entries.size()){
                       const auto state=transaction::mga::InventoryVisibilityState(inventory.entries[creator.inventory_entry_index]);
                       admitted=state==transaction::mga::TransactionState::active||
                           state==transaction::mga::TransactionState::rolled_back||
                           state==transaction::mga::TransactionState::failed_terminal;
-                      break;
                     }
+                  }
                   if(!admitted)return fail(E::name_tree_mismatch);
                 }
                 expected+=matches;
@@ -339,17 +380,17 @@ class NativeCatalogCohortLeaseReader {
             const auto& dependencies=tree.pages.front().page->dependencies;
             if(dependencies.index_uuid!=comment_root->object_uuid)return fail(E::comment_tree_failure);
             usize cells=0;
+            std::fill(counters.begin(),counters.end(),usize{0});
             for(const auto n:tree.leaves){const auto& page=*tree.pages[n].page;
               for(const auto& cell:page.cells){
                 ++cells;
                 if(!cell.base_page)return fail(E::comment_tree_mismatch);
-                const NativeReadCatalogLeafImage* base=nullptr;
-                for(const auto& candidate:bases){const auto& h=candidate.page.header;
-                  if(h.filespace_uuid==cell.base_page->filespace_uuid&&h.page_number==cell.base_page->page_number){
-                    if(h.page_generation!=cell.base_page->page_generation||h.page_size_profile_uuid!=cell.base_page->page_size_profile_uuid)
-                      return fail(E::comment_tree_mismatch);
-                    base=&candidate;break;}}
-                if(!base)return fail(E::comment_tree_mismatch);
+                const auto base_index=find_base(*cell.base_page);
+                if(base_index==std::numeric_limits<usize>::max())return fail(E::comment_tree_mismatch);
+                const auto* base=&bases[base_index];
+                {const auto& h=base->page.header;
+                  if(h.page_generation!=cell.base_page->page_generation||h.page_size_profile_uuid!=cell.base_page->page_size_profile_uuid)
+                    return fail(E::comment_tree_mismatch);}
                 const auto& metadata=base->page.metadata;
                 const auto found=std::lower_bound(metadata.begin(),metadata.end(),cell.key.version_uuid,
                     [](const auto& m,const Uuid& id){return m.version_uuid<id;});
@@ -360,6 +401,9 @@ class NativeCatalogCohortLeaseReader {
                   return fail(E::comment_tree_mismatch);
                 const auto comment=core::catalog::DecodeCatalogComment(found->metadata.record.payload);
                 if(!comment.ok())return fail(E::comment_tree_mismatch);
+                {const auto ordinal=ordinal_of(base_index,found->row_index);
+                  if(ordinal==std::numeric_limits<usize>::max())return fail(E::comment_tree_mismatch);
+                  ++counters[ordinal];}
                 const auto key=core::catalog::CatalogCommentTreeKey(comment.record->target_object_uuid,comment.record->language_uuid);
                 if(cell.key.encoded_key.size()!=key.size()||!std::equal(key.begin(),key.end(),cell.key.encoded_key.begin())||
                     !cell.payload.empty())return fail(E::comment_tree_mismatch);
@@ -368,21 +412,20 @@ class NativeCatalogCohortLeaseReader {
             for(usize bi=0;bi<bases.size();++bi)for(const auto& m:bases[bi].page.metadata){
               if(m.metadata.record.header.kind!=core::catalog::CatalogRecordKind::localized_comment)continue;
               const bool wants=!m.metadata.record.header.deleted;
-              usize matches=0;
-              for(const auto n:tree.leaves)for(const auto& cell:tree.pages[n].page->cells)
-                if(cell.key.version_uuid==m.version_uuid)++matches;
+              const auto ordinal=ordinal_of(bi,m.row_index);
+              if(ordinal==std::numeric_limits<usize>::max())return fail(E::comment_tree_mismatch);
+              const usize matches=counters[ordinal];
               if(matches!=(wants?1u:0u)){
                 bool admitted=false;
-                if(wants&&matches==0)
-                  for(const auto& creator:read.source.row_creators){
-                    if(creator.catalog_page_index!=bi||creator.catalog_row_index!=m.row_index)continue;
-                    if(creator.inventory_entry_index>=inventory.entries.size())break;
+                if(wants&&matches==0){
+                  const auto& creator=read.source.row_creators[ordinal];
+                  if(creator.inventory_entry_index<inventory.entries.size()){
                     const auto state=transaction::mga::InventoryVisibilityState(inventory.entries[creator.inventory_entry_index]);
                     admitted=state==transaction::mga::TransactionState::active||
                         state==transaction::mga::TransactionState::rolled_back||
                         state==transaction::mga::TransactionState::failed_terminal;
-                    break;
                   }
+                }
                 if(!admitted)return fail(E::comment_tree_mismatch);
               }
               expected+=matches;

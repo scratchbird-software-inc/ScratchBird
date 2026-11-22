@@ -28,6 +28,7 @@ inline usize NativeCatalogVisibilityWorkspaceBytes(const NativeCatalogRelationMe
   return bytes;
 }
 class NativeCatalogVisibilityLeaseReader;
+class NativeCatalogCohortLeaseReader;
 struct NativeCatalogVisibilityPreparedResult;
 class NativeCatalogVisibilityPreparedMemory {
  public:
@@ -45,6 +46,9 @@ class NativeCatalogVisibilityPreparedMemory {
   std::span<NativeCatalogVisibleRow> rows_;
   std::span<NativeCatalogVisibilityObservation> observations_;
   friend class NativeCatalogVisibilityLeaseReader;
+  // SB_OPEN_VERIFY_SORTED (2026-11-26): the open's cohort scan reuses the index arrays of the read it just finished as scratch
+  // for its sorted and counted passes (they are rebuilt by every read), so the checks need no memory of their own.
+  friend class NativeCatalogCohortLeaseReader;
   friend NativeCatalogVisibilityPreparedResult PrepareNativeCatalogVisibilityRead(
     const NativeCatalogRelationMemoryLimits&,NativeStorageMemory&,const NativeStorageMemoryBinding&) noexcept;
 };

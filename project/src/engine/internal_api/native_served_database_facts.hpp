@@ -67,6 +67,43 @@ struct NativeNameProfileValue {
   core::platform::Uuid profile_uuid;
   std::uint64_t unquoted_fold_mode = 0;  // IdentifierFoldMode: 0 none, 1 upper_ascii, 2 lower_ascii, 3 resource_upper, 4 resource_lower
 };
+// SEARCH_KEY: SB_NAMES_SCOPE_ARGUMENT (2026-11-26). Which name rows a read RETAINS. Every committed name row is still
+// visited (the snapshot's digest, entry count and generation maxima are computed over ALL of them, so they change with any
+// committed name change whatever the filter), but only the rows the filter selects are copied into `rows`: the rows whose
+// scope is in `scopes`, and every row of an object in `objects` (any scope: the scope object's own names, the database
+// object's default name). `all_scopes` (the default) retains every row.
+struct NativeNamesReadFilter {
+  bool all_scopes = true;
+  std::vector<core::platform::Uuid> scopes, objects;
+};
+// The wrapping sum of NativeNameRowDigest over all visited rows is the snapshot's digest (order independent).
+inline std::uint64_t NativeNameRowDigest(const NativeNameRowValue& r) noexcept {
+  const auto fnv = [](std::uint64_t h, const void* data, std::size_t n) {
+    const auto* p = static_cast<const unsigned char*>(data);
+    for (std::size_t i = 0; i < n; ++i) {
+      h ^= p[i];
+      h *= 1099511628211ull;
+    }
+    return h;
+  };
+  std::uint64_t h = 14695981039346656037ull;
+  h = fnv(h, r.name_entry_uuid.bytes.data(), 16);
+  h = fnv(h, r.object_uuid.bytes.data(), 16);
+  h = fnv(h, r.scope_uuid.bytes.data(), 16);
+  h = fnv(h, r.language_uuid.bytes.data(), 16);
+  const std::uint64_t length = r.raw_name_text.size();
+  h = fnv(h, &length, sizeof length);
+  h = fnv(h, r.raw_name_text.data(), r.raw_name_text.size());
+  const std::uint8_t flags[] = {static_cast<std::uint8_t>(r.name_class), static_cast<std::uint8_t>(r.default_for_language),
+                                static_cast<std::uint8_t>(r.default_for_object), static_cast<std::uint8_t>(r.was_quoted),
+                                r.quote_style, static_cast<std::uint8_t>(r.requires_exact_match)};
+  h = fnv(h, flags, sizeof flags);
+  h = fnv(h, &r.object_kind, sizeof r.object_kind);
+  h += 0x9e3779b97f4a7c15ull;  // splitmix64 finaliser: the sum needs well-spread terms
+  h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ull;
+  h = (h ^ (h >> 27)) * 0x94d049bb133111ebull;
+  return h ^ (h >> 31);
+}
 enum class NativeNamesSnapshotError : std::uint8_t {
   none = 0, invalid_request, database_not_serving, database_failed, wrong_owner, busy, closed, preparation_failure,
   custody_failure, crypto_failure, memory_failure, configuration_source_failure, names_source_failure,
@@ -121,7 +158,9 @@ struct NativeNamesSnapshot {
   // Structured detail of an infrastructure refusal (enum numbers, never text).
   std::uint32_t source_error = 0, relation_error = 0, custody_error = 0;
   core::platform::Uuid database_uuid;
-  std::vector<NativeNameRowValue> rows;          // live, active, committed name entries (role 2)
+  std::vector<NativeNameRowValue> rows;          // live, active, committed name entries (role 2) the read's filter retained
+  // SB_NAMES_SCOPE_ARGUMENT: over ALL live committed name entries, whatever the filter retained.
+  std::uint64_t names_digest = 0, visible_entry_count = 0, max_catalog_generation_id = 0, max_name_resolution_epoch = 0;
   std::vector<NativeNameProfileValue> profiles;  // live identifier profiles (role 5)
   // The database's authorization policy bodies' user schema (the principals' name scope); the login (S4c) reads it
   // here instead of a separate resolver. Distinct values, normally exactly one.
@@ -138,7 +177,11 @@ struct NativeNamesSnapshot {
 class NativeNamesSource {
  public:
   virtual ~NativeNamesSource() = default;
-  virtual NativeNamesSnapshot Read() const noexcept = 0;
+  // The all-scopes read (every live committed name row retained): the registry projection and UuidToName, whose answers
+  // are not confined to one scope, use it.
+  NativeNamesSnapshot Read() const noexcept { return Read(NativeNamesReadFilter{}); }
+  // SB_NAMES_SCOPE_ARGUMENT: retain only the rows the filter selects (see NativeNamesReadFilter).
+  virtual NativeNamesSnapshot Read(const NativeNamesReadFilter& filter) const noexcept = 0;
 };
 
 // SB_NATIVE_LOGIN_SOURCE (S4c): defined in native_login_material.hpp (which includes this header).

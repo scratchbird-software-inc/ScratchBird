@@ -163,7 +163,13 @@ NativeLoginSelection SelectNativeLoginPrincipal(const EngineRequestContext& call
   }
   // The principals' name scope and the database's default language come from one names read (a read that ENDS before
   // the resolver's own read starts: a nested runtime read reports busy).
-  const auto snapshot = facts.names_source->Read();
+  // SB_NAMES_SCOPE_ARGUMENT: this read needs the principals' schema (the source reports it whatever the filter) and the
+  // DATABASE object's own default name (its language); no other scope's rows are retained. The resolver's own read after it
+  // is the registry projection (all scopes).
+  NativeNamesReadFilter filter;
+  filter.all_scopes = false;
+  filter.objects.push_back(facts.database_uuid);
+  const auto snapshot = facts.names_source->Read(filter);
   if (!snapshot.ok()) {
     selection.error = NativeLoginSelectionError::names_unavailable;
     selection.names_error = snapshot.error;

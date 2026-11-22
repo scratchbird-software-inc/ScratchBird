@@ -417,7 +417,19 @@ void StreamOneSize(const std::string& self, const fs::path& root, std::uint32_t 
 }
 }  // namespace
 
+#ifdef SB_OPEN_BIG_TEST
+namespace {
+// native_open_big_test.cpp's driver (its own modes first; false = not one of its modes).
+bool OpenBigDriver(int argc, char** argv, int* rc);
+}  // namespace
+#endif
 int main(int argc, char** argv) {
+#ifdef SB_OPEN_BIG_TEST
+  {
+    int rc = 0;
+    if (OpenBigDriver(argc, argv, &rc)) return rc;
+  }
+#endif
   if (argc >= 3 && std::string(argv[1]) == "size") {
     const std::string self = fs::read_symlink("/proc/self/exe").string();
     scratchbird::tests::OwnedTempDirectory artifacts;

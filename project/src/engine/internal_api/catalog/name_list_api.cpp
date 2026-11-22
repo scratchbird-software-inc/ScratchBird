@@ -37,7 +37,7 @@ struct Read {
   EngineApiDiagnostic diagnostic;
   NativeNamesSnapshot snapshot;
 };
-Read ReadRows(const EngineRequestContext& context) {
+Read ReadRows(const EngineRequestContext& context, const NativeNamesReadFilter& filter = {}) {
   Read out;
   if (!NativeServedContext(context)) {
     out.diagnostic = Refusal("CATALOG.NAMES_LIST_NOT_NATIVE", "catalog.names_list.not_native", context);
@@ -60,7 +60,7 @@ Read ReadRows(const EngineRequestContext& context) {
                              NativeNamesSnapshotErrorName(NativeNamesSnapshotError::names_source_failure));
     return out;
   }
-  out.snapshot = facts.names_source->Read();
+  out.snapshot = facts.names_source->Read(filter);
   if (!out.snapshot.ok()) {
     out.diagnostic = Refusal(NativeNamesSnapshotErrorCode(out.snapshot.error), "engine.native.names_snapshot_refused",
                              context, NativeNamesSnapshotErrorName(out.snapshot.error));
@@ -71,45 +71,8 @@ Read ReadRows(const EngineRequestContext& context) {
   return out;
 }
 
-std::uint64_t Fnv(std::uint64_t h, const void* data, std::size_t n) {
-  const auto* p = static_cast<const unsigned char*>(data);
-  for (std::size_t i = 0; i < n; ++i) {
-    h ^= p[i];
-    h *= 1099511628211ull;
-  }
-  return h;
-}
-std::uint64_t Finish(std::uint64_t h) {  // splitmix64 finaliser: the sum below needs well-spread terms
-  h += 0x9e3779b97f4a7c15ull;
-  h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ull;
-  h = (h ^ (h >> 27)) * 0x94d049bb133111ebull;
-  return h ^ (h >> 31);
-}
-std::uint64_t RowDigest(const Row& r) {
-  std::uint64_t h = 14695981039346656037ull;
-  h = Fnv(h, r.name_entry_uuid.bytes.data(), 16);
-  h = Fnv(h, r.object_uuid.bytes.data(), 16);
-  h = Fnv(h, r.scope_uuid.bytes.data(), 16);
-  h = Fnv(h, r.language_uuid.bytes.data(), 16);
-  const std::uint64_t length = r.raw_name_text.size();
-  h = Fnv(h, &length, sizeof length);
-  h = Fnv(h, r.raw_name_text.data(), r.raw_name_text.size());
-  const std::uint8_t flags[] = {static_cast<std::uint8_t>(r.name_class),
-                                static_cast<std::uint8_t>(r.default_for_language),
-                                static_cast<std::uint8_t>(r.default_for_object),
-                                static_cast<std::uint8_t>(r.was_quoted),
-                                r.quote_style,
-                                static_cast<std::uint8_t>(r.requires_exact_match)};
-  h = Fnv(h, flags, sizeof flags);
-  h = Fnv(h, &r.object_kind, sizeof r.object_kind);
-  return Finish(h);
-}
-// Order-independent: the wrapping sum of the per-row digests.
-std::uint64_t SnapshotDigest(const NativeNamesSnapshot& snapshot) {
-  std::uint64_t sum = 0;
-  for (const auto& row : snapshot.rows) sum += RowDigest(row);
-  return sum;
-}
+// (The row digest and the snapshot digest moved to native_served_database_facts.hpp, NativeNameRowDigest: the source computes
+// them over every committed name row while it streams, whatever scope the caller asked for.)
 
 int CompareUuid(const core::platform::Uuid& a, const core::platform::Uuid& b) {
   return std::memcmp(a.bytes.data(), b.bytes.data(), 16);
@@ -193,20 +156,25 @@ EngineListNamesResult EngineListNames(const EngineListNamesRequest& request) {
     after_key.raw_name_text.assign(t.data() + kTokenFixed, t.size() - kTokenFixed);
     after = &after_key;
   }
-  auto read = ReadRows(context);
+  // SB_NAMES_SCOPE_ARGUMENT: only this scope's rows (and the scope object's own names, for scope_is_named) are retained;
+  // the digest, the entry count and the generation maxima are the source's, over every committed name row.
+  NativeNamesReadFilter filter;
+  filter.all_scopes = false;
+  filter.scopes.push_back(request.scope_uuid);
+  filter.objects.push_back(request.scope_uuid);
+  auto read = ReadRows(context, filter);
   if (!read.ok) {
     result.diagnostic = std::move(read.diagnostic);
     return result;
   }
   const auto& rows = read.snapshot.rows;
   result.database_uuid = read.snapshot.database_uuid;
-  result.names_digest = SnapshotDigest(read.snapshot);
-  result.visible_entry_count = rows.size();
-  for (const auto& row : rows) {
-    result.max_catalog_generation_id = std::max(result.max_catalog_generation_id, row.catalog_generation_id);
-    result.max_name_resolution_epoch = std::max(result.max_name_resolution_epoch, row.name_resolution_epoch);
+  result.names_digest = read.snapshot.names_digest;
+  result.visible_entry_count = read.snapshot.visible_entry_count;
+  result.max_catalog_generation_id = read.snapshot.max_catalog_generation_id;
+  result.max_name_resolution_epoch = read.snapshot.max_name_resolution_epoch;
+  for (const auto& row : rows)
     if (row.object_uuid == request.scope_uuid) result.scope_is_named = true;
-  }
 
   // The objects with a name directly in the scope: their entries in the language, else their default entry.
   struct Candidate {
@@ -270,10 +238,11 @@ EngineUuidToNameResult EngineUuidToName(const EngineUuidToNameRequest& request) 
     result.diagnostic = std::move(read.diagnostic);
     return result;
   }
+  // All scopes: the path walk climbs through the ancestors' scopes, which are not known before the walk.
   const auto& rows = read.snapshot.rows;
   result.database_uuid = read.snapshot.database_uuid;
-  result.names_digest = SnapshotDigest(read.snapshot);
-  result.visible_entry_count = rows.size();
+  result.names_digest = read.snapshot.names_digest;
+  result.visible_entry_count = read.snapshot.visible_entry_count;
 
   // The existing path rule (core/catalog WalkCatalogNamePath) over the committed rows: its lookup is the existing
   // CatalogNameIndex (the entry marked default_for_language in the language, else the entry marked default_for_object).

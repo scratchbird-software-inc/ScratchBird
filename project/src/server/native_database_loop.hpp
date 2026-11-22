@@ -159,6 +159,11 @@ void SetNativeTransactionSinkWrapperForTest(
     std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> wrapper);
 std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
 NativeTransactionSinkWrapperForTest();
+// SB_TEST_SEAM (SB_OPEN_SIZED_FROM_FILE, 2026-11-26): an explicit ceiling, in bytes, on the memory the open's catalog scan and
+// capture workspaces may need; 0 (the default) = only the governed memory budget. Lets a test make the budget genuinely
+// exceeded and see DATABASE.OPEN_NATIVE_CATALOG_BUDGET_EXCEEDED without a multi-hundred-megabyte file.
+void SetNativeCatalogSizingBudgetForTest(std::uint64_t bytes);
+std::uint64_t NativeCatalogSizingBudgetForTest();
 #endif
 
 // Immutable facts about the verified, serving-ready database. Copied values
@@ -177,6 +182,12 @@ struct NativeLoopServingFacts {
   // instance left them; this open's Restart already marked their transactions dead). Reported, never repaired here.
   std::uint64_t ledger_orphaned_sessions = 0;
   std::uint64_t verification_workspace_bytes = 0;
+  // SB_OPEN_SIZED_FROM_FILE (2026-11-26): how the open sized itself from the file. catalog_scale: the power of two the
+  // scan and capture bounds ran at (1 = the first sizing); catalog_workspace_bytes: the governed bytes the cohort scan,
+  // the capture and the source backing asked for at that scale; credential_rows / credential_base_pages /
+  // credential_workspace_bytes: the hosted credential tier after the probe (the built-in tier or the file's).
+  std::uint64_t open_catalog_scale = 1, open_catalog_workspace_bytes = 0, open_credential_rows = 0, open_credential_base_pages = 0,
+                open_credential_workspace_bytes = 0;
   // True until Restart has completed: false for serving; true for restricted (not run) and failed
   // (did not complete). (Was, S3b/S3c: always true, Restart did not exist.)
   bool restart_pending = true;
@@ -424,11 +435,14 @@ class NativeDatabaseLoop final {
   // Allowed while the database is `serving` or `restricted` (Q309); refused when `failed` or not serving.
   // The cross-thread submit: the future is always satisfied; a refusal is a snapshot carrying its specific error.
   // Callable from any thread EXCEPT the loop thread (the loop never waits on itself; refused with invalid_request).
-  std::future<engine::internal_api::NativeNamesSnapshot> SubmitReadNamesSnapshot();
+  // SB_NAMES_SCOPE_ARGUMENT: the filter selects the rows retained (default: all scopes); digest and counts cover all rows.
+  std::future<engine::internal_api::NativeNamesSnapshot> SubmitReadNamesSnapshot(
+      const engine::internal_api::NativeNamesReadFilter& filter = {});
   // The direct in-loop path: the same read, run now. Callable ONLY on the loop thread (S4c's login runs as loop
   // work); refused with invalid_request elsewhere. It must not be called while another runtime read is in progress
   // on this thread (the runtime answers `busy`): a loop-work step reads, ends its read, then asks for names.
-  engine::internal_api::NativeNamesSnapshot ReadNamesSnapshotOnLoopThread() noexcept;
+  engine::internal_api::NativeNamesSnapshot ReadNamesSnapshotOnLoopThread(
+      const engine::internal_api::NativeNamesReadFilter& filter = {}) noexcept;
   // SB_NATIVE_NAMES_SOURCE TEST SEAM: run `work` on the loop thread and wait (refused, false, from the loop thread or
   // when the loop is not accepting). It exists so the direct in-loop names path has a real caller before S4c's login
   // (the first real loop work that needs it) exists; S4c's own loop work replaces its use. `work` must not throw.
@@ -538,6 +552,7 @@ class NativeDatabaseLoop final {
   };
   struct NamesWork {
     std::promise<engine::internal_api::NativeNamesSnapshot> done;
+    engine::internal_api::NativeNamesReadFilter filter;
   };
   struct TestWork {
     std::function<void()> work;
@@ -613,7 +628,7 @@ class NativeDatabaseLoop final {
   std::future<NativeLoopTransactionResult> SubmitTransaction(Request request);
   // A writer failure (a write or sync failed): the database is now `failed` (reopen), as after a failed Restart.
   void NoteTransactionWriterFailure() noexcept;
-  engine::internal_api::NativeNamesSnapshot ReadNamesSnapshotNow() noexcept;  // loop thread only
+  engine::internal_api::NativeNamesSnapshot ReadNamesSnapshotNow(const engine::internal_api::NativeNamesReadFilter& filter) noexcept;  // loop thread only
   struct Serving;  // loop-thread-only state
   // S3d: the single transaction-store Restart, on this thread, under the custody write operation.
   // Returns false with `refusal` set when the open must be refused (nothing written, or a broken
