@@ -18,6 +18,7 @@
 #include "sbps.hpp"
 #include "listener_orchestrator.hpp"
 #include "server_agent_runtime.hpp"
+#include "catalog/name_list_api.hpp"
 
 #include <functional>
 #include <vector>
@@ -88,6 +89,23 @@ std::vector<std::uint8_t> ResolveNamePublicFrameForEmbedded(
     const sbps::Frame& frame,
     const HostedEngineState& engine_state,
     ServerSessionRegistry* session_registry);
+// SB_ENGINE_NAME_LIST_API (Part B S4): the engine's ListNames and UuidToName for an in-process caller, with no frame
+// and no wire schema (S5 owns the wire). The session is looked up by UUID in the registry; the engine context is its
+// native served database's (a session of a database that is not native served is refused by the engine with
+// CATALOG.NAMES_LIST_NOT_NATIVE). Returns the engine's result unchanged; a session that is not in the registry is a
+// refusal with CATALOG.NAMES_LIST_SESSION_UNKNOWN.
+scratchbird::engine::internal_api::EngineListNamesResult ListNamesForEmbedded(
+    const ServerSessionRegistry* session_registry,
+    const scratchbird::core::platform::Uuid& session_uuid,
+    const scratchbird::core::platform::Uuid& scope_uuid,
+    const scratchbird::core::platform::Uuid& language_uuid,
+    const std::string& continuation,
+    std::uint32_t max_entries);
+scratchbird::engine::internal_api::EngineUuidToNameResult UuidToNameForEmbedded(
+    const ServerSessionRegistry* session_registry,
+    const scratchbird::core::platform::Uuid& session_uuid,
+    const scratchbird::core::platform::Uuid& object_uuid,
+    const scratchbird::core::platform::Uuid& language_uuid);
 std::vector<std::uint8_t> RenderUuidPublicFrameForEmbedded(
     const sbps::Frame& frame,
     const ServerSessionRegistry* session_registry);

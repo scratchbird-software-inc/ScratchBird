@@ -12506,6 +12506,39 @@ foreach(sb_name_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_resolve;database_ownership;binary_uuid"
     TIMEOUT 1800)
 endforeach()
+# SB_NATIVE_NAME_LIST_TEST (Part B S4): ListNames / UuidToName on production-created native databases. The file
+# native_name_list_test.cpp includes native_name_resolve_test.cpp as its harness; the strace driver is the resolve one,
+# pointed at this binary (it runs create / forge / serve children, and the serve child is this test's checks).
+add_executable(sbsql_sblr_alignment_native_name_list native_name_list_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_name_list sbsql_sblr_alignment_native_serving)
+target_compile_definitions(sbsql_sblr_alignment_native_name_list PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_name_list PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_name_list PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api
+  ${PROJECT_SOURCE_DIR}/tests/sbsql_sblr_alignment)
+target_link_libraries(sbsql_sblr_alignment_native_name_list PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto sb_parser_name_resolution)
+target_compile_definitions(sbsql_sblr_alignment_native_name_list PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+foreach(sb_list_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_list_parts "${sb_list_size}")
+  list(GET sb_list_parts 0 sb_list_bytes)
+  list(GET sb_list_parts 1 sb_list_label)
+  add_test(NAME sbsql_sblr_alignment_native_name_list_${sb_list_label}
+    COMMAND sbsql_sblr_alignment_native_name_list size ${sb_list_bytes} serving restricted failed)
+  add_test(NAME sbsql_sblr_alignment_native_name_list_forged_${sb_list_label}
+    COMMAND sbsql_sblr_alignment_native_name_list size ${sb_list_bytes} names dead uncommitted)
+  add_test(NAME sbsql_sblr_alignment_native_name_list_many_${sb_list_label}
+    COMMAND sbsql_sblr_alignment_native_name_list size ${sb_list_bytes} many flow)
+  set_tests_properties(sbsql_sblr_alignment_native_name_list_${sb_list_label}
+      sbsql_sblr_alignment_native_name_list_forged_${sb_list_label}
+      sbsql_sblr_alignment_native_name_list_many_${sb_list_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_list;database_ownership;binary_uuid"
+    TIMEOUT 1800)
+endforeach()
 if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   foreach(sb_name_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     string(REPLACE ":" ";" sb_name_parts "${sb_name_size}")
@@ -12524,6 +12557,20 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
     set_tests_properties(sbsql_sblr_alignment_native_name_resolve_strace_${sb_name_label}
         sbsql_sblr_alignment_native_name_resolve_strace_forged_${sb_name_label} PROPERTIES
       LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_resolve;strace"
+      TIMEOUT 1800)
+    add_test(NAME sbsql_sblr_alignment_native_name_list_strace_${sb_name_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_name_resolve_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_name_list>
+        --serving-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>
+        --size ${sb_name_bytes} --states serving restricted)
+    add_test(NAME sbsql_sblr_alignment_native_name_list_strace_forged_${sb_name_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_name_resolve_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_name_list>
+        --serving-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>
+        --size ${sb_name_bytes} --states names dead)
+    set_tests_properties(sbsql_sblr_alignment_native_name_list_strace_${sb_name_label}
+        sbsql_sblr_alignment_native_name_list_strace_forged_${sb_name_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_list;strace"
       TIMEOUT 1800)
   endforeach()
 endif()

@@ -37,6 +37,7 @@
 #include "catalog/name_registry.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/name_list_api.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/relation_projection_view.hpp"
 #include "catalog/relation_descriptor_projection.hpp"
@@ -4651,6 +4652,55 @@ std::vector<std::uint8_t> ResolveNamePublicFrameForEmbedded(
     const HostedEngineState& engine_state,
     ServerSessionRegistry* session_registry) {
   return ResolveNamePublicFrame(frame, engine_state, session_registry);
+}
+
+namespace {
+// SB_ENGINE_NAME_LIST_API: the context of a registered session whose database is native served; nullopt (and a
+// refusal) when the session is not registered. The engine refuses a context without native facts.
+bool NameListContext(const ServerSessionRegistry* registry, const scratchbird::core::platform::Uuid& session_uuid,
+                     engine_api::EngineApiRequest* request, engine_api::EngineApiDiagnostic* refusal) {
+  const ServerSessionRecord* session = nullptr;
+  if (registry != nullptr) {
+    const auto found = registry->sessions_by_uuid.find(session_uuid);
+    if (found != registry->sessions_by_uuid.end()) session = &found->second;
+  }
+  if (session == nullptr) {
+    *refusal = engine_api::MakeEngineApiDiagnostic("CATALOG.NAMES_LIST_SESSION_UNKNOWN",
+                                                   "catalog.names_list.session_unknown", {}, true);
+    return false;
+  }
+  request->context.trust_mode = session->embedded_in_process ? engine_api::EngineTrustMode::embedded_in_process
+                                                             : engine_api::EngineTrustMode::server_isolated;
+  request->context.database_uuid = session->database_uuid;
+  request->context.session_uuid.bytes = session->session_uuid;
+  request->context.native_served_facts = session->native_served_facts;
+  return true;
+}
+}  // namespace
+
+engine_api::EngineListNamesResult ListNamesForEmbedded(
+    const ServerSessionRegistry* session_registry, const scratchbird::core::platform::Uuid& session_uuid,
+    const scratchbird::core::platform::Uuid& scope_uuid, const scratchbird::core::platform::Uuid& language_uuid,
+    const std::string& continuation, std::uint32_t max_entries) {
+  engine_api::EngineListNamesRequest request;
+  engine_api::EngineListNamesResult result;
+  if (!NameListContext(session_registry, session_uuid, &request, &result.diagnostic)) return result;
+  request.scope_uuid = scope_uuid;
+  request.language_uuid = language_uuid;
+  request.continuation = continuation;
+  request.max_entries = max_entries;
+  return engine_api::EngineListNames(request);
+}
+
+engine_api::EngineUuidToNameResult UuidToNameForEmbedded(
+    const ServerSessionRegistry* session_registry, const scratchbird::core::platform::Uuid& session_uuid,
+    const scratchbird::core::platform::Uuid& object_uuid, const scratchbird::core::platform::Uuid& language_uuid) {
+  engine_api::EngineUuidToNameRequest request;
+  engine_api::EngineUuidToNameResult result;
+  if (!NameListContext(session_registry, session_uuid, &request, &result.diagnostic)) return result;
+  request.object_uuid = object_uuid;
+  request.language_uuid = language_uuid;
+  return engine_api::EngineUuidToName(request);
 }
 
 std::vector<std::uint8_t> RenderUuidPublicFrameForEmbedded(

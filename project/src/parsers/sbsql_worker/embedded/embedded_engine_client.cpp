@@ -12,6 +12,8 @@
 #include "embedded/embedded_engine_client.hpp"
 #include "core/uuid/uuid.hpp"
 #include "name_resolution/name_resolution.hpp"
+#include "core/catalog/catalog_language.hpp"
+#include "engine/internal_api/catalog/name_list_api.hpp"
 #include "wire/parser_server_ipc/binary_identity_io.hpp"
 #include "wire/parser_server_ipc/disconnect_result_validation.hpp"
 #include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
@@ -44,6 +46,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -589,6 +592,111 @@ struct EmbeddedEngineClient::Impl {
     return true;
   }
 
+  // SEARCH_KEY: SB_PARSER_NAME_LIST (Part B step S4). List-and-compare resolution on a NATIVE served database: the
+  // parser asks the engine for the names of a scope in a language (ListNames, in-process: no frame, no wire schema),
+  // caches the pages per (scope, language), compares them with the SBsql rules of parsers/shared/name_resolution, and
+  // then sends the engine the matched entry's STORED spelling. Fresh on every call: a one-entry probe of the database
+  // root returns the names digest, and a changed digest drops the cached pages and the resolved search path.
+  // A session of a database that is not native served, a refused list (any code), a miss, an ambiguity, or a name the
+  // stored spelling cannot carry in dotted text: nullopt, and the caller sends the typed name exactly as before.
+  struct NameListState {
+    explicit NameListState(scratchbird::parsers::name_resolution::PageFetcher fetch)
+        : source(std::move(fetch),
+                 [](std::string_view tag) -> std::optional<scratchbird::parsers::name_resolution::Uuid16> {
+                   const auto language = scratchbird::core::catalog::CatalogLanguageForTag(tag);
+                   if (!language) return std::nullopt;
+                   scratchbird::parsers::name_resolution::Uuid16 out{};
+                   std::copy(language->bytes.begin(), language->bytes.end(), out.begin());
+                   return out;
+                 },
+                 [](std::uint16_t kind) { return scratchbird::engine::internal_api::NameRegistryObjectClassText(kind); }),
+          cache(source) {}
+    scratchbird::parsers::name_resolution::ListedNameSource source;
+    scratchbird::parsers::name_resolution::NameListCache cache;
+    std::optional<std::uint64_t> digest;
+    std::optional<std::vector<scratchbird::parsers::name_resolution::Uuid16>> search_path;
+  };
+  std::map<scratchbird::core::platform::Uuid, std::unique_ptr<NameListState>> name_list_state;
+
+  std::optional<std::string> ResolveByList(const SessionContext& session, std::string_view presented_name, bool quoted,
+                                           std::string_view object_class) {
+    namespace nr = scratchbird::parsers::name_resolution;
+    if (session.session_uuid.is_nil() || session.database_uuid.is_nil()) return std::nullopt;
+    const auto components = nr::SplitPresentedName(presented_name, quoted);
+    if (!components) return std::nullopt;
+    auto found = name_list_state.find(session.session_uuid);
+    if (found == name_list_state.end()) {
+      const auto session_uuid = session.session_uuid;
+      nr::PageFetcher fetch = [this, session_uuid](const nr::Uuid16& scope, const nr::Uuid16& language,
+                                                   const std::string& continuation, std::uint32_t max_entries) {
+        nr::ListedPage page;
+        scratchbird::core::platform::Uuid scope_uuid, language_uuid;
+        std::copy(scope.begin(), scope.end(), scope_uuid.bytes.begin());
+        std::copy(language.begin(), language.end(), language_uuid.bytes.begin());
+        const auto listed = scratchbird::server::ListNamesForEmbedded(&registry, session_uuid, scope_uuid, language_uuid,
+                                                                       continuation, max_entries);
+        page.ok = listed.ok;
+        page.refusal_code = listed.diagnostic.code;
+        page.more = listed.more;
+        page.next_continuation = listed.next_continuation;
+        page.names_digest = listed.names_digest;
+        for (const auto& e : listed.entries) {
+          nr::ListedName name;
+          std::copy(e.name_entry_uuid.bytes.begin(), e.name_entry_uuid.bytes.end(), name.entry.begin());
+          std::copy(e.object_uuid.bytes.begin(), e.object_uuid.bytes.end(), name.object.begin());
+          std::copy(e.language_uuid.bytes.begin(), e.language_uuid.bytes.end(), name.language.begin());
+          name.name = e.name;
+          name.object_kind = e.object_kind;
+          name.name_class = e.name_class;
+          name.default_for_language = e.default_for_language;
+          name.default_for_object = e.default_for_object;
+          name.is_fallback = e.is_fallback;
+          name.was_quoted = e.was_quoted;
+          page.entries.push_back(std::move(name));
+        }
+        return page;
+      };
+      found = name_list_state.emplace(session.session_uuid, std::make_unique<NameListState>(std::move(fetch))).first;
+    }
+    auto& state = *found->second;
+    nr::Uuid16 root{};
+    std::copy(session.database_uuid.bytes.begin(), session.database_uuid.bytes.end(), root.begin());
+    nr::ResolutionContext context;
+    context.default_root = root;
+    context.session_language = session.language_tag.empty() ? std::string("en") : session.language_tag;
+    context.default_language = session.default_language.empty() ? std::string("en") : session.default_language;
+    std::uint64_t digest = 0;
+    if (!state.source.Probe(root, context.session_language, &digest)) return std::nullopt;
+    if (state.digest && *state.digest != digest) {
+      state.cache.OnTransactionEnd();
+      state.search_path.reset();
+    }
+    state.digest = digest;
+    state.source.ResetFailure();
+    const auto& rule = nr::SbsqlNameFoldRule();
+    if (!state.search_path) {
+      // The session's search path is held as schema UUIDs, resolved once per snapshot (owner 2026-11-24).
+      std::vector<nr::Uuid16> resolved;
+      for (const auto& item : session.search_path) {
+        nr::ResolveRequest schema;
+        schema.path = {{item, false}};
+        schema.accepts_class = [](const std::string& c) { return c == "schema"; };
+        const auto outcome = nr::Resolve(rule, state.cache, context, schema);
+        if (outcome.status == nr::ResolveStatus::found) resolved.push_back(outcome.entry.object);
+      }
+      state.search_path = std::move(resolved);
+    }
+    if (state.source.failed()) return std::nullopt;
+    context.search_path = *state.search_path;
+    nr::ResolveRequest request;
+    request.path = *components;
+    const std::string wanted(object_class);
+    if (!wanted.empty() && wanted != "relation") request.accepts_class = [wanted](const std::string& c) { return c == wanted; };
+    const auto outcome = nr::Resolve(rule, state.cache, context, request);
+    if (state.source.failed()) return std::nullopt;
+    return nr::StoredPresentedName(outcome);
+  }
+
   bool EnsureStarted(std::string requested_database, MessageVectorSet* messages) {
     if (started) return true;
     std::string database_path = StripDevBootstrapPrefix(config.embedded_database_path);
@@ -988,8 +1096,16 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
   // SB_PARSER_NAME_RESOLUTION (Part B step S1): the name this parser sends is
   // already folded by the SBsql rule (unquoted -> upper ASCII, quoted exact);
   // the engine still folds too, which is idempotent on a folded name.
-  const auto prepared = scratchbird::parsers::name_resolution::PrepareSbsqlWireName(
+  auto prepared = scratchbird::parsers::name_resolution::PrepareSbsqlWireName(
       presented_name, quoted, object_class);
+  // SB_PARSER_NAME_LIST (Part B S4): on a native served database the parser compares the engine's LISTED names with its
+  // own rules and sends the matched entries' stored spellings; anything else (not native, a miss) sends the typed name.
+  if (const auto stored = impl_->ResolveByList(session, presented_name, quoted, object_class)) {
+    auto from_list = scratchbird::parsers::name_resolution::PrepareSbsqlWireName(*stored, false, object_class);
+    from_list.original = std::string(presented_name);
+    from_list.rewritten = from_list.presented_name != from_list.original;
+    prepared = std::move(from_list);
+  }
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kResolveNameRequest),
                          session);

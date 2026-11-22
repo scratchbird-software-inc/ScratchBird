@@ -402,6 +402,7 @@ add_library(sb_engine_internal_api
   catalog/ipar_fast_path_support.cpp
   catalog/name_registry.cpp
   catalog/name_resolution_api.cpp
+  catalog/name_list_api.cpp
   catalog/temporary_name_visibility.cpp
   catalog/resource_descriptor_lookup.cpp
   catalog/relation_descriptor_projection.cpp

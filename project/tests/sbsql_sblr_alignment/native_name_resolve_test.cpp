@@ -872,10 +872,14 @@ eng::EngineResolveNameResult AskEngine(const std::vector<EngineStep>& steps, con
 }
 
 struct DifferentialCounts {
-  std::size_t cases = 0, engine_calls = 0, found = 0, not_found = 0, invalid = 0, rewritten = 0;
+  std::size_t cases = 0, engine_calls = 0, found = 0, not_found = 0, invalid = 0, rewritten = 0, stored_sent = 0;
 };
+// SB_PARSER_NAME_LIST (Part B S4): a cache shared by every case of one run (the snapshot does not change during the run)
+// and the check that the engine is also asked the STORED spelling of what the module matched. Null: the S1 behaviour.
+nr::NameListCache* shared_name_cache = nullptr;
+bool send_stored_spelling = false;
 
-void DifferentialCase(RegistryNameSource& source, DifferentialCounts* counts, const std::vector<nr::NameComponent>& typed,
+void DifferentialCase(nr::NameSource& source, DifferentialCounts* counts, const std::vector<nr::NameComponent>& typed,
                       const std::string& language, const p::Uuid& scope, const std::string& object_class,
                       const std::string& what) {
   std::vector<EngineStep> raw, wire, exact;
@@ -901,15 +905,31 @@ void DifferentialCase(RegistryNameSource& source, DifferentialCounts* counts, co
   Check(verdict_exact == verdict_raw, "differential (E) the module's keys sent exact: " + what + ": " + verdict_exact + " vs raw " + verdict_raw);
 
   // (M): the module's own walk over the engine's entries.
-  nr::NameListCache cache(source);
+  nr::NameListCache local_cache(source);
+  nr::NameListCache& cache = shared_name_cache != nullptr ? *shared_name_cache : local_cache;
   nr::ResolutionContext context;
   context.target_schema = Uuid16Of(scope);
   context.session_language = context.default_language = language;
   nr::ResolveRequest request;
   request.path = typed;
   if (!object_class.empty()) request.accepts_class = [object_class](const std::string& c) { return c == object_class; };
-  const auto verdict_walk = VerdictOf(nr::Resolve(rule, cache, context, request));
+  const auto walked = nr::Resolve(rule, cache, context, request);
+  const auto verdict_walk = VerdictOf(walked);
   Check(verdict_walk == verdict_raw, "differential (M) the module's own walk: " + what + ": " + verdict_walk + " vs raw " + verdict_raw);
+  // (S): the engine asked the STORED spelling of each matched entry (each step with the quoted datum it was stored with):
+  // the answer is the object the module chose, which is what an exact matcher (S2) will answer too.
+  if (send_stored_spelling) {
+    if (const auto stored = nr::StoredPresentedName(walked)) {
+      const auto parts = nr::SplitPresentedName(*stored, false);
+      Check(parts.has_value(), "the stored spelling splits: " + what);
+      std::vector<EngineStep> sent;
+      for (const auto& step : *parts) sent.push_back({step.spelling, step.quoted, step.quoted});
+      const auto verdict_stored = VerdictOf(AskEngine(sent, language, scope, object_class));
+      ++counts->engine_calls;
+      ++counts->stored_sent;
+      Check(verdict_stored == verdict_raw, "differential (S) the stored spelling of the matched entries: " + what + ": " + verdict_stored + " vs raw " + verdict_raw);
+    }
+  }
 
   ++counts->cases;
   if (verdict_raw.rfind("found:", 0) == 0) ++counts->found;
@@ -927,9 +947,12 @@ std::string AsciiCase(std::string text, int mode) {  // 0 upper, 1 lower, 2 alte
   return text;
 }
 
-DifferentialCounts DifferentialAgainstModule(const Offline& offline, const p::Uuid& bootstrap, const p::Uuid& service) {
+DifferentialCounts DifferentialAgainstModule(const Offline& offline, const p::Uuid& bootstrap, const p::Uuid& service,
+                                             nr::NameSource* external_source = nullptr) {
   DifferentialCounts counts;
-  RegistryNameSource source;
+  std::optional<RegistryNameSource> registry_source;
+  if (external_source == nullptr) registry_source.emplace();
+  nr::NameSource& source = external_source != nullptr ? *external_source : *registry_source;
   const auto& database = offline.database;
   const auto& security_scope = offline.security_schema;
   const auto language_of = [](const NameFact& f) { return TagFor(f.language); };
@@ -997,6 +1020,15 @@ DifferentialCounts DifferentialAgainstModule(const Offline& offline, const p::Uu
   return counts;
 }
 
+#ifdef SB_NAME_LIST_TEST
+// SB_ENGINE_NAME_LIST_API (Part B S4): native_name_list_test.cpp includes this file as its harness (create, forge, serve,
+// strace driver) and supplies the served checks of ListNames / UuidToName through this hook, defined in its own
+// translation unit's anonymous namespace.
+int NameListServe(const std::string& state, const Offline& offline, srv::NativeDatabaseLoop& loop, const fs::path& directory,
+                  const std::map<std::string, std::string>& before, const p::Uuid& database, const p::Uuid& bootstrap,
+                  const p::Uuid& service);
+#endif
+
 int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& database, const p::Uuid& bootstrap,
               const p::Uuid& service) {
   const auto directory = path.parent_path();
@@ -1014,7 +1046,7 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
   // The offline read happens BEFORE the server owns the file: the ground truth the served read is compared with.
   const auto offline = ReadOffline(path);
   Check(offline.database == database, "the file's database UUID is the create's");
-  const bool forged = state == "names" || state == "dead" || state == "uncommitted";
+  const bool forged = state == "names" || state == "dead" || state == "uncommitted" || state == "many" || state == "flow";
   Check(std::set<p::Uuid>(offline.principals.begin(), offline.principals.end()).size() == offline.principals.size() &&
             std::count(offline.principals.begin(), offline.principals.end(), bootstrap) == 1 &&
             std::count(offline.principals.begin(), offline.principals.end(), service) == 1,
@@ -1049,6 +1081,9 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
   env.database = database;
   env.security_scope = offline.security_schema;
   Check(env.facts != nullptr && env.facts->names_source != nullptr, "the loop published served facts with a names source");
+#ifdef SB_NAME_LIST_TEST
+  return NameListServe(state, offline, loop, directory, before, database, bootstrap, service);
+#endif
   const auto security_scope = offline.security_schema;
   std::size_t agents_resolved = 0, names_resolved = 0, database_scope_resolved = 0;
 

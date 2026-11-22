@@ -177,20 +177,27 @@ ResolveOutcome Resolve(const NameFoldRule& rule, NameListCache& names, const Res
   for (const auto& step : request.path) outcome.keys.push_back(rule.Key(step.spelling, step.quoted));
 
   std::vector<Uuid16> scopes = ScopeCandidates(context);
+  bool steps_unique = true;
   // The qualifier steps: schema entries of the current scopes, per language.
   for (std::size_t i = 0; i + 1 < request.path.size(); ++i) {
     if (request.path[i].spelling.empty()) return outcome;  // not_found
     std::vector<Uuid16> next;
+    std::optional<NameEntry> step_entry;
     for (const auto& language : languages) {
       for (const auto& scope : scopes) {
         for (const auto& entry : names.Page(scope, language)) {
           if (entry.object_class != "schema") continue;
           if (OwnLane(rule, entry) != outcome.keys[i]) continue;
-          if (!IsNil(entry.object)) PushUnique(&next, entry.object);
+          if (!IsNil(entry.object)) {
+            PushUnique(&next, entry.object);
+            if (!step_entry) step_entry = entry;
+          }
         }
       }
       if (!next.empty()) break;
     }
+    if (next.size() != 1) steps_unique = false;
+    if (step_entry) outcome.steps.push_back(*step_entry);
     scopes = std::move(next);
     if (scopes.empty()) return outcome;  // not_found
   }
@@ -210,10 +217,61 @@ ResolveOutcome Resolve(const NameFoldRule& rule, NameListCache& names, const Res
     }
     if (!outcome.objects.empty()) {
       outcome.status = outcome.objects.size() == 1 ? ResolveStatus::found : ResolveStatus::ambiguous;
+      outcome.steps.push_back(outcome.entry);
+      outcome.steps_unique = steps_unique && outcome.objects.size() == 1;
       return outcome;
     }
   }
   return outcome;  // not_found
+}
+
+std::optional<std::string> StoredPresentedName(const ResolveOutcome& outcome) {
+  if (outcome.status != ResolveStatus::found || !outcome.steps_unique || outcome.steps.empty()) return std::nullopt;
+  std::vector<NameComponent> components;
+  for (const auto& step : outcome.steps) {
+    if (!step.was_quoted &&
+        (step.raw_text.empty() || step.raw_text.find('.') != std::string::npos || step.raw_text.find('"') != std::string::npos))
+      return std::nullopt;
+    components.push_back({step.raw_text, step.was_quoted});
+  }
+  return RenderPresentedName(components);
+}
+
+bool ListedNameSource::Probe(const Uuid16& scope, std::string_view language, std::uint64_t* digest) {
+  const auto language_uuid = language_of_tag_ ? language_of_tag_(language) : std::nullopt;
+  if (!language_uuid) return false;
+  ++pages_fetched_;
+  const auto page = fetch_(scope, *language_uuid, std::string(), 1);
+  if (!page.ok) return false;
+  last_digest_ = page.names_digest;
+  *digest = page.names_digest;
+  return true;
+}
+
+std::vector<NameEntry> ListedNameSource::List(const Uuid16& scope, std::string_view language) {
+  std::vector<NameEntry> out;
+  if (IsNil(scope)) return out;  // the nil scope (ScopeCandidates ends with it, as the engine's does) holds no names: nobody is asked
+  const auto language_uuid = language_of_tag_ ? language_of_tag_(language) : std::nullopt;
+  if (!language_uuid) return out;  // a language with no constant has no names
+  std::string continuation;
+  for (;;) {
+    ++pages_fetched_;
+    const auto page = fetch_(scope, *language_uuid, continuation, page_entries_);
+    if (!page.ok) {
+      failed_ = true;
+      refusal_code_ = page.refusal_code;
+      return {};
+    }
+    last_digest_ = page.names_digest;
+    for (const auto& listed : page.entries) {
+      if (listed.is_fallback) continue;
+      out.push_back({scope, listed.object, std::string(language), class_of_kind_ ? class_of_kind_(listed.object_kind) : std::string(),
+                     listed.name, listed.was_quoted});
+    }
+    if (!page.more) break;
+    continuation = page.next_continuation;
+  }
+  return out;
 }
 
 }  // namespace scratchbird::parsers::name_resolution

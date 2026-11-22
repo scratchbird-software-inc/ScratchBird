@@ -17,7 +17,10 @@
 
 #include "name_resolution/name_resolution.hpp"
 
+#include <algorithm>
 #include <iostream>
+#include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -384,6 +387,149 @@ int main() {
           "the lower rule finds a quoted hello from unquoted HELLO");
     Check(Run(source, In(s1), Typed({U("HELLO")}), Sbsql()).status == nr::ResolveStatus::not_found,
           "the SBsql rule does not: its key HELLO is not the lane hello");
+  }
+
+  // ---- 11. The engine's ListNames as the source (Part B S4): list-and-compare equals the in-memory table ------------------
+  {
+    // The engine's ListNames, as a fetcher over a table: an entry is listed in the asked language, or, when its object has
+    // none there, as its default (fallback). Two entries per page so that continuation is exercised.
+    struct Stored {
+      nr::Uuid16 scope, object;
+      std::string language, object_class, text;
+      bool quoted, is_default;
+      std::uint16_t kind;
+    };
+    const auto en = Id(200), fr = Id(201);
+    const std::map<std::string, nr::Uuid16> language_uuid{{"en", en}, {"fr-CA", fr}};
+    std::vector<Stored> table{
+        {s1, Id(10), "en", "table", "Hello", false, true, 1},   {s1, Id(11), "en", "table", "Mixed", true, true, 1},
+        {s1, Id(12), "en", "table", "Twin", true, true, 1},     {s1, Id(13), "en", "table", "TWIN", true, true, 1},
+        {s1, Id(14), "en", "table", "Pays", false, true, 1},    {s1, Id(14), "fr-CA", "table", "Pays_fr", false, false, 1},
+        {s1, Id(15), "en", "table", "OnlyEn", false, true, 1},  {s2, Id(20), "en", "schema", "Sales", false, true, 3},
+        {s2, Id(10), "en", "table", "OtherHello", false, true, 1},
+    };
+    std::size_t fetches = 0;
+    nr::PageFetcher fetch = [&](const nr::Uuid16& scope, const nr::Uuid16& language, const std::string& continuation, std::uint32_t max) {
+      ++fetches;
+      nr::ListedPage page;
+      page.ok = true;
+      page.names_digest = 77 + table.size();
+      std::vector<nr::ListedName> all;
+      std::map<nr::Uuid16, bool> object_has_language;
+      for (const auto& t : table)
+        if (t.scope == scope && language_uuid.at(t.language) == language) object_has_language[t.object] = true;
+      for (const auto& t : table) {
+        if (t.scope != scope) continue;
+        const bool in_language = language_uuid.at(t.language) == language;
+        if (!in_language && !(t.is_default && !object_has_language[t.object])) continue;
+        nr::ListedName n;
+        n.entry = Id(static_cast<std::uint8_t>(100 + (&t - table.data())));
+        n.object = t.object;
+        n.language = language_uuid.at(t.language);
+        n.name = t.text;
+        n.object_kind = t.kind;
+        n.default_for_object = t.is_default;
+        n.is_fallback = !in_language;
+        n.was_quoted = t.quoted;
+        all.push_back(std::move(n));
+      }
+      std::size_t from = continuation.empty() ? 0 : static_cast<std::size_t>(std::stoul(continuation));
+      const auto take = std::min<std::size_t>(std::min<std::size_t>(max, 2), all.size() - std::min(from, all.size()));
+      for (std::size_t i = 0; i < take; ++i) page.entries.push_back(all[from + i]);
+      page.more = from + take < all.size();
+      if (page.more) page.next_continuation = std::to_string(from + take);
+      return page;
+    };
+    const auto language_of_tag = [&](std::string_view tag) -> std::optional<nr::Uuid16> {
+      const auto at = language_uuid.find(std::string(tag));
+      if (at == language_uuid.end()) return std::nullopt;
+      return at->second;
+    };
+    const auto class_of_kind = [](std::uint16_t kind) { return kind == 3 ? std::string("schema") : std::string("table"); };
+    nr::ListedNameSource listed(fetch, language_of_tag, class_of_kind, 2);
+    // The source: fallback entries are dropped, the page continuation is followed, classes and quoted data are carried.
+    {
+      const auto page = listed.List(s1, "fr-CA");
+      Check(page.size() == 1 && page[0].raw_text == "Pays_fr" && page[0].object == Id(14) && page[0].language == "fr-CA",
+            "the French page holds only the French name (the other objects' default fallbacks are dropped)");
+      const auto en_page = listed.List(s1, "en");
+      Check(en_page.size() == 6 && listed.pages_fetched() >= 4 && !listed.failed(), "the English page follows the continuation across pages");
+      Check(en_page[1].was_quoted && en_page[0].object_class == "table", "the quoted datum and the class text are carried");
+      const auto fetched = fetches;
+      Check(listed.List(s1, "und").empty() && fetches == fetched, "a language with no constant lists nothing and asks nobody");
+      std::uint64_t digest = 0;
+      Check(listed.Probe(s1, "en", &digest) && digest == 77 + table.size(), "the probe returns the digest");
+    }
+    // The same typed names through the in-memory table and through the listing give the same verdicts.
+    FixedSource fixed;
+    for (const auto& t : table) fixed.Add(t.scope, t.object, t.language, t.object_class, t.text, t.quoted);
+    std::vector<std::vector<nr::NameComponent>> typed{{U("hello")}, {U("HELLO")}, {Q("Hello")}, {Q("HELLO")}, {U("Mixed")}, {Q("Mixed")},
+                                                      {U("twin")},  {Q("Twin")},  {Q("TWIN")},  {U("pays")},  {U("Pays_fr")}, {U("onlyen")},
+                                                      {U("nothing")}, {U("Sales"), U("OtherHello")}, {U("sales"), Q("OtherHello")}, {U("sales"), U("nothing")}};
+    for (const auto& language : {std::string("en"), std::string("fr-CA"), std::string("de-DE")}) {
+      for (const auto& scope : {s1, s2, Id(3)}) {
+        for (const auto& path : typed) {
+          auto context = In(scope, language);
+          const auto a = Run(fixed, context, Typed(path));
+          nr::ListedNameSource fresh(fetch, language_of_tag, class_of_kind, 2);
+          nr::NameListCache cache(fresh);
+          const auto b = nr::Resolve(Sbsql(), cache, context, Typed(path));
+          Check(a.status == b.status && a.objects == b.objects, "list-and-compare equals the in-memory resolution");
+        }
+      }
+    }
+    // The stored spelling the parser sends the engine.
+    {
+      const auto o = Run(fixed, In(s1), Typed({U("hello")}));
+      Check(nr::StoredPresentedName(o) == std::optional<std::string>("Hello"), "an unquoted-stored name is sent as stored, unquoted");
+      const auto q = Run(fixed, In(s1), Typed({Q("Mixed")}));
+      Check(nr::StoredPresentedName(q) == std::optional<std::string>("\"Mixed\""), "a quoted-stored name is sent quoted, exact");
+      const auto path = Run(fixed, In(s1), Typed({U("sales"), U("OtherHello")}));
+      Check(path.status == nr::ResolveStatus::not_found, "a qualifier is looked for in the scopes of the context (s1 has no schema Sales)");
+      nr::ResolutionContext root;
+      root.default_root = s2;
+      root.session_language = root.default_language = "en";
+      const auto qualified = Run(fixed, root, Typed({U("SALES"), U("otherhello")}));
+      Check(qualified.status == nr::ResolveStatus::not_found, "(schema Sales lives in scope s2; its child names sit in Sales' own scope)");
+      Check(nr::StoredPresentedName(nr::ResolveOutcome{}) == std::nullopt, "no stored name for a miss");
+      nr::ResolveOutcome odd;
+      odd.status = nr::ResolveStatus::found;
+      odd.steps_unique = true;
+      odd.steps.push_back({s1, Id(1), "en", "table", "has.dot", false});
+      Check(nr::StoredPresentedName(odd) == std::nullopt, "an unquoted-stored name with a dot cannot be carried in dotted text");
+      odd.steps[0].raw_text = "has.dot";
+      odd.steps[0].was_quoted = true;
+      Check(nr::StoredPresentedName(odd) == std::optional<std::string>("\"has.dot\""), "a quoted-stored name with a dot can");
+      odd.steps_unique = false;
+      Check(nr::StoredPresentedName(odd) == std::nullopt, "steps that were not unique are not sent");
+    }
+    // A refused page is a failure, never "no names".
+    {
+      nr::PageFetcher refusing = [](const nr::Uuid16&, const nr::Uuid16&, const std::string&, std::uint32_t) {
+        nr::ListedPage page;
+        page.refusal_code = "CATALOG.NAMES_LIST_NOT_NATIVE";
+        return page;
+      };
+      nr::ListedNameSource source(refusing, language_of_tag, class_of_kind);
+      Check(source.List(s1, "en").empty() && source.failed() && source.refusal_code() == "CATALOG.NAMES_LIST_NOT_NATIVE",
+            "a refused page is reported as a failure");
+      source.ResetFailure();
+      Check(!source.failed(), "the failure flag resets");
+      std::uint64_t digest = 0;
+      Check(!source.Probe(s1, "en", &digest), "a refused probe is false");
+    }
+    // The cache drops its pages when the digest it is told changes.
+    {
+      nr::NameListCache cache(listed);
+      const auto context = In(s1);
+      Check(nr::Resolve(Sbsql(), cache, context, Typed({U("hello")})).status == nr::ResolveStatus::found, "found through the listing cache");
+      const auto reads = cache.source_reads();
+      cache.ObserveGeneration(1);
+      Check(nr::Resolve(Sbsql(), cache, context, Typed({U("hello")})).status == nr::ResolveStatus::found && cache.source_reads() == reads,
+            "the second lookup reads no page");
+      cache.ObserveGeneration(2);
+      Check(cache.cached_pages() == 0, "a changed digest drops the pages");
+    }
   }
 
   if (failures != 0) {

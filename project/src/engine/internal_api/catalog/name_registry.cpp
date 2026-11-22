@@ -1020,6 +1020,21 @@ bool PublicNameRegistryEntryVisible(const EngineApiRequest& request,
 
 }  // namespace
 
+// SB_NAME_LIST_VISIBILITY (Part B S4): the one public metadata-visibility predicate, for the list-names and
+// uuid-to-name procedures (name_list_api.cpp). Same rule as every public registry lookup.
+bool NameRegistryObjectPubliclyVisible(const EngineApiRequest& request, const EngineUuid& object_uuid,
+                                       std::uint16_t object_kind) {
+  if (request.policy_profile.encoded_profiles.empty()) { return true; }
+  NameRegistryEntry probe;
+  probe.object_uuid = object_uuid;
+  probe.object_class = NativeKindClassText(object_kind);
+  return PublicNameRegistryEntryVisible(request, probe);
+}
+
+// The class text the registry gives a native entry's record kind (the one mapping; the parser's list-and-compare reads
+// the same text the engine's own resolver compares).
+std::string NameRegistryObjectClassText(std::uint16_t object_kind) { return NativeKindClassText(object_kind); }
+
 NameRegistryResolveResult ResolveNameRegistryPublic(const EngineApiRequest& request,
                                                     const std::string& requested_object_class) {
   auto result = ResolveNameRegistryPrivate(request, requested_object_class);

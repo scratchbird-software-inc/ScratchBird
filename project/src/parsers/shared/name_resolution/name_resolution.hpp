@@ -189,6 +189,73 @@ class NameSource {
   virtual std::vector<NameEntry> List(const Uuid16& scope, std::string_view language) = 0;
 };
 
+// ---- the engine's ListNames as the source (Part B S4) ------------------------------------------------------------------
+
+// One entry of a ListNames page as the engine returns it (the engine's EngineListedName), copied by the caller's
+// adapter. The module defines the shape so that it needs no engine header.
+struct ListedName {
+  Uuid16 entry{}, object{}, language{};
+  std::string name;               // as stored
+  std::uint16_t object_kind = 0;  // the engine's u16 record kind
+  std::uint8_t name_class = 1;    // 1 primary, 2 alias, 3 compatibility, 4 generated, 5 hidden
+  bool default_for_language = false, default_for_object = false;
+  bool is_fallback = false;       // the object had no name in the requested language: this is its default entry
+  bool was_quoted = false;        // the parser's opaque quoted datum, as stored
+};
+struct ListedPage {
+  bool ok = false;
+  std::string refusal_code;       // the engine's specific code when !ok
+  std::vector<ListedName> entries;
+  bool more = false;
+  std::string next_continuation;  // opaque: passed back unchanged
+  std::uint64_t names_digest = 0;
+};
+// One page of (scope, language UUID): the caller's adapter over the engine call.
+using PageFetcher = std::function<ListedPage(const Uuid16& scope, const Uuid16& language, const std::string& continuation,
+                                             std::uint32_t max_entries)>;
+
+// A NameSource that LISTS: the names of a (scope, language) as the engine's ListNames returns them, page by page. The
+// resolver then compares them with its own rules. Differences from a name the engine's own resolver would see:
+//  * the language is a tag here (today's representation); `language_of_tag` gives its UUID, or nullopt for a tag with no
+//    constant ("und"), whose page is empty;
+//  * ListNames answers "the name for the language OR the object's default name": a resolution looks in ONE language at
+//    a time and moves to the next candidate language itself, so the fallback (default-name) entries are DROPPED here
+//    and the per-language order stays the resolver's;
+//  * `class_of_kind` gives the class text the resolver's `accepts_class` and the schema steps compare;
+//  * a refused page is not "no names": failed() reports it, and the caller must not treat the miss as a verdict.
+class ListedNameSource final : public NameSource {
+ public:
+  ListedNameSource(PageFetcher fetch, std::function<std::optional<Uuid16>(std::string_view)> language_of_tag,
+                   std::function<std::string(std::uint16_t)> class_of_kind, std::uint32_t page_entries = 1024)
+      : fetch_(std::move(fetch)),
+        language_of_tag_(std::move(language_of_tag)),
+        class_of_kind_(std::move(class_of_kind)),
+        page_entries_(page_entries) {}
+  std::vector<NameEntry> List(const Uuid16& scope, std::string_view language) override;
+  // One-entry read of a (scope, language): the digest and whether the engine answered. Used as the freshness probe
+  // before cached pages are trusted (a refusal, e.g. a database that is not native served, is `false`).
+  bool Probe(const Uuid16& scope, std::string_view language, std::uint64_t* digest);
+  void ResetFailure() noexcept {
+    failed_ = false;
+    refusal_code_.clear();
+  }
+  bool failed() const noexcept { return failed_; }
+  const std::string& refusal_code() const noexcept { return refusal_code_; }
+  // The digest of the last page read: what the cache compares (NameListCache::ObserveGeneration).
+  std::uint64_t last_digest() const noexcept { return last_digest_; }
+  std::size_t pages_fetched() const noexcept { return pages_fetched_; }
+
+ private:
+  PageFetcher fetch_;
+  std::function<std::optional<Uuid16>(std::string_view)> language_of_tag_;
+  std::function<std::string(std::uint16_t)> class_of_kind_;
+  std::uint32_t page_entries_;
+  bool failed_ = false;
+  std::string refusal_code_;
+  std::uint64_t last_digest_ = 0;
+  std::size_t pages_fetched_ = 0;
+};
+
 // The parser's list cache: one page per (scope, language), refreshed after a
 // commit or rollback (the snapshot the parser reads moves with its
 // transaction), and when the catalog generation a reply carried changes.
@@ -236,7 +303,19 @@ struct ResolveOutcome {
   std::vector<Uuid16> objects;     // every distinct matching object (found: one; ambiguous: several)
   // The key sent for each step of the path (folded when unquoted, exact when quoted).
   std::vector<std::string> keys;
+  // SB_PARSER_NAME_LIST (Part B S4): the STORED entry each step matched (the qualifier steps, then the leaf), valid when
+  // status == found and steps_unique (every step matched one object). The parser sends the engine these stored
+  // spellings, not the typed ones: an engine that matches bytes exactly (S2) then returns the same object the
+  // parser's own rules chose.
+  std::vector<NameEntry> steps;
+  bool steps_unique = false;
 };
+
+// The dotted text of a found outcome's stored spellings, each step with the quoted datum it was stored with (a name
+// stored unquoted is sent unquoted: today's engine folds it to its own lane, which is how it was matched; a name
+// stored quoted is sent quoted, exact). std::nullopt when the outcome is not a unique found, or a stored unquoted
+// spelling cannot be carried in dotted text (empty, a dot or a quote in it): the caller sends the typed name instead.
+std::optional<std::string> StoredPresentedName(const ResolveOutcome& outcome);
 
 struct ResolveRequest {
   std::vector<NameComponent> path;  // the qualifier steps, then the leaf last
