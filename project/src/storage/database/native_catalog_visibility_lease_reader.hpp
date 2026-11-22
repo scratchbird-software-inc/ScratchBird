@@ -130,6 +130,48 @@ class NativeCatalogVisibilityLeaseReader {
       u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
     return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,nullptr,&reader,&pin,image_budget,w);
   }
+  // SB_STREAM_SHARED_VISIBILITY (streaming reader, 2026-11-25): the two inputs of the single visibility decision
+  // (mga::ObserveVersionEffectVisibility), shared by Read below and by the streaming reader so that neither can drift:
+  // a stored row version plus its creator's inventory entry become the decision's RowVersionMetadata, and the snapshot a
+  // committed read judges by (the live inventory as it stands, or a snapshot-point value captured earlier).
+  static transaction::mga::RowVersionMetadata VersionMetadataOf(const page::RowDataRecordView& r,
+      const transaction::mga::TransactionInventoryEntry& c) noexcept {
+    namespace mga=transaction::mga;using core::platform::UuidKind;
+    const auto state=mga::InventoryVisibilityState(c);
+    mga::RowVersionMetadata m;m.identity={ {r.row_uuid},c.identity,r.row_version,r.version_uuid};
+    m.chain={{UuidKind::row,r.previous_version_uuid},{UuidKind::row,r.next_version_uuid},r.previous_row_version,r.next_row_version};
+    m.creator_transaction_state=state;m.creator_commit_sequence=c.commit_sequence;m.payload_present=!r.cells.empty();
+    if(r.deleted)m.state=mga::RowVersionState::delete_marker;
+    else switch(state){
+      case mga::TransactionState::committed:m.state=mga::RowVersionState::committed;break;
+      case mga::TransactionState::rolled_back:case mga::TransactionState::failed_terminal:m.state=mga::RowVersionState::rolled_back;break;
+      case mga::TransactionState::prepared:m.state=mga::RowVersionState::prepared;break;
+      case mga::TransactionState::limbo:m.state=mga::RowVersionState::limbo;break;
+      case mga::TransactionState::recovering:m.state=mga::RowVersionState::recovery_required;break;
+      case mga::TransactionState::archived:m.state=mga::RowVersionState::unknown;break;
+      default:m.state=mga::RowVersionState::uncommitted;break;
+    }return m;
+  }
+  static transaction::mga::VisibilitySnapshotView CommittedSnapshotOf(const NativeReadTransactionInventory& inventory,
+      const transaction::mga::VisibilitySnapshotView* point) noexcept {
+    transaction::mga::VisibilitySnapshotView snapshot;
+    if(point){snapshot=*point;return snapshot;}
+    snapshot.allow_reader_own_uncommitted=false;snapshot.visible_through_local_transaction_id=inventory.next_local_transaction_id-1;
+    snapshot.visible_through_local_transaction_id_is_boundary=true;snapshot.visible_through_commit_sequence=inventory.next_commit_sequence-1;
+    snapshot.visible_through_commit_sequence_is_boundary=true;
+    return snapshot;
+  }
+  // The name envelope of a localized-name version, decoded against where it is stored (shared with the streaming reader).
+  static auto NameOf(const NativeCatalogLeafPageView& p,const page::RowDataRecordView& r,
+      const core::catalog::CatalogMetadataVersionView& m) noexcept {
+    namespace catalog=core::catalog;using core::platform::UuidKind;
+    catalog::CatalogNameVersionBinding b{{UuidKind::database,p.header.database_uuid},{UuidKind::filespace,p.header.filespace_uuid},
+      r.row_uuid,{UuidKind::row,r.version_uuid},m.record.header.object_uuid,r.transaction_uuid,p.body.page_number,r.stable_slot_id,
+      r.storage_generation,r.row_version,r.local_transaction_id,m.catalog_generation};
+    auto decoded=catalog::DecodeCatalogNameEnvelopeView({reinterpret_cast<const byte*>(m.record.payload.data()),m.record.payload.size()},b);
+    if(decoded.ok()&&!catalog::CatalogNamePayloadMatchesMetadata(decoded.record->payload,m))decoded={catalog::CatalogNameEnvelopeError::binding_mismatch,{}};
+    return decoded;
+  }
  private:
   static NativeCatalogVisibilityLeaseResult Read(const detail::NativeLeaseReadSource& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding* binding,
@@ -169,12 +211,7 @@ class NativeCatalogVisibilityLeaseReader {
       }else{
         if(source.cluster_authority_required){out.source.error=NativeCatalogRelationLeaseError::cluster_requires_authority;fail(E::source_failure);return out;}
         for(const auto n:out.source.navigation_creators)if(!mga::HasCommittedInventoryOutcome(inventory.entries[n])){fail(E::navigation_not_committed);return out;}
-        if(point){snapshot=*point;}
-        else{
-          snapshot.allow_reader_own_uncommitted=false;snapshot.visible_through_local_transaction_id=inventory.next_local_transaction_id-1;
-          snapshot.visible_through_local_transaction_id_is_boundary=true;snapshot.visible_through_commit_sequence=inventory.next_commit_sequence-1;
-          snapshot.visible_through_commit_sequence_is_boundary=true;
-        }
+        snapshot=CommittedSnapshotOf(inventory,point);
       }
       const auto sources=out.source.row_creators;const auto count=sources.size();
       if(count>w.rows_.size()){fail(E::resource_exhausted);return out;}
@@ -182,27 +219,8 @@ class NativeCatalogVisibilityLeaseReader {
       const auto meta=[&](usize n)->const catalog::CatalogMetadataVersionView&{const auto& a=out.source.bases[sources[n].catalog_page_index].page.metadata;
         return std::lower_bound(a.begin(),a.end(),row(n).version_uuid,[](const auto& m,const auto& id){return m.version_uuid<id;})->metadata;};
       const auto creator=[&](usize n)->const auto&{return inventory.entries[sources[n].inventory_entry_index];};
-      const auto version=[&](usize n){const auto& r=row(n);const auto& c=creator(n);const auto state=mga::InventoryVisibilityState(c);
-        mga::RowVersionMetadata m;m.identity={ {r.row_uuid},c.identity,r.row_version,r.version_uuid};
-        m.chain={{UuidKind::row,r.previous_version_uuid},{UuidKind::row,r.next_version_uuid},r.previous_row_version,r.next_row_version};
-        m.creator_transaction_state=state;m.creator_commit_sequence=c.commit_sequence;m.payload_present=!r.cells.empty();
-        if(r.deleted)m.state=mga::RowVersionState::delete_marker;
-        else switch(state){
-          case mga::TransactionState::committed:m.state=mga::RowVersionState::committed;break;
-          case mga::TransactionState::rolled_back:case mga::TransactionState::failed_terminal:m.state=mga::RowVersionState::rolled_back;break;
-          case mga::TransactionState::prepared:m.state=mga::RowVersionState::prepared;break;
-          case mga::TransactionState::limbo:m.state=mga::RowVersionState::limbo;break;
-          case mga::TransactionState::recovering:m.state=mga::RowVersionState::recovery_required;break;
-          case mga::TransactionState::archived:m.state=mga::RowVersionState::unknown;break;
-          default:m.state=mga::RowVersionState::uncommitted;break;
-        }return m;};
-      const auto name=[&](usize n){const auto& r=row(n);const auto& m=meta(n);const auto& p=out.source.bases[sources[n].catalog_page_index].page;
-        catalog::CatalogNameVersionBinding b{{UuidKind::database,p.header.database_uuid},{UuidKind::filespace,p.header.filespace_uuid},
-          r.row_uuid,{UuidKind::row,r.version_uuid},m.record.header.object_uuid,r.transaction_uuid,p.body.page_number,r.stable_slot_id,
-          r.storage_generation,r.row_version,r.local_transaction_id,m.catalog_generation};
-        auto decoded=catalog::DecodeCatalogNameEnvelopeView({reinterpret_cast<const byte*>(m.record.payload.data()),m.record.payload.size()},b);
-        if(decoded.ok()&&!catalog::CatalogNamePayloadMatchesMetadata(decoded.record->payload,m))decoded={catalog::CatalogNameEnvelopeError::binding_mismatch,{}};
-        return decoded;};
+      const auto version=[&](usize n){return VersionMetadataOf(row(n),creator(n));};
+      const auto name=[&](usize n){return NameOf(out.source.bases[sources[n].catalog_page_index].page,row(n),meta(n));};
       auto rows=w.row_order_.first(count),versions=w.version_order_.first(count),objects=w.object_order_.first(count);
       std::iota(rows.begin(),rows.end(),usize{0});std::iota(versions.begin(),versions.end(),usize{0});std::iota(objects.begin(),objects.end(),usize{0});
       std::fill(w.candidates_.begin(),w.candidates_.end(),false);

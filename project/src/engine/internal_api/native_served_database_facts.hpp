@@ -69,7 +69,11 @@ struct NativeNameProfileValue {
 };
 enum class NativeNamesSnapshotError : std::uint8_t {
   none = 0, invalid_request, database_not_serving, database_failed, wrong_owner, busy, closed, preparation_failure,
-  custody_failure, crypto_failure, memory_failure, configuration_source_failure, names_source_failure
+  custody_failure, crypto_failure, memory_failure, configuration_source_failure, names_source_failure,
+  // SB_NATIVE_CATALOG_STREAM (2026-11-25): the read has no row or byte cap of its own, so a refusal for size is one of the
+  // two governed budgets, each with its own code: the registry of versions of rows with history, and the bytes of name rows
+  // this snapshot retains for its caller.
+  names_history_exhausted, names_retained_budget_exceeded
 };
 inline const char* NativeNamesSnapshotErrorName(NativeNamesSnapshotError e) noexcept {
   switch (e) {
@@ -86,6 +90,8 @@ inline const char* NativeNamesSnapshotErrorName(NativeNamesSnapshotError e) noex
     case NativeNamesSnapshotError::memory_failure: return "memory_failure";
     case NativeNamesSnapshotError::configuration_source_failure: return "configuration_source_failure";
     case NativeNamesSnapshotError::names_source_failure: return "names_source_failure";
+    case NativeNamesSnapshotError::names_history_exhausted: return "names_history_exhausted";
+    case NativeNamesSnapshotError::names_retained_budget_exceeded: return "names_retained_budget_exceeded";
   }
   return "";
 }
@@ -105,6 +111,8 @@ inline const char* NativeNamesSnapshotErrorCode(NativeNamesSnapshotError e) noex
     case NativeNamesSnapshotError::memory_failure: return "CATALOG.NAMES_SNAPSHOT_NATIVE_READ_MEMORY_FAILED";
     case NativeNamesSnapshotError::configuration_source_failure: return "CATALOG.NAMES_SNAPSHOT_NATIVE_CONFIGURATION_SOURCE_FAILED";
     case NativeNamesSnapshotError::names_source_failure: return "CATALOG.NAMES_SNAPSHOT_NATIVE_NAMES_SOURCE_FAILED";
+    case NativeNamesSnapshotError::names_history_exhausted: return "CATALOG.NAMES_SNAPSHOT_NATIVE_HISTORY_BUDGET_EXCEEDED";
+    case NativeNamesSnapshotError::names_retained_budget_exceeded: return "CATALOG.NAMES_SNAPSHOT_NATIVE_RETAINED_BUDGET_EXCEEDED";
   }
   return "";
 }

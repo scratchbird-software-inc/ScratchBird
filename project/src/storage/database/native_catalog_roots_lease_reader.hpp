@@ -119,6 +119,7 @@ class NativeCatalogRootsLeaseReader {
  }
  private:
  friend class NativeCatalogRelationLeaseReader;
+ friend class NativeCatalogVisibilityStreamReader;  // SB_NATIVE_CATALOG_STREAM (2026-11-25)
  static NativeCatalogRootsLeaseReadResult ReadWith(const detail::NativeLeaseReadSource& source,
      u64 maximum_additional_image_bytes,NativeCatalogRootsPreparedMemory& backing) noexcept {
   using E=NativeCatalogRootsLeaseError;NativeCatalogRootsLeaseReadResult out;

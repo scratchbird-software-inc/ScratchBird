@@ -7,6 +7,7 @@
 #include "catalog_authorization_policy.hpp"
 #include "catalog_identifier_profile.hpp"
 #include "native_catalog_visibility_lease_reader.hpp"
+#include "native_catalog_visibility_stream_reader.hpp"
 #include <set>
 
 namespace scratchbird::server {
@@ -1187,8 +1188,12 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
   using E=engine::internal_api::NativeNamesSnapshotError;namespace db=storage::database;namespace c=core::catalog;
   engine::internal_api::NativeNamesSnapshot out;
   try {
+    // SB_NATIVE_CATALOG_STREAM: the names are read by the streaming reader; the catalog limits supply the profile and device count.
+    db::NativeCatalogStreamLimits stream_limits;
+    stream_limits.maximum_profile=request.catalog.maximum_profile;stream_limits.maximum_devices=request.catalog.maximum_devices;
+    stream_limits.window_pages=request.stream_window_pages;stream_limits.history_versions=request.stream_history_versions;
     if(!owner||!request.limits.maximum_backing_bytes||!request.limits.maximum_verification_image_bytes||
-        !db::NativeCatalogVisibilityWorkspaceBytes(request.catalog)) {
+        !db::NativeCatalogStreamWorkspaceBytes(stream_limits)) {
       out.error=E::invalid_request;return out;
     }
     auto& self=*owner;
@@ -1203,13 +1208,14 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
     self.entering_=true;
     struct Leave {bool& flag;~Leave(){flag=false;}} leave{self.entering_};
 
-    // The names workspace (the scan tier) is acquired for this call and released at its end.
-    auto workspace_allocation=self.Acquire(db::NativeCatalogVisibilityWorkspaceBytes(request.catalog),NativeBootstrapMemoryKind::storage);
+    // The stream workspace (a window of leaves, the tree cursor and the history registry: small, independent of the relation's
+    // size) is acquired for this call and released at its end.
+    auto workspace_allocation=self.Acquire(db::NativeCatalogStreamWorkspaceBytes(stream_limits),NativeBootstrapMemoryKind::storage);
     if(!workspace_allocation.ok()) {out.error=E::memory_failure;return out;}
     auto workspace_memory=db::AdoptNativeStorageMemory(StorageBinding(*workspace_allocation.admission.resource),
                                                        workspace_allocation.admission.resource);
     if(!workspace_memory.ok()) {out.error=E::memory_failure;return out;}
-    auto prepared=db::PrepareNativeCatalogVisibilityRead(request.catalog,workspace_memory.memory,workspace_memory.memory.binding());
+    auto prepared=db::PrepareNativeCatalogStreamRead(stream_limits,workspace_memory.memory,workspace_memory.memory.binding());
     if(!prepared.ok()) {out.error=E::preparation_failure;return out;}
     if(!self.reading_.Matches(self.reading_.binding())) {
       auto allocation=self.Acquire(self.limits_.writer.source.maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
@@ -1231,18 +1237,16 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
       auto source=operation.operation.ReadFixedRootWithMemory(request.limits,self.reading_,self.reading_.binding());
       if(!source.ok()) {phase=E::custody_failure;return;}
       const auto& lease=source.lease.source();
+      // The refusal a stream's error is: the governed registry, an exhausted allocation, or a source failure with the detail.
+      const auto refuse=[&](const db::NativeCatalogStreamResult& r,E source_phase) {
+        out.source_error=static_cast<std::uint32_t>(r.error);out.relation_error=static_cast<std::uint32_t>(r.roots_error);
+        phase=r.error==db::NativeCatalogStreamError::history_exhausted?E::names_history_exhausted:source_phase;
+        source.lease.Reset();
+      };
       // 1. The configuration relation (role 5): identifier profiles, and the security schema the principals live under.
       {
-        const auto config=view?db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelectedAt(lease,*view,2,5,
-            request.limits.maximum_verification_image_bytes,prepared.workspace)
-            :db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,5,
-            request.limits.maximum_verification_image_bytes,prepared.workspace);
-        if(!config.ok()) {
-          out.source_error=static_cast<std::uint32_t>(config.error);out.relation_error=static_cast<std::uint32_t>(config.source.error);
-          phase=E::configuration_source_failure;source.lease.Reset();return;
-        }
-        for(const auto& row:config.rows) {
-          if(!NativeNameRowLive(row)) continue;
+        const auto visit_config=[&](const db::NativeCatalogVisibleRow& row) {
+          if(!NativeNameRowLive(row)) return true;
           const auto& m=row.metadata;
           if(c::IsCatalogIdentifierProfilePayload(m.record.payload)&&c::CatalogIdentifierProfileMatchesMetadata(m)&&
               c::CatalogIdentifierProfileMatchesDatabase(m,self.database_)) {
@@ -1254,22 +1258,24 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
             if(body.record&&std::find(out.principal_schemas.begin(),out.principal_schemas.end(),body.record->user_schema_uuid)==out.principal_schemas.end())
               out.principal_schemas.push_back(body.record->user_schema_uuid);
           }
-        }
+          return true;
+        };
+        const auto config=view?db::NativeCatalogVisibilityStreamReader::StreamCommittedSelectedAt(lease,*view,2,5,
+            request.limits.maximum_verification_image_bytes,prepared.workspace,visit_config)
+            :db::NativeCatalogVisibilityStreamReader::StreamCommittedSelected(lease,2,5,
+            request.limits.maximum_verification_image_bytes,prepared.workspace,visit_config);
+        if(!config.ok()) {refuse(config,E::configuration_source_failure);return;}
       }
-      // 2. The names relation (role 2; the same workspace: nothing borrowed from the configuration read is used below).
+      // 2. The names relation (role 2; the same workspace). Rows are copied out as the stream passes them: a row's views are
+      // valid only during the visit. The bytes this snapshot retains are bounded by the request's retained budget.
       {
-        const auto names=view?db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelectedAt(lease,*view,2,2,
-            request.limits.maximum_verification_image_bytes,prepared.workspace)
-            :db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,2,
-            request.limits.maximum_verification_image_bytes,prepared.workspace);
-        if(!names.ok()) {
-          out.source_error=static_cast<std::uint32_t>(names.error);out.relation_error=static_cast<std::uint32_t>(names.source.error);
-          phase=E::names_source_failure;source.lease.Reset();return;
-        }
-        for(const auto& row:names.rows) {
-          if(!row.name_payload||!NativeNameRowLive(row)) continue;
+        std::uint64_t retained=0;bool over=false;
+        const auto visit_names=[&](const db::NativeCatalogVisibleRow& row) {
+          if(!row.name_payload||!NativeNameRowLive(row)) return true;
           const auto* entry=std::get_if<c::CatalogNameEntryView>(&*row.name_payload);
-          if(!entry||entry->lifecycle_state!=c::CatalogNameLifecycle::active||entry->dropped_transaction_uuid) continue;
+          if(!entry||entry->lifecycle_state!=c::CatalogNameLifecycle::active||entry->dropped_transaction_uuid) return true;
+          retained+=sizeof(engine::internal_api::NativeNameRowValue)+entry->raw_name_text.size();
+          if(retained>request.maximum_retained_bytes) {over=true;return false;}
           engine::internal_api::NativeNameRowValue v;
           v.name_entry_uuid=entry->name_entry_uuid.value;v.object_uuid=entry->object_uuid.value;v.scope_uuid=entry->scope_uuid.value;
           v.language_uuid=entry->language_uuid.value;v.dialect_profile_uuid=entry->dialect_profile_uuid.value;
@@ -1284,7 +1290,14 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
           v.catalog_generation_id=entry->catalog_generation_id;v.resource_epoch=entry->resource_epoch;
           v.name_resolution_epoch=entry->name_resolution_epoch;
           out.rows.push_back(std::move(v));
-        }
+          return true;
+        };
+        const auto names=view?db::NativeCatalogVisibilityStreamReader::StreamCommittedSelectedAt(lease,*view,2,2,
+            request.limits.maximum_verification_image_bytes,prepared.workspace,visit_names)
+            :db::NativeCatalogVisibilityStreamReader::StreamCommittedSelected(lease,2,2,
+            request.limits.maximum_verification_image_bytes,prepared.workspace,visit_names);
+        if(over) {phase=E::names_retained_budget_exceeded;source.lease.Reset();return;}
+        if(!names.ok()) {refuse(names,E::names_source_failure);return;}
       }
       source.lease.Reset();
     });

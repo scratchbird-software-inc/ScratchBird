@@ -12506,6 +12506,42 @@ foreach(sb_name_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_resolve;database_ownership;binary_uuid"
     TIMEOUT 1800)
 endforeach()
+# SB_NATIVE_NAME_STREAM_TEST (streaming reader, owner 2026-11-25): a names relation grown past the old 4096-row scan cap
+# by the production writers; harness native_name_resolve_test.cpp (included), as native_name_list does.
+add_executable(sbsql_sblr_alignment_native_name_stream native_name_stream_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_name_stream sbsql_sblr_alignment_native_serving)
+target_compile_definitions(sbsql_sblr_alignment_native_name_stream PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_name_stream PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_name_stream PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api
+  ${PROJECT_SOURCE_DIR}/tests/sbsql_sblr_alignment)
+target_link_libraries(sbsql_sblr_alignment_native_name_stream PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto sb_parser_name_resolution)
+target_compile_definitions(sbsql_sblr_alignment_native_name_stream PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+foreach(sb_stream_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_stream_parts "${sb_stream_size}")
+  list(GET sb_stream_parts 0 sb_stream_bytes)
+  list(GET sb_stream_parts 1 sb_stream_label)
+  foreach(sb_stream_state IN ITEMS equal big budget)
+    add_test(NAME sbsql_sblr_alignment_native_name_stream_${sb_stream_state}_${sb_stream_label}
+      COMMAND sbsql_sblr_alignment_native_name_stream size ${sb_stream_bytes} ${sb_stream_state})
+    set_tests_properties(sbsql_sblr_alignment_native_name_stream_${sb_stream_state}_${sb_stream_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_name_stream;database_ownership;binary_uuid"
+      TIMEOUT 300)
+  endforeach()
+  if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+    add_test(NAME sbsql_sblr_alignment_native_name_stream_strace_${sb_stream_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_name_stream_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_name_stream> --size ${sb_stream_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_name_stream_strace_${sb_stream_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_name_stream;strace"
+      TIMEOUT 300)
+  endif()
+endforeach()
 # SB_NATIVE_NAME_LIST_TEST (Part B S4): ListNames / UuidToName on production-created native databases. The file
 # native_name_list_test.cpp includes native_name_resolve_test.cpp as its harness; the strace driver is the resolve one,
 # pointed at this binary (it runs create / forge / serve children, and the serve child is this test's checks).

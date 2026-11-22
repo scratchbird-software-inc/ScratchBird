@@ -110,6 +110,7 @@ class NativeCatalogLeafLeaseReader {
   }
  private:
   friend class NativeCatalogRelationLeaseReader;
+  friend class NativeCatalogVisibilityStreamReader;  // SB_NATIVE_CATALOG_STREAM (2026-11-25)
   // A selected index may locate the first base leaf before its relation UUID
   // is known. Only its enclosing selected-root traversal may discover it.
   static NativeCatalogLeafLeaseReadResult ReadSelected(

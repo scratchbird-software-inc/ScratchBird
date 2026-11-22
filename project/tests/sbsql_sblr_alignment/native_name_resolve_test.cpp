@@ -45,6 +45,9 @@
 #include "memory.hpp"
 #include "memory_policy_config.hpp"
 #include "native_catalog_visibility_lease_reader.hpp"
+#if defined(SB_NAME_STREAM_TEST)
+#include "native_catalog_visibility_stream_reader.hpp"
+#endif
 #include "native_fixed_root_memory_lease.hpp"
 #include "filespace_page_zero.hpp"
 #include "catalog_authorization_policy.hpp"
@@ -279,6 +282,41 @@ Offline ReadOffline(const fs::path& path) {
     }
   }
   {
+#if defined(SB_NAME_STREAM_TEST)
+    // SB_NATIVE_CATALOG_STREAM: a names relation past the collect-everything scan tier (4096 rows / 4 MiB) is read by the
+    // streaming reader; the stream test proves it against the collect-everything reader on files the old reader reads.
+    db::NativeCatalogStreamLimits stream_limits;
+    stream_limits.maximum_profile = profile;
+    BoundMemory stream_memory(out.database, db::NativeCatalogStreamWorkspaceBytes(stream_limits));
+    auto stream_prepared = db::PrepareNativeCatalogStreamRead(stream_limits, stream_memory.memory, stream_memory.binding);
+    Check(stream_prepared.ok(), "the stream workspace prepares");
+    const auto visit = [&](const db::NativeCatalogVisibleRow& row) {
+      if (!row.name_payload || row.metadata.record.header.deleted || row.provisional) return true;
+      const auto* e = std::get_if<cat::CatalogNameEntryView>(&*row.name_payload);
+      if (!e) return true;
+      NameFact f;
+      f.object = e->object_uuid.value;
+      f.scope = e->scope_uuid.value;
+      f.language = e->language_uuid.value;
+      f.entry_uuid = e->name_entry_uuid.value;
+      f.row_uuid = row.metadata.record.header.row_uuid.value;
+      f.version_uuid = row.version_uuid;
+      f.kind = static_cast<std::uint16_t>(e->object_kind);
+      f.quoted = e->was_quoted;
+      f.default_for_object = e->default_for_object;
+      f.default_for_language = e->default_for_language;
+      f.name_class = e->name_class;
+      f.text = std::string(e->raw_name_text);
+      f.entry = cat::MaterializeCatalogNameEntry(*e);
+      f.metadata = cat::MaterializeCatalogMetadataVersion(row.metadata);
+      out.names.push_back(std::move(f));
+      return true;
+    };
+    const auto streamed = db::NativeCatalogVisibilityStreamReader::StreamCommittedSelected(lease, 2, 2, budget, stream_prepared.workspace, visit);
+    Check(streamed.ok(), "the names relation streams");
+    if (false)
+#endif
+    {
     const auto names = db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease, 2, 2, budget, prepared.workspace);
     Check(names.ok(), "the names relation reads");
     for (const auto& row : names.rows) {
@@ -301,6 +339,7 @@ Offline ReadOffline(const fs::path& path) {
       f.entry = cat::MaterializeCatalogNameEntry(*e);
       f.metadata = cat::MaterializeCatalogMetadataVersion(row.metadata);
       out.names.push_back(std::move(f));
+    }
     }
   }
   source.lease.Reset();

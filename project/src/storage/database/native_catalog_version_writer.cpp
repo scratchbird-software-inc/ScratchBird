@@ -19,6 +19,7 @@
 #include <array>
 #include <functional>
 #include <variant>
+#include <tuple>
 #include "catalog_naming_collision_policy.hpp"
 #include "catalog_naming_dialect_profile.hpp"
 #include "catalog_page.hpp"
@@ -687,7 +688,20 @@ class NameState {
         if (const auto* v = std::get_if<catalog::CatalogNameVector>(&stored_[k].payload)) return v;
     return nullptr;
   }
+  // SB_CATALOG_WRITER_NAME_GROUP_MEMO (streaming work, 2026-11-25): the group an entry's class binds to depends only on
+  // its name vector, object and kind, and on rows fixed for this request (the request's vectors, the stored newest
+  // versions, the configuration relation), so it is decided once per distinct (vector, object, kind) and remembered
+  // for this NameState's life. Before this every holder of a collision probe re-ran VectorOf (a scan of every name
+  // row) and three scans of the configuration leaves per holder: about 28 ms per inserted name at 1100 rows, growing
+  // with the scope, which made a names relation of thousands of rows unwritable in practice.
   std::optional<Group> GroupOf(const catalog::CatalogNameEntry& e) const {
+    const auto key = std::make_tuple(e.name_vector_uuid.value, e.object_uuid.value, static_cast<u32>(e.object_kind));
+    if (const auto hit = group_memo_.find(key); hit != group_memo_.end()) return hit->second;
+    auto computed = ComputeGroupOf(e);
+    group_memo_.emplace(key, computed);
+    return computed;
+  }
+  std::optional<Group> ComputeGroupOf(const catalog::CatalogNameEntry& e) const {
     const auto* v = VectorOf(e.name_vector_uuid.value);
     if (!v || v->object_uuid.value != e.object_uuid.value || v->object_kind != e.object_kind) return std::nullopt;
     const auto* dm = Current(5, v->name_collision_policy_uuid.value);
@@ -796,7 +810,7 @@ class NameState {
       // scope order compares both), so its lane derives under x's profile. A
       // holder that profile does not admit is invalid_catalog, as an
       // unresolved group is.
-      const auto ykeys = catalog::DeriveCatalogNameEntryKeys(*profile, yv);
+      const auto& ykeys = HolderKeys(*profile, x.identifier_profile_uuid.value, holder.payload, yv);
       if (!ykeys.ok()) {
         if (holder.state != Hold::pending) return {E::invalid_catalog};
         if (!blocker) blocker = holder.order;
@@ -809,6 +823,17 @@ class NameState {
     if (held) return {E::duplicate_name};
     if (blocker) return {E::write_conflict, blocker};
     return {E::none, std::nullopt, xkeys.own.fold};
+  }
+  // SB_CATALOG_WRITER_NAME_GROUP_MEMO (streaming work, 2026-11-25): a holder's lanes under an identifier profile depend only
+  // on the holder's own entry, so they are derived once per (holder, profile) for this NameState, not once per entry
+  // written against it (an insert of N names probed every holder of the scope N times: O(N x scope) derivations).
+  const catalog::CatalogNameEntryKeys& HolderKeys(const catalog::CatalogIdentifierResolutionProfile& profile, const Uuid& profile_id,
+                                                  const catalog::CatalogNamePayload* payload,
+                                                  const catalog::CatalogNameEntryView& view) const {
+    const auto key = std::make_pair(static_cast<const void*>(payload), profile_id);
+    auto it = holder_keys_.find(key);
+    if (it == holder_keys_.end()) it = holder_keys_.emplace(key, catalog::DeriveCatalogNameEntryKeys(profile, view)).first;
+    return it->second;
   }
   // This request's entry, once placed: later entries of the request see it.
   void HoldEntry(const catalog::CatalogNamePayload& payload) {
@@ -949,6 +974,8 @@ class NameState {
   // (Was, Q47/Q212: contended_, each name row whose newest version was
   // another transaction's in progress, for PathConflict; owner Q226.)
   std::vector<Holder> holders_;
+  mutable std::map<std::tuple<Uuid, Uuid, u32>, std::optional<Group>> group_memo_;  // SB_CATALOG_WRITER_NAME_GROUP_MEMO
+  mutable std::map<std::pair<const void*, Uuid>, catalog::CatalogNameEntryKeys> holder_keys_;  // SB_CATALOG_WRITER_NAME_GROUP_MEMO
   catalog::CatalogNameIndex path_names_;
 };
 

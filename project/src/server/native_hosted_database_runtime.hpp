@@ -212,6 +212,12 @@ struct NativeLoginMaterialRequest {
 struct NativeNamesSnapshotRequest {
   storage::database::NativeFixedRootMemoryLimits limits;          // the fixed-root lease (as the login read)
   storage::database::NativeCatalogRelationMemoryLimits catalog;   // the SCAN tier: the names relation is the largest
+  // SB_NATIVE_CATALOG_STREAM (2026-11-25): the names are read by the streaming reader, which has no row or byte cap of its
+  // own; `catalog` now supplies only the page profile and device count. The window, the registry of versions of rows with
+  // history, and the bytes of name rows this snapshot may retain are the governed bounds (a refusal for either of the last
+  // two has its own code: names_history_exhausted, names_retained_budget_exceeded).
+  std::size_t stream_window_pages = 4, stream_history_versions = 4096;
+  std::uint64_t maximum_retained_bytes = 256ull * 1024 * 1024;
 };
 
 // Owning native host resource path. The original route, selected inode,
