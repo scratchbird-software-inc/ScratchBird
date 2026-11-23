@@ -180,6 +180,15 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
     const LocalTransactionInventory& inventory,
     LocalTransactionId owning_transaction,
     u64 publication_unix_epoch_millis);
+// SB_NATIVE_BEGIN_VIEW_SNAPSHOT (S4f): the same descriptor, published from a visibility snapshot captured when the owning
+// transaction BEGAN (a native TIP does not record it; the database loop keeps it in memory). `inventory` is the live
+// inventory (horizons and Next of the publication); `begin_view` is the value CreateSnapshotPointVisibility returned
+// for the chains just before the begin (boundary = the begin's Next - 1; the exclusion lists as they stood).
+SnapshotVectorResult PublishStatementStableSnapshotVectorFromBeginView(
+    const LocalTransactionInventory& inventory,
+    LocalTransactionId owning_transaction,
+    const VisibilitySnapshot& begin_view,
+    u64 publication_unix_epoch_millis);
 SnapshotVectorResult ResolvePublishedSnapshotVector(
     const TypedUuid& snapshot_uuid);
 SnapshotVectorResult ResolveCurrentStatementStableSnapshotVector(

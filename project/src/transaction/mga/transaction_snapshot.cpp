@@ -434,6 +434,45 @@ bool SnapshotVectorDescriptorEqual(const SnapshotVectorDescriptor& left,
          left.complete == right.complete;
 }
 
+// Issues the snapshot's identity and registers the completed descriptor (the one registry both publishers share).
+static SnapshotVectorResult RegisterStatementStableSnapshotDescriptor(
+    SnapshotVectorDescriptor descriptor,
+    const u64 publication_unix_epoch_millis) {
+  constexpr u64 kGenerationAttempts = 32;
+  for (u64 attempt = 0; attempt < kGenerationAttempts; ++attempt) {
+    const auto generated = GenerateDurableEngineIdentityV7(
+        UuidKind::object, publication_unix_epoch_millis + attempt);
+    if (!generated.ok()) {
+      SnapshotVectorResult result;
+      result.status = generated.status;
+      result.diagnostic = generated.diagnostic;
+      return result;
+    }
+    const auto key = generated.value.value.bytes;
+    std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
+    if (SnapshotVectorRegistry().find(key) != SnapshotVectorRegistry().end()) {
+      continue;
+    }
+    descriptor.snapshot_uuid = generated.value;
+    descriptor.inventory_authoritative = true;
+    descriptor.complete = true;
+    if (!SnapshotVectorStructurallyComplete(descriptor)) {
+      return SnapshotVectorError(
+          "SB-MGA-SNAPSHOT-VECTOR-INCOMPLETE",
+          "transaction.snapshot_vector.incomplete");
+    }
+    SnapshotVectorRegistry().emplace(
+        key, std::make_shared<PublishedSnapshotVector>(descriptor));
+    SnapshotVectorResult result;
+    result.status = SnapshotOkStatus();
+    result.descriptor = std::move(descriptor);
+    return result;
+  }
+  return SnapshotVectorError(
+      "SB-MGA-SNAPSHOT-VECTOR-UUID-COLLISION",
+      "transaction.snapshot_vector.uuid_collision");
+}
+
 SnapshotVectorResult PublishStatementStableSnapshotVector(
     const LocalTransactionInventory& inventory,
     const LocalTransactionId owning_transaction,
@@ -502,39 +541,84 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
       MakeLocalTransactionId(SnapshotRetentionBoundary(descriptor));
   descriptor.retention_horizon_transaction = descriptor.oldest_snapshot_transaction;
 
-  constexpr u64 kGenerationAttempts = 32;
-  for (u64 attempt = 0; attempt < kGenerationAttempts; ++attempt) {
-    const auto generated = GenerateDurableEngineIdentityV7(
-        UuidKind::object, publication_unix_epoch_millis + attempt);
-    if (!generated.ok()) {
-      SnapshotVectorResult result;
-      result.status = generated.status;
-      result.diagnostic = generated.diagnostic;
-      return result;
-    }
-    const auto key = generated.value.value.bytes;
-    std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
-    if (SnapshotVectorRegistry().find(key) != SnapshotVectorRegistry().end()) {
-      continue;
-    }
-    descriptor.snapshot_uuid = generated.value;
-    descriptor.inventory_authoritative = true;
-    descriptor.complete = true;
-    if (!SnapshotVectorStructurallyComplete(descriptor)) {
-      return SnapshotVectorError(
-          "SB-MGA-SNAPSHOT-VECTOR-INCOMPLETE",
-          "transaction.snapshot_vector.incomplete");
-    }
-    SnapshotVectorRegistry().emplace(
-        key, std::make_shared<PublishedSnapshotVector>(descriptor));
+  return RegisterStatementStableSnapshotDescriptor(std::move(descriptor),
+                                                   publication_unix_epoch_millis);
+}
+
+// SEARCH_KEY: SB_NATIVE_BEGIN_VIEW_SNAPSHOT (thin-slice S4f). The native TIP does not record what a transaction saw at
+// its BEGIN (BuildLocalTransactionInventoryInto never sets stable_snapshot or begin_visible_*, and commit sequences are
+// rebuilt from commit times at every read), so the snapshot of a native snapshot_stable transaction cannot be rebuilt
+// from the inventory after the begin. The database loop captures it, in memory, when the transaction begins
+// (CreateSnapshotPointVisibility over the chains as they stood just before the begin) and this entry publishes the same
+// descriptor the inventory form publishes, from that captured value: the visibility lists are the begin view's (plus
+// the owner, which the descriptor requires among the active exclusions), the horizons and Next are the live inventory's
+// (publication). It shares the registry and the structural check with PublishStatementStableSnapshotVector.
+SnapshotVectorResult PublishStatementStableSnapshotVectorFromBeginView(
+    const LocalTransactionInventory& inventory,
+    const LocalTransactionId owning_transaction,
+    const VisibilitySnapshot& begin_view,
+    const u64 publication_unix_epoch_millis) {
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    return SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
+                               "transaction.snapshot_vector.inventory_invalid", reason);
+  }
+  if (publication_unix_epoch_millis == 0 || inventory.next_local_transaction_id == 0) {
+    return SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
+                               "transaction.snapshot_vector.inventory_invalid");
+  }
+  const auto owner = LookupLocalTransaction(inventory, owning_transaction);
+  if (!owner.ok() || !IsSnapshotOwnerEligible(owner.entry.state)) {
+    return SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-OWNER-INELIGIBLE",
+                               "transaction.snapshot_vector.owner_ineligible",
+                               owner.ok() ? TransactionStateName(owner.entry.state)
+                                          : std::to_string(owning_transaction.value));
+  }
+  if (owner.entry.identity.transaction_uuid.kind != UuidKind::transaction ||
+      !owner.entry.identity.transaction_uuid.valid() ||
+      scratchbird::core::uuid::UuidVersion(owner.entry.identity.transaction_uuid.value) != 7 ||
+      inventory.next_local_transaction_id <= owning_transaction.value ||
+      !begin_view.visible_through_local_transaction_id_is_boundary ||
+      begin_view.visible_through_local_transaction_id >= inventory.next_local_transaction_id) {
+    return SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-OWNER-MISMATCH",
+                               "transaction.snapshot_vector.owner_mismatch");
+  }
+  const auto horizons = ComputeLocalTransactionHorizons(inventory);
+  if (!horizons.ok()) {
     SnapshotVectorResult result;
-    result.status = SnapshotOkStatus();
-    result.descriptor = std::move(descriptor);
+    result.status = horizons.status;
+    result.diagnostic = horizons.diagnostic;
     return result;
   }
-  return SnapshotVectorError(
-      "SB-MGA-SNAPSHOT-VECTOR-UUID-COLLISION",
-      "transaction.snapshot_vector.uuid_collision");
+  SnapshotVectorDescriptor descriptor;
+  descriptor.owning_transaction_uuid = owner.entry.identity.transaction_uuid;
+  descriptor.owning_transaction = owning_transaction;
+  descriptor.snapshot_kind = SnapshotVectorKind::statement_stable;
+  descriptor.publication_inventory_next_local_transaction_id = inventory.next_local_transaction_id;
+  descriptor.active_excluded_local_transaction_ids = begin_view.active_excluded_local_transaction_ids;
+  descriptor.in_doubt_excluded_local_transaction_ids = begin_view.in_doubt_excluded_local_transaction_ids;
+  // The descriptor requires the owner among the active exclusions (own rows are the reader's, not "others'").
+  descriptor.active_excluded_local_transaction_ids.push_back(owning_transaction.value);
+  auto& active = descriptor.active_excluded_local_transaction_ids;
+  std::sort(active.begin(), active.end());
+  active.erase(std::unique(active.begin(), active.end()), active.end());
+  // The high watermark is the newest transaction the begin view could see: a committed outcome numbered at or below the
+  // begin boundary and in neither exclusion list.
+  u64 visible = kInvalidLocalTransactionId;
+  for (const auto& entry : inventory.entries) {
+    const u64 id = entry.identity.local_id.value;
+    if (!HasCommittedInventoryOutcome(entry) || id > begin_view.visible_through_local_transaction_id) continue;
+    if (std::binary_search(active.begin(), active.end(), id) ||
+        std::binary_search(descriptor.in_doubt_excluded_local_transaction_ids.begin(),
+                           descriptor.in_doubt_excluded_local_transaction_ids.end(), id))
+      continue;
+    visible = std::max(visible, id);
+  }
+  descriptor.visible_committed_high_watermark = visible;
+  descriptor.oldest_active_transaction = horizons.horizons.oldest_active_transaction;
+  descriptor.oldest_interesting_transaction = horizons.horizons.oldest_interesting_transaction;
+  descriptor.oldest_snapshot_transaction = MakeLocalTransactionId(SnapshotRetentionBoundary(descriptor));
+  descriptor.retention_horizon_transaction = descriptor.oldest_snapshot_transaction;
+  return RegisterStatementStableSnapshotDescriptor(std::move(descriptor), publication_unix_epoch_millis);
 }
 
 SnapshotVectorResult ResolvePublishedSnapshotVector(

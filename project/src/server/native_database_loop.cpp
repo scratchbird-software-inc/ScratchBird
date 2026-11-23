@@ -416,9 +416,17 @@ struct NativeDatabaseLoop::Serving {
   // table: transaction order -> the opaque owner key and the transaction's UUID. Loop thread only; memory only.
   core::platform::Uuid filespace_uuid, page_profile_uuid;
   pg::TransactionWriterBinding txn_binding;  // for the snapshot-point capture (reads the chains through the sink)
+  // SB_NATIVE_BEGIN_VIEW_SNAPSHOT (S4f): beside the owner and the UUID the table keeps what a statement receipt needs of the
+  // transaction: its stated identities and isolation (the durable header's own values), and the snapshot it SAW WHEN IT BEGAN
+  // (a visibility value captured in memory just before the begin: the native TIP does not record it and cannot rebuild it
+  // once other transactions have run). Memory only, as the table is.
   struct OwnedTransaction {
     core::platform::Uuid owner_key;
     core::platform::Uuid transaction_uuid;
+    NativeLoopTransactionIdentity identity;
+    std::uint8_t isolation_profile = 0;
+    bool read_only = false;
+    std::shared_ptr<const transaction::mga::VisibilitySnapshot> begin_view;  // reader = this transaction; null when not captured
   };
   std::map<std::uint64_t, OwnedTransaction> transactions;
   // S4e (SB_NATIVE_LOOP_SESSIONS): the sessions this loop approved and has not ended, with the record that opened them (the
@@ -978,6 +986,71 @@ pg::TransactionHeaderRecord MakeTransactionHeader(const S& serving, const core::
   header.session_uuid = identity.session_uuid;
   return header;
 }
+
+// The one sequence the begin capture, the receipt lookup and the snapshot-point scope all need: the TIP chains read through
+// the write door's sink (reads only) and the in-memory inventory built from them. `error` names the failing stage (the writer's
+// own error name, or the inventory build's) when !ok.
+struct TipRead {
+  bool ok = false;
+  std::string error;
+  pg::TipCounters counters;
+  transaction::mga::LocalTransactionInventory inventory;
+};
+template <class S>
+TipRead ReadTipInventory(storage::disk::CarefulWriteSink& sink, const S& serving) noexcept {
+  TipRead out;
+  try {
+    const auto chains = pg::ReadTransactionChainsThroughSink(sink, serving.txn_binding);
+    if (!chains.ok()) {
+      out.error = pg::TransactionWriterErrorName(chains.error);
+      return out;
+    }
+    auto built = pg::BuildLocalTransactionInventoryFromImages(chains.page_size, chains.state_images, chains.header_images);
+    if (!built.ok()) {
+      out.error = pg::TipPageErrorName(built.error);
+      return out;
+    }
+    out.counters = chains.counters;
+    out.inventory = std::move(built.inventory);
+    out.ok = true;
+  } catch (...) {
+    out.error = "exception";
+  }
+  return out;
+}
+
+// SEARCH_KEY: SB_NATIVE_BEGIN_VIEW_SNAPSHOT (S4f). What a transaction SEES when it begins, captured in memory through the
+// write door's sink (reads only) just BEFORE its BEGIN is written: the TIP as it stands (ReadTipInventory) and
+// CreateSnapshotPointVisibility over it (the same capture a snapshot-point scope makes). The reader is the
+// transaction about to begin (its order is Next) and its own rows are visible to it. `completing_order` is the transaction a
+// complete-and-begin finishes in the same plan (0 for a plain begin): it is no longer "active" for the replacement (its
+// outcome is decided by the same plan, and a committed or rolled back creator is judged by its own TIP state), so it is
+// removed from the exclusion lists. Null on any failure (nothing was written).
+template <class S>
+std::shared_ptr<const transaction::mga::VisibilitySnapshot> CaptureBeginView(storage::disk::CarefulWriteSink& sink, const S& serving,
+                                                                           std::uint64_t completing_order,
+                                                                           std::uint64_t* begin_order_out) noexcept {
+  try {
+    const auto tip = ReadTipInventory(sink, serving);
+    if (!tip.ok) return nullptr;
+    auto view = transaction::mga::CreateSnapshotPointVisibility(tip.inventory);
+    if (!view.ok()) return nullptr;
+    auto& value = view.snapshot;
+    value.reader_transaction = transaction::mga::MakeLocalTransactionId(tip.counters.next_transaction);
+    value.allow_reader_own_uncommitted = true;
+    if (completing_order != 0) {
+      const auto drop = [&](std::vector<std::uint64_t>& list) {
+        list.erase(std::remove(list.begin(), list.end(), completing_order), list.end());
+      };
+      drop(value.active_excluded_local_transaction_ids);
+      drop(value.in_doubt_excluded_local_transaction_ids);
+    }
+    if (begin_order_out) *begin_order_out = tip.counters.next_transaction;
+    return std::make_shared<const transaction::mga::VisibilitySnapshot>(std::move(value));
+  } catch (...) {
+    return nullptr;
+  }
+}
 }  // namespace
 
 NativeLoopTransactionError NativeDatabaseLoop::AdmitTransactionWork() noexcept {
@@ -1029,10 +1102,24 @@ NativeLoopTransactionResult NativeDatabaseLoop::BeginNow(const NativeLoopBeginRe
     const auto header = MakeTransactionHeader(serving, transaction_uuid, request.read_only, request.isolation_profile,
                                               request.identity);
     pg::TransactionBeginResult begun;
+    std::shared_ptr<const transaction::mga::VisibilitySnapshot> begin_view;
+    std::uint64_t view_order = 0;
+    bool view_captured = true;
     if (!WithTransactionSink(serving, out, [&](storage::disk::CarefulWriteSink& sink) {
+          // S4f: what the transaction sees is captured BEFORE its BEGIN is written; a capture that fails refuses the begin.
+          begin_view = CaptureBeginView(sink, serving, 0, &view_order);
+          if (!begin_view) {
+            view_captured = false;
+            return;
+          }
           begun = serving.writer->Begin(sink, header);
         }))
       return out;
+    if (!view_captured) {
+      out.error = NativeLoopTransactionError::writer_refused;
+      out.writer_error = "begin_view_capture_failed";
+      return out;
+    }
     out.writes = begun.writes;
     out.syncs = begun.syncs;
     out.growth_writes = begun.growth_writes;
@@ -1047,7 +1134,17 @@ NativeLoopTransactionResult NativeDatabaseLoop::BeginNow(const NativeLoopBeginRe
       }
       return out;
     }
-    serving.transactions[*begun.transaction_order] = {request.owner_key, transaction_uuid};
+    {
+      Serving::OwnedTransaction owned;
+      owned.owner_key = request.owner_key;
+      owned.transaction_uuid = transaction_uuid;
+      owned.identity = request.identity;
+      owned.isolation_profile = request.isolation_profile;
+      owned.read_only = request.read_only;
+      // The view's reader is the order the capture saw as Next; the writer allocates exactly that order.
+      if (begin_view && view_order == *begun.transaction_order) owned.begin_view = std::move(begin_view);
+      serving.transactions[*begun.transaction_order] = std::move(owned);
+    }
     out.begun_order = *begun.transaction_order;
     out.begun_uuid = transaction_uuid;
     out.error = NativeLoopTransactionError::none;
@@ -1143,7 +1240,16 @@ NativeLoopTransactionResult NativeDatabaseLoop::CompleteAndBeginNow(
     const auto header = MakeTransactionHeader(serving, replacement_uuid, request.read_only, request.isolation_profile,
                                               request.identity);
     pg::TransactionCompleteAndBeginResult done;
+    std::shared_ptr<const transaction::mga::VisibilitySnapshot> begin_view;
+    std::uint64_t view_order = 0;
+    bool view_captured = true;
     if (!WithTransactionSink(serving, out, [&](storage::disk::CarefulWriteSink& sink) {
+          // S4f: the replacement sees the state in which the completed transaction is no longer in progress (see CaptureBeginView).
+          begin_view = CaptureBeginView(sink, serving, request.transaction_order, &view_order);
+          if (!begin_view) {
+            view_captured = false;
+            return;
+          }
           done = serving.writer->CompleteAndBegin(sink, request.transaction_order,
                                                   request.completion == NativeLoopCompletion::commit
                                                       ? pg::TipStateCode::committed
@@ -1151,6 +1257,11 @@ NativeLoopTransactionResult NativeDatabaseLoop::CompleteAndBeginNow(
                                                   header, NowUtcNs());
         }))
       return out;
+    if (!view_captured) {
+      out.error = NativeLoopTransactionError::writer_refused;
+      out.writer_error = "begin_view_capture_failed";
+      return out;
+    }
     out.writes = done.writes;
     out.syncs = done.syncs;
     out.growth_writes = done.growth_writes;
@@ -1168,7 +1279,16 @@ NativeLoopTransactionResult NativeDatabaseLoop::CompleteAndBeginNow(
     }
     const auto owner = owned->second.owner_key;
     serving.transactions.erase(owned);
-    serving.transactions[done.replacement_order] = {owner, replacement_uuid};  // the replacement has the same owner
+    {
+      Serving::OwnedTransaction replacement;  // the replacement has the same owner
+      replacement.owner_key = owner;
+      replacement.transaction_uuid = replacement_uuid;
+      replacement.identity = request.identity;
+      replacement.isolation_profile = request.isolation_profile;
+      replacement.read_only = request.read_only;
+      if (begin_view && view_order == done.replacement_order) replacement.begin_view = std::move(begin_view);
+      serving.transactions[done.replacement_order] = std::move(replacement);
+    }
     out.completed_order = request.transaction_order;
     out.committed = done.final_state == pg::TipStateCode::committed;
     out.completed_at_utc_ns = done.completed_at_utc_ns;
@@ -1673,29 +1793,23 @@ NativeLoopReadScopeResult NativeDatabaseLoop::RunSnapshotScopeNow(
     info.mode = NativeLoopReadScopeMode::snapshot_point;
     transaction::mga::VisibilitySnapshot captured_view;
     if (!WithTransactionSink(serving, out.begin, [&](storage::disk::CarefulWriteSink& sink) {
-          const auto chains = pg::ReadTransactionChainsThroughSink(sink, serving.txn_binding);
-          if (!chains.ok()) {
+          const auto tip = ReadTipInventory(sink, serving);
+          if (!tip.ok) {
             out.begin.error = NativeLoopTransactionError::writer_refused;
-            out.begin.writer_error = pg::TransactionWriterErrorName(chains.error);
+            out.begin.writer_error = tip.error;
             return;
           }
-          const auto built = pg::BuildLocalTransactionInventoryFromImages(chains.page_size, chains.state_images, chains.header_images);
-          if (!built.ok()) {
-            out.begin.error = NativeLoopTransactionError::writer_refused;
-            out.begin.writer_error = pg::TipPageErrorName(built.error);
-            return;
-          }
-          auto view = transaction::mga::CreateSnapshotPointVisibility(built.inventory);
+          auto view = transaction::mga::CreateSnapshotPointVisibility(tip.inventory);
           if (!view.ok()) {
             out.begin.error = NativeLoopTransactionError::writer_refused;
             out.begin.writer_error = "snapshot_view_refused";
             return;
           }
           captured_view = std::move(view.snapshot);
-          info.snapshot_next_transaction = chains.counters.next_transaction;
-          info.snapshot_oit = chains.counters.horizons.oldest_interesting;
-          info.snapshot_oat = chains.counters.horizons.oldest_active;
-          info.snapshot_ost = chains.counters.horizons.oldest_snapshot;
+          info.snapshot_next_transaction = tip.counters.next_transaction;
+          info.snapshot_oit = tip.counters.horizons.oldest_interesting;
+          info.snapshot_oat = tip.counters.horizons.oldest_active;
+          info.snapshot_ost = tip.counters.horizons.oldest_snapshot;
           out.begin.error = NativeLoopTransactionError::none;
         }))
       return out;
@@ -1810,6 +1924,236 @@ std::future<NativeLoopReadScopeResult> NativeDatabaseLoop::SubmitReadScope(
 
 void NativeDatabaseLoop::HandleReadScope(ReadScopeWork& work) noexcept { work.done.set_value(RunReadScopeNow(work.work, work.mode)); }
 
+// ===================================================================================================================
+// SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT_SOURCE (thin-slice S4f; owner Q298). What the engine's statement receipt needs of
+// a session and its transaction, answered on the loop thread (the ownership table and the thread-affine TIP reader are the
+// loop's). READ ONLY. In order: admission (serving; restricted and failed refuse specifically), the session is open, a
+// transaction with that UUID is in the ownership table, it is OWNED by that session (the ownership table is the authority;
+// the durable header's session citation is the same value by construction), the live TIP agrees that the slot is an
+// active transaction with that UUID, the snapshot (the begin capture for snapshot_stable; the inventory just read for
+// read_committed_statement; any other isolation profile refuses), and the catalog generation as that snapshot sees the
+// committed name rows (the names reader run under the snapshot's own view, as a snapshot-point scope runs it).
+// ===================================================================================================================
+engine::internal_api::NativeReceiptInput NativeDatabaseLoop::LookupReceiptNow(
+    const core::platform::Uuid& session_uuid, const core::platform::Uuid& transaction_uuid) noexcept {
+  using E = engine::internal_api::NativeReceiptSourceError;
+  engine::internal_api::NativeReceiptInput out;
+  try {
+    out.error = E::invalid_request;
+    if (session_uuid.is_nil() || transaction_uuid.is_nil()) return out;
+    if (!serving_ || state() != NativeLoopState::serving) {
+      out.error = E::database_not_serving;
+      return out;
+    }
+    switch (serving_state()) {
+      case NativeServingState::failed: out.error = E::database_failed; return out;
+      case NativeServingState::restricted: out.error = E::database_restricted; return out;
+      case NativeServingState::serving: break;
+    }
+    auto& serving = *serving_;
+    if (!serving.writer || !serving.writer->restarted()) {
+      out.error = E::database_not_serving;
+      return out;
+    }
+    if (serving.writer->failed()) {
+      out.error = E::database_failed;
+      return out;
+    }
+    const auto session = serving.open_sessions.find(session_uuid);
+    if (session == serving.open_sessions.end()) {
+      out.error = E::session_not_open;
+      return out;
+    }
+    auto owned = serving.transactions.end();
+    for (auto it = serving.transactions.begin(); it != serving.transactions.end(); ++it)
+      if (it->second.transaction_uuid == transaction_uuid) {
+        owned = it;
+        break;
+      }
+    if (owned == serving.transactions.end()) {
+      out.error = E::transaction_not_active;
+      return out;
+    }
+    if (!(owned->second.owner_key == session_uuid)) {
+      out.error = E::not_owner;
+      return out;
+    }
+    const std::uint64_t order = owned->first;
+    // The live TIP, read through the write door's sink (reads only) and built into the existing in-memory inventory shape.
+    auto inventory = std::make_shared<transaction::mga::LocalTransactionInventory>();
+    bool inventory_ok = false;
+    NativeLoopTransactionResult door;
+    if (!WithTransactionSink(serving, door, [&](storage::disk::CarefulWriteSink& sink) {
+          auto tip = ReadTipInventory(sink, serving);
+          if (!tip.ok) return;
+          *inventory = std::move(tip.inventory);
+          inventory_ok = true;
+        }) ||
+        !inventory_ok) {
+      out.error = E::inventory_unavailable;
+      return out;
+    }
+    const auto slot = transaction::mga::LookupLocalTransaction(*inventory, transaction::mga::MakeLocalTransactionId(order));
+    if (!slot.ok() ||
+        (slot.entry.state != transaction::mga::TransactionState::active &&
+         slot.entry.state != transaction::mga::TransactionState::read_only_active) ||
+        slot.entry.identity.transaction_uuid.value != transaction_uuid) {
+      out.error = E::identity_mismatch;  // the loop's table and the TIP disagree about this transaction
+      return out;
+    }
+    // The snapshot.
+    std::shared_ptr<const transaction::mga::VisibilitySnapshot> view;
+    bool begin_capture = false;
+    const auto isolation = owned->second.isolation_profile;
+    if (isolation == static_cast<std::uint8_t>(core::catalog::IsolationProfileKind::snapshot_stable)) {
+      view = owned->second.begin_view;
+      begin_capture = true;
+      if (!view) {
+        out.error = E::snapshot_unavailable;
+        return out;
+      }
+    } else if (isolation == static_cast<std::uint8_t>(core::catalog::IsolationProfileKind::read_committed_statement)) {
+      auto statement_view = transaction::mga::CreateSnapshotPointVisibility(*inventory);
+      if (!statement_view.ok()) {
+        out.error = E::inventory_unavailable;
+        return out;
+      }
+      auto& value = statement_view.snapshot;
+      value.reader_transaction = transaction::mga::MakeLocalTransactionId(order);
+      value.allow_reader_own_uncommitted = true;
+      const auto drop_own = [&](std::vector<std::uint64_t>& list) {
+        list.erase(std::remove(list.begin(), list.end(), order), list.end());
+      };
+      drop_own(value.active_excluded_local_transaction_ids);
+      drop_own(value.in_doubt_excluded_local_transaction_ids);
+      view = std::make_shared<const transaction::mga::VisibilitySnapshot>(std::move(value));
+    } else {
+      out.error = E::isolation_unsupported;
+      return out;
+    }
+    // The catalog generation AS THIS SNAPSHOT SEES IT: the names reader under the snapshot's view, retaining no rows (the
+    // maxima, the entry count and the digest cover every visible row). The scope state is restored whatever happens.
+    {
+      struct ScopeView {
+        std::optional<transaction::mga::VisibilitySnapshot>& slot;
+        std::optional<engine::internal_api::NativeNamesSnapshot>& names_slot;
+        std::optional<transaction::mga::VisibilitySnapshot> outer;
+        std::optional<engine::internal_api::NativeNamesSnapshot> outer_names;
+        ~ScopeView() {
+          slot = std::move(outer);
+          names_slot = std::move(outer_names);
+        }
+      } scope_view{scope_view_, scope_names_, std::move(scope_view_), std::move(scope_names_)};
+      scope_view_ = *view;
+      scope_names_.reset();
+      engine::internal_api::NativeNamesReadFilter retain_nothing;
+      retain_nothing.all_scopes = false;
+      const auto names = ReadNamesSnapshotNow(retain_nothing);
+      if (!names.ok()) {
+        out.error = E::names_unavailable;
+        return out;
+      }
+      out.catalog_generation_id = names.max_catalog_generation_id;
+      out.name_resolution_epoch = names.max_name_resolution_epoch;
+      out.names_digest = names.names_digest;
+      out.names_entry_count = names.visible_entry_count;
+    }
+    const auto& record = session->second;
+    out.session_uuid = session_uuid;
+    out.principal_uuid = record.principal_uuid;
+    out.engine_instance_uuid = record.engine_instance_uuid;
+    out.attachment_uuid = owned->second.identity.attachment_uuid;
+    out.session_policy_generation = record.policy_generation;
+    out.session_security_generation = record.security_generation;
+    out.transaction_order = order;
+    out.transaction_uuid = transaction_uuid;
+    out.isolation_profile = isolation;
+    out.read_only = owned->second.read_only;
+    out.inventory = std::move(inventory);
+    out.snapshot_is_begin_capture = begin_capture;
+    out.snapshot = std::move(view);
+    out.error = E::none;
+    return out;
+  } catch (...) {
+    out = {};
+    out.error = E::inventory_unavailable;
+    return out;
+  }
+}
+
+void NativeDatabaseLoop::HandleReceipt(ReceiptWork& work) noexcept {
+  work.done.set_value(LookupReceiptNow(work.session_uuid, work.transaction_uuid));
+}
+
+std::future<engine::internal_api::NativeReceiptInput> NativeDatabaseLoop::SubmitReceiptLookup(
+    const core::platform::Uuid& session_uuid, const core::platform::Uuid& transaction_uuid) {
+  using E = engine::internal_api::NativeReceiptSourceError;
+  std::promise<engine::internal_api::NativeReceiptInput> refused;
+  const auto refuse = [&](E error) {
+    engine::internal_api::NativeReceiptInput result;
+    result.error = error;
+    refused.set_value(std::move(result));
+    return refused.get_future();
+  };
+  if (on_loop_thread()) return refuse(E::invalid_request);  // the loop never waits on itself
+  ReceiptWork work{session_uuid, transaction_uuid, {}};
+  auto future = work.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!accepting_ || state() != NativeLoopState::serving) return refuse(E::database_not_serving);
+    if (serving_state() == NativeServingState::failed) return refuse(E::database_failed);
+    if (serving_state() == NativeServingState::restricted) return refuse(E::database_restricted);
+    if (queue_.size() >= kQueueCapacity) return refuse(E::busy);
+    queue_.emplace_back(std::move(work));
+  }
+  wake_.notify_one();
+  return future;
+}
+
+engine::internal_api::NativeReceiptInput NativeDatabaseLoop::LookupReceiptOnLoopThread(
+    const core::platform::Uuid& session_uuid, const core::platform::Uuid& transaction_uuid) noexcept {
+  if (!on_loop_thread()) {
+    engine::internal_api::NativeReceiptInput refused;
+    refused.error = engine::internal_api::NativeReceiptSourceError::invalid_request;
+    return refused;
+  }
+  return LookupReceiptNow(session_uuid, transaction_uuid);
+}
+
+namespace {
+// SB_NATIVE_STATEMENT_RECEIPT_SOURCE: the source the served facts carry (as the names source): from the loop thread it reads
+// directly; from any other thread it queues the lookup and waits. A source that outlives its loop answers `closed`.
+class NativeLoopReceiptSource final : public engine::internal_api::NativeReceiptSource {
+ public:
+  explicit NativeLoopReceiptSource(std::shared_ptr<NativeNamesBinding> binding) : binding_(std::move(binding)) {}
+  engine::internal_api::NativeReceiptInput Lookup(const core::platform::Uuid& session_uuid,
+                                                  const core::platform::Uuid& transaction_uuid) const noexcept override {
+    using E = engine::internal_api::NativeReceiptSourceError;
+    engine::internal_api::NativeReceiptInput closed;
+    closed.error = E::closed;
+    try {
+      NativeDatabaseLoop* loop = nullptr;
+      std::future<engine::internal_api::NativeReceiptInput> future;
+      {
+        std::lock_guard<std::mutex> guard(binding_->mutex);
+        loop = binding_->loop;
+        if (loop == nullptr) return closed;
+        if (!loop->on_loop_thread()) future = loop->SubmitReceiptLookup(session_uuid, transaction_uuid);
+      }
+      if (!future.valid()) return loop->LookupReceiptOnLoopThread(session_uuid, transaction_uuid);
+      return future.get();
+    } catch (...) {
+      engine::internal_api::NativeReceiptInput failed;
+      failed.error = E::inventory_unavailable;
+      return failed;
+    }
+  }
+
+ private:
+  std::shared_ptr<NativeNamesBinding> binding_;
+};
+}  // namespace
+
 std::future<NativeLoopCloseResult> NativeDatabaseLoop::SubmitClose() {
   CloseWork work;
   auto future = work.done.get_future();
@@ -1906,6 +2250,10 @@ void NativeDatabaseLoop::Run() noexcept {
     }
     if (auto* end_session = std::get_if<SessionEndWork>(&work)) {
       HandleSession(*end_session);
+      continue;
+    }
+    if (auto* receipt = std::get_if<ReceiptWork>(&work)) {
+      HandleReceipt(*receipt);
       continue;
     }
     if (auto* test = std::get_if<TestWork>(&work)) {
@@ -2552,6 +2900,7 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
       marker->serving_state_cell = served_state_cell_;
       marker->names_source = std::make_shared<NativeLoopNamesSource>(names_binding_);
       marker->login_source = std::make_shared<NativeLoopLoginSource>(names_binding_);
+      marker->receipt_source = std::make_shared<NativeLoopReceiptSource>(names_binding_);
       serving.facts.served_facts = std::move(marker);
     }
     result.facts = serving.facts;

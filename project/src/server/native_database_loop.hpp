@@ -483,6 +483,16 @@ class NativeDatabaseLoop final {
   // anything is written; failed and not-serving refuse specifically).
   std::future<NativeLoopSessionOpenResult> SubmitOpenSession(NativeLoopSessionOpenRequest request);
   std::future<NativeLoopSessionEndResult> SubmitEndSession(NativeLoopSessionEndRequest request);
+  // SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT_SOURCE (S4f). What the engine's statement receipt needs from the loop: is the session
+  // open, does it own an ACTIVE transaction with this UUID, what the transaction saw when it began (its snapshot), the live
+  // TIP inventory, and the catalog generation as that snapshot sees it. READ ONLY: no write, no sync, no number. Admission:
+  // `serving` only (`restricted` answers database_restricted: login is allowed, no transaction is; `failed` and not-serving
+  // answer specifically). The cross-thread submit is refused with invalid_request on the loop thread; the OnLoopThread form
+  // is refused with invalid_request anywhere else. The future is always satisfied.
+  std::future<engine::internal_api::NativeReceiptInput> SubmitReceiptLookup(const core::platform::Uuid& session_uuid,
+                                                                            const core::platform::Uuid& transaction_uuid);
+  engine::internal_api::NativeReceiptInput LookupReceiptOnLoopThread(const core::platform::Uuid& session_uuid,
+                                                                     const core::platform::Uuid& transaction_uuid) noexcept;
   // Loop thread only: the sessions this loop has open (approved and not yet ended), ascending by UUID.
   std::vector<core::platform::Uuid> OpenSessionsOnLoopThread() const;
   // Loop thread only (empty / zero elsewhere): the ledger's current entry for a record UUID, and its sizes.
@@ -585,13 +595,17 @@ class NativeDatabaseLoop final {
     NativeLoopSessionEndRequest request;
     std::promise<NativeLoopSessionEndResult> done;
   };
+  struct ReceiptWork {
+    core::platform::Uuid session_uuid, transaction_uuid;
+    std::promise<engine::internal_api::NativeReceiptInput> done;
+  };
   struct ReadScopeWork {
     std::function<void(const NativeLoopReadTransaction&)> work;
     NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::durable_transaction;
     std::promise<NativeLoopReadScopeResult> done;
   };
   using Work = std::variant<OpenWork, CloseWork, LoginWork, NamesWork, TestWork, BeginWork, CompleteWork,
-                            CompleteAndBeginWork, ReadScopeWork, LedgerWork, SessionOpenWork, SessionEndWork>;
+                            CompleteAndBeginWork, ReadScopeWork, LedgerWork, SessionOpenWork, SessionEndWork, ReceiptWork>;
   static constexpr std::size_t kQueueCapacity = 8;
 
   void Run() noexcept;
@@ -617,6 +631,9 @@ class NativeDatabaseLoop final {
   void HandleTransaction(CompleteWork&) noexcept;
   void HandleTransaction(CompleteAndBeginWork&) noexcept;
   void HandleReadScope(ReadScopeWork&) noexcept;
+  void HandleReceipt(ReceiptWork&) noexcept;
+  engine::internal_api::NativeReceiptInput LookupReceiptNow(const core::platform::Uuid& session_uuid,
+                                                            const core::platform::Uuid& transaction_uuid) noexcept;
   void HandleLedger(LedgerWork&) noexcept;
   NativeLoopSessionOpenResult OpenSessionNow(const NativeLoopSessionOpenRequest&) noexcept;
   NativeLoopSessionEndResult EndSessionNow(const core::platform::Uuid& session_uuid,

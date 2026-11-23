@@ -27,9 +27,11 @@
 //     filespace, page size), facts without an owner and an owner paired with another path refuse with specific
 //     codes;
 //   * a session opens on the native handle (the prepared-statement registry load is the empty, process-local
-//     set); the receipt refuses ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4 whatever marker the caller
-//     put in its context (the handle's replaces it) and still checks the context's database against the
-//     header snapshot (= the facts);
+//     set); [S4f, owner Q298, 2026-12-02: OLD: the receipt refused ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4
+//     whatever the context held. NEW: a native receipt needs a transaction identity (EXACT_TRANSACTION_REQUIRED without one)
+//     and a session the loop APPROVED (an engine session nobody approved refuses NATIVE_SESSION_NOT_OPEN); a receipt WITH an
+//     approved session is native_receipt_test's. The marker rule is unchanged: the handle's replaces whatever the caller put
+//     in its context] and the receipt still checks the context's database against the header snapshot (= the facts);
 //   * every executor-availability entry point answers from the per-build native table: nothing is available
 //     (the allow-list is empty), so each refuses SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED with structured fields;
 //     Set refuses SBLR.EXECUTOR.NATIVE_AVAILABILITY_IMMUTABLE; the pure table logic (a test allow-list) answers
@@ -344,9 +346,31 @@ int HandleMode(const fs::path& path) {
     return Code(diagnostic);
   };
   sb_engine_status_t receipt_status = SB_ENGINE_STATUS_OK;
-  Check(receipt_code(context, &receipt_status) == "ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4" &&
-            receipt_status == SB_ENGINE_STATUS_UNSUPPORTED,
-        "the receipt on a native handle refuses SESSION_REQUIRED_NATIVE_S4 (no native session or transaction before S4)");
+  // S4f (owner Q298): OLD (S3e): the receipt on a native handle refused SESSION_REQUIRED_NATIVE_S4 here. NEW: without a
+  // transaction identity it refuses EXACT_TRANSACTION_REQUIRED, and with one but no session the loop approved it refuses
+  // NATIVE_SESSION_NOT_OPEN (read only: nothing is written; the approved case is native_receipt_test).
+  const auto without_transaction = receipt_code(context, &receipt_status);
+  Check(without_transaction == "ENGINE.STATEMENT_CONTEXT.EXACT_TRANSACTION_REQUIRED" &&
+            receipt_status == SB_ENGINE_STATUS_TRANSACTION_REQUIRED,
+        "the receipt on a native handle without a transaction identity refuses EXACT_TRANSACTION_REQUIRED, got " + without_transaction);
+  const auto unapproved_transaction = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  Check(unapproved_transaction.has_value(), "a transaction identity");
+  context.transaction_uuid = *unapproved_transaction;
+  context.local_transaction_id = 9;
+  const auto receipt_with_transaction = [&](const api::EngineRequestContext& ctx, sb_engine_status_t* status_out = nullptr) {
+    bridge::StatementContextAcquireRequest request;
+    request.engine_context = &ctx;
+    request.exact_transaction_uuid = *unapproved_transaction;
+    bridge::StatementContextReceiptHandle receipt{};
+    bridge::StatementContextReceiptView view{};
+    sb_engine_result_t diagnostic = nullptr;
+    const auto status = bridge::AcquireStatementContextReceipt(session, &request, &receipt, &view, &diagnostic);
+    if (status_out) *status_out = status;
+    return Code(diagnostic);
+  };
+  Check(receipt_with_transaction(context, &receipt_status) == "ENGINE.STATEMENT_CONTEXT.NATIVE_SESSION_NOT_OPEN" &&
+            receipt_status == SB_ENGINE_STATUS_SECURITY_DENIED,
+        "a session the loop never approved refuses NATIVE_SESSION_NOT_OPEN (was SESSION_REQUIRED_NATIVE_S4)");
   {
     // The marker has one source: the caller's context here carries NO marker (and no transaction), so without
     // the handle's pointer replacing it the receipt would fall through to EXACT_TRANSACTION_REQUIRED.
@@ -354,7 +378,8 @@ int HandleMode(const fs::path& path) {
     // A caller-supplied (forged) pointer is replaced as well, never trusted.
     auto liar = context;
     liar.native_served_facts = forged([](auto& f) { f.database_uuid.bytes[0] ^= 0xff; f.serving_state = api::NativeServedServingState::failed; });
-    Check(receipt_code(liar) == "ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4", "a caller-supplied facts pointer does not change the outcome");
+    Check(receipt_with_transaction(liar) == "ENGINE.STATEMENT_CONTEXT.NATIVE_SESSION_NOT_OPEN",
+          "a caller-supplied facts pointer does not change the outcome (was SESSION_REQUIRED_NATIVE_S4; the handle's facts decide: not failed)");
     auto wrong_database = context;
     wrong_database.database_uuid.bytes[15] ^= 1;
     Check(receipt_code(wrong_database) == "ENGINE.STATEMENT_CONTEXT.SESSION_CONTEXT_MISMATCH",

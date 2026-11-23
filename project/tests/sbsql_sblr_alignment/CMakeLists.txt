@@ -4323,6 +4323,8 @@ endif()
 # facts; OpenServedEngine with them succeeds (header snapshot = the facts, no .sb.* file, no descriptor recovery);
 # sb_engine_open still refuses a native file; forged / missing facts refuse; every executor-availability entry
 # point answers from the per-build native table; the legacy side-file registries answer process-locally or refuse;
+# [S4f, owner Q298, 2026-12-02: the receipt no longer refuses SESSION_REQUIRED_NATIVE_S4; it needs a transaction identity and an
+# APPROVED session (EXACT_TRANSACTION_REQUIRED / NATIVE_SESSION_NOT_OPEN), and a native receipt itself is native_receipt's.]
 # the receipt refuses SESSION_REQUIRED_NATIVE_S4. A NEW target (not native_serving, whose headroom against its 1800 s
 # timeout is the thing to watch). Five page sizes; one child process per served open.
 add_executable(sbsql_sblr_alignment_native_handle native_handle_test.cpp)
@@ -4499,6 +4501,52 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
         --size ${sb_nl_bytes})
     set_tests_properties(sbsql_sblr_alignment_native_session_approval_strace_${sb_nl_label} PROPERTIES
       LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;session_ledger;strace"
+      TIMEOUT 900)
+  endforeach()
+endif()
+# SB_NATIVE_RECEIPT_TEST (thin-slice S4f; owner Q298, 2026-12-02): the NATIVE statement-context receipt. A session approved by the
+# real handoff (S4e) and its active transaction get a receipt: its fields equal the transaction's TIP header, the served facts and
+# the names' catalog generation; the snapshot is the one the transaction saw at BEGIN (stable against a later commit); every refusal
+# has its own code and writes nothing; the SBLR name-resolve bind / dispatch / journal refuse a native receipt specifically (the
+# allow-list is empty until S4g, owner Q302). NEW targets, one ctest entry per page size (never added to native_login, whose
+# approval targets are already the slowest). Compiles native_database_loop.cpp itself with the loop's test seams (the catalog
+# change and the failure are made through the loop's own writer).
+add_executable(sbsql_sblr_alignment_native_receipt native_receipt_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_receipt sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)
+target_compile_definitions(sbsql_sblr_alignment_native_receipt PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_receipt PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_receipt PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_receipt PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_receipt PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"
+  SB_NATIVE_LOGIN_MATERIAL_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_login_material>")
+foreach(sb_nr_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_nr_parts "${sb_nr_size}")
+  list(GET sb_nr_parts 0 sb_nr_bytes)
+  list(GET sb_nr_parts 1 sb_nr_label)
+  add_test(NAME sbsql_sblr_alignment_native_receipt_${sb_nr_label}
+    COMMAND sbsql_sblr_alignment_native_receipt size ${sb_nr_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_receipt_${sb_nr_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;session_ledger;database_ownership;binary_uuid"
+    TIMEOUT 900)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_nr_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_nr_parts "${sb_nr_size}")
+    list(GET sb_nr_parts 0 sb_nr_bytes)
+    list(GET sb_nr_parts 1 sb_nr_label)
+    add_test(NAME sbsql_sblr_alignment_native_receipt_strace_${sb_nr_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_receipt_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_receipt>
+        --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --size ${sb_nr_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_receipt_strace_${sb_nr_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;strace"
       TIMEOUT 900)
   endforeach()
 endif()

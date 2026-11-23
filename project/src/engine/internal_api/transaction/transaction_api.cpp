@@ -1391,9 +1391,10 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   return result;
 }
 
-EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
-    const EnginePublishStatementSnapshotRequest& request) {
-  const std::string operation_id = "transaction.snapshot.publish";
+namespace {
+// Everything both publishers check before the inventory is in hand (the request's own shape).
+std::optional<EnginePublishStatementSnapshotResult> ValidateStatementSnapshotPublishRequest(
+    const EnginePublishStatementSnapshotRequest& request, const std::string& operation_id) {
   if (const auto path_status = ValidateDatabasePath(request.context, operation_id);
       path_status.error) {
     return MakeTxnError<EnginePublishStatementSnapshotResult>(
@@ -1419,20 +1420,18 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
         MakeInvalidRequestDiagnostic(operation_id,
                                      "statement_uuid_malformed"));
   }
-  const auto inventory_guard =
-      AcquireTransactionInventoryGuard(request.context.database_path);
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(
-      request.context.database_path, request.context.served_route_owner);
-  if (!loaded.ok()) {
-    return MakeTxnError<EnginePublishStatementSnapshotResult>(
-        request.context,
-        operation_id,
-        DiagnosticFromMGA(loaded.diagnostic,
-                          "SB-MGA-TXN-INV-LOAD-FAILED",
-                          "mga.transaction_inventory.load_failed"));
-  }
+  return std::nullopt;
+}
+
+// The publication proper, over an inventory the caller holds. `begin_view` null: the snapshot is derived from the inventory
+// (the legacy form). `begin_view` set: SB_NATIVE_BEGIN_VIEW_SNAPSHOT (S4f), the snapshot the transaction saw when it began.
+EnginePublishStatementSnapshotResult PublishStatementSnapshotOnInventory(
+    const EnginePublishStatementSnapshotRequest& request, const std::string& operation_id,
+    const LocalTransactionInventory& inventory, const scratchbird::transaction::mga::VisibilitySnapshot* begin_view) {
+  const auto canonical_statement = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::object, request.context.statement_uuid);
   const auto exact_identity =
-      FindExactTransactionIdentity(loaded.inventory, request.context);
+      FindExactTransactionIdentity(inventory, request.context);
   if (!exact_identity.entry.has_value()) {
     return MakeTxnError<EnginePublishStatementSnapshotResult>(
         request.context,
@@ -1440,16 +1439,22 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
         MakeInvalidRequestDiagnostic(operation_id,
                                      exact_identity.refusal_reason));
   }
-  const auto canonical_statement_uuid = statement_uuid.value.value;
+  const auto canonical_statement_uuid = canonical_statement.value.value;
   if (!PrepareDmlUpdateTransactionFinalityV1(request.context) ||
       !PrepareDmlDeleteTransactionFinalityV1(request.context)) {
     return MakeTxnError<EnginePublishStatementSnapshotResult>(request.context, operation_id,
         MakeInvalidRequestDiagnostic(operation_id, "DML_statement_reconciliation_required"));
   }
-  auto published = PublishStatementStableSnapshotVector(
-      loaded.inventory,
-      MakeLocalTransactionId(request.context.local_transaction_id),
-      CurrentUnixMillis());
+  auto published = begin_view != nullptr
+      ? PublishStatementStableSnapshotVectorFromBeginView(
+            inventory,
+            MakeLocalTransactionId(request.context.local_transaction_id),
+            *begin_view,
+            CurrentUnixMillis())
+      : PublishStatementStableSnapshotVector(
+            inventory,
+            MakeLocalTransactionId(request.context.local_transaction_id),
+            CurrentUnixMillis());
   if (!published.ok()) {
     return MakeTxnError<EnginePublishStatementSnapshotResult>(
         request.context,
@@ -1486,7 +1491,8 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
            result.snapshot_vector.visible_committed_high_watermark)});
   result.evidence.push_back(
       {"statement_snapshot_visibility_boundary_source",
-       "established_local_snapshot_max_committed_or_archived"});
+       begin_view != nullptr ? "native_begin_view_captured_before_begin"
+                             : "established_local_snapshot_max_committed_or_archived"});
   result.evidence.push_back(
       {"statement_snapshot_publication_inventory_next",
        std::to_string(result.snapshot_vector
@@ -1501,6 +1507,37 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
   }
   snapshot_owner.TransferToOwner();
   return result;
+}
+}  // namespace
+
+EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
+    const EnginePublishStatementSnapshotRequest& request) {
+  const std::string operation_id = "transaction.snapshot.publish";
+  if (auto refused = ValidateStatementSnapshotPublishRequest(request, operation_id)) return std::move(*refused);
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(
+      request.context.database_path, request.context.served_route_owner);
+  if (!loaded.ok()) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(loaded.diagnostic,
+                          "SB-MGA-TXN-INV-LOAD-FAILED",
+                          "mga.transaction_inventory.load_failed"));
+  }
+  return PublishStatementSnapshotOnInventory(request, operation_id, loaded.inventory, nullptr);
+}
+
+// SEARCH_KEY: SB_NATIVE_BEGIN_VIEW_SNAPSHOT (thin-slice S4f). The native form: no inventory is loaded from a path (the caller
+// passes the one the database loop read from the TIP) and the snapshot is the one the transaction saw when it BEGAN.
+EnginePublishStatementSnapshotResult EnginePublishNativeStatementSnapshot(
+    const EnginePublishStatementSnapshotRequest& request,
+    const scratchbird::transaction::mga::LocalTransactionInventory& inventory,
+    const scratchbird::transaction::mga::VisibilitySnapshot& begin_view) {
+  const std::string operation_id = "transaction.snapshot.publish";
+  if (auto refused = ValidateStatementSnapshotPublishRequest(request, operation_id)) return std::move(*refused);
+  return PublishStatementSnapshotOnInventory(request, operation_id, inventory, &begin_view);
 }
 
 EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(

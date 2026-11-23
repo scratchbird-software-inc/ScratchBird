@@ -78,6 +78,13 @@ struct EnginePublishStatementSnapshotResult : EngineApiResult {
 EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
     const EnginePublishStatementSnapshotRequest& request);
 
+// SB_NATIVE_BEGIN_VIEW_SNAPSHOT (S4f): the native publisher. The inventory is the one the database loop read from the TIP for
+// this lookup (nothing is loaded from a path) and the snapshot is the one the transaction saw when it BEGAN.
+EnginePublishStatementSnapshotResult EnginePublishNativeStatementSnapshot(
+    const EnginePublishStatementSnapshotRequest& request,
+    const scratchbird::transaction::mga::LocalTransactionInventory& inventory,
+    const scratchbird::transaction::mga::VisibilitySnapshot& begin_view);
+
 struct EngineResolveStatementSnapshotRequest : EngineApiRequest {};
 struct EngineResolveStatementSnapshotResult : EngineApiResult {
   EngineUuid statement_uuid;

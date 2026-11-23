@@ -24,6 +24,8 @@
 // Nothing here grants access; authorization still receives user + role + SBLR/UUID/data and nothing else.
 
 #include "../../storage/disk/filespace_page_zero.hpp"
+#include "../../transaction/mga/transaction_inventory.hpp"
+#include "../../transaction/mga/row_version.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -183,6 +185,80 @@ class NativeNamesSource {
 // SB_NATIVE_LOGIN_SOURCE (S4c): defined in native_login_material.hpp (which includes this header).
 class NativeLoginSource;
 
+// SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT_SOURCE (thin-slice S4f; owner Q298: "the receipt forks: cohort from the facts,
+// inventory from the native TIP reader, are built with S4's session and transaction"). The ONE way the engine's statement
+// receipt learns what only the database loop knows: whether the session is open and approved, whether the transaction is
+// active and owned by that session, what the transaction saw when it BEGAN, the live inventory, and the catalog
+// generation as that snapshot sees it. Read only (no write, no sync); from any thread it is a request on the loop's queue
+// and waits (the loop's ownership table and the thread-affine TIP reader are the loop's), exactly like the names source.
+// Values only: binary identities, counters, enums; no text.
+enum class NativeReceiptSourceError : std::uint8_t {
+  none = 0,
+  invalid_request,       // a nil session or transaction identity
+  closed,                // the loop is gone / closing / the source outlived its loop
+  database_not_serving,  // not serving (opening, closing)
+  database_failed,       // the live state is `failed`: needs a reopen
+  database_restricted,   // `restricted` (Q299): login is allowed, no transaction is
+  busy,                  // the loop's queue is full
+  session_not_open,      // the loop holds no open (approved, not ended) session by that UUID
+  transaction_not_active,// no active transaction of that UUID in the loop's ownership table (ended, never begun, unknown)
+  not_owner,             // the transaction is owned by another session
+  identity_mismatch,     // the table's record disagrees with the durable header's session / principal citation
+  snapshot_unavailable,  // the begin-time snapshot was not captured (a transaction that did not begin through the loop)
+  inventory_unavailable, // the live TIP could not be read or built
+  names_unavailable,     // the catalog generation at the snapshot could not be read
+  isolation_unsupported  // a native receipt knows only snapshot_stable and read_committed_statement
+};
+inline const char* NativeReceiptSourceErrorName(NativeReceiptSourceError e) noexcept {
+  switch (e) {
+    case NativeReceiptSourceError::none: return "none";
+    case NativeReceiptSourceError::invalid_request: return "invalid_request";
+    case NativeReceiptSourceError::closed: return "closed";
+    case NativeReceiptSourceError::database_not_serving: return "database_not_serving";
+    case NativeReceiptSourceError::database_failed: return "database_failed";
+    case NativeReceiptSourceError::database_restricted: return "database_restricted";
+    case NativeReceiptSourceError::busy: return "busy";
+    case NativeReceiptSourceError::session_not_open: return "session_not_open";
+    case NativeReceiptSourceError::transaction_not_active: return "transaction_not_active";
+    case NativeReceiptSourceError::not_owner: return "not_owner";
+    case NativeReceiptSourceError::identity_mismatch: return "identity_mismatch";
+    case NativeReceiptSourceError::snapshot_unavailable: return "snapshot_unavailable";
+    case NativeReceiptSourceError::inventory_unavailable: return "inventory_unavailable";
+    case NativeReceiptSourceError::names_unavailable: return "names_unavailable";
+    case NativeReceiptSourceError::isolation_unsupported: return "isolation_unsupported";
+  }
+  return "";
+}
+struct NativeReceiptInput {
+  NativeReceiptSourceError error = NativeReceiptSourceError::invalid_request;
+  // The session record the loop holds (the durable ledger record that opened it).
+  core::platform::Uuid session_uuid, principal_uuid, attachment_uuid, engine_instance_uuid;
+  std::uint64_t session_policy_generation = 0, session_security_generation = 0;
+  // The transaction (its durable header's citation): order, UUID, isolation profile byte (IsolationProfileKind), intent.
+  std::uint64_t transaction_order = 0;
+  core::platform::Uuid transaction_uuid;
+  std::uint8_t isolation_profile = 0;
+  bool read_only = false;
+  // The live inventory as the loop read it from the TIP for this lookup (the receipt's inventory snapshot): its Next and
+  // one entry per used slot with a header (the existing in-memory shape the transaction layer works with).
+  std::shared_ptr<const transaction::mga::LocalTransactionInventory> inventory;
+  // What the transaction saw when it BEGAN (snapshot_stable): the visibility value captured in memory before the begin
+  // (the TIP does not record it), with the reader set to this transaction. For read_committed_statement the loop builds
+  // the value from the inventory it just read (a statement's snapshot is taken at the statement).
+  bool snapshot_is_begin_capture = false;
+  std::shared_ptr<const transaction::mga::VisibilitySnapshot> snapshot;
+  // The catalog generation and name-resolution epoch as THAT snapshot sees the committed name rows (the maxima over the
+  // rows visible to it), and the digest of those rows (a change signal): the generation the receipt carries.
+  std::uint64_t catalog_generation_id = 0, name_resolution_epoch = 0, names_digest = 0, names_entry_count = 0;
+  bool ok() const noexcept { return error == NativeReceiptSourceError::none; }
+};
+class NativeReceiptSource {
+ public:
+  virtual ~NativeReceiptSource() = default;
+  virtual NativeReceiptInput Lookup(const core::platform::Uuid& session_uuid,
+                                    const core::platform::Uuid& transaction_uuid) const noexcept = 0;
+};
+
 struct NativeServedDatabaseFacts {
   // Identity, from page zero as the loop verified it.
   core::platform::Uuid database_uuid;
@@ -232,6 +308,10 @@ struct NativeServedDatabaseFacts {
   // SB_NATIVE_LOGIN_SOURCE (S4c): the one way a native login reaches the loop (snapshot-point scope, names then
   // credential read). Set by the loop with the marker; null only in a marker built without a loop.
   std::shared_ptr<const NativeLoginSource> login_source;
+  // SB_NATIVE_STATEMENT_RECEIPT_SOURCE (S4f): the one way the statement receipt reaches the loop's session, transaction
+  // and snapshot knowledge. Set by the loop with the marker; null only in a marker built without a loop (the receipt then
+  // refuses ENGINE.STATEMENT_CONTEXT.NATIVE_RECEIPT_SOURCE_UNAVAILABLE).
+  std::shared_ptr<const NativeReceiptSource> receipt_source;
 };
 
 }  // namespace scratchbird::engine::internal_api

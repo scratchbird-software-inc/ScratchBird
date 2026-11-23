@@ -5081,7 +5081,8 @@ static bool native_handle_session(sb_engine_session_t session) {
 // this specific code instead of the generic not-built one. The vector carries the operation, the loop's own
 // diagnostic code as the reason (a machine token) and the database identity (binary); no prose.
 static sb_engine_status_t native_operation_not_built(sb_engine_session_t session, sb_engine_result_t* out_result,
-                                                     const char* operation) {
+                                                     const char* operation,
+                                                     const char* requires_token = "native_session_and_transaction_s4") {
   const auto& facts = session->engine->native_served_facts;
   if (facts && facts->CurrentServingState() == scratchbird::engine::internal_api::NativeServedServingState::restricted) {
     scratchbird::engine::internal_api::EngineApiDiagnostic restricted =
@@ -5095,7 +5096,78 @@ static sb_engine_status_t native_operation_not_built(sb_engine_session_t session
                        "engine.native.database_restricted_read_only", {}, {}, nullptr, &restricted);
   }
   return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.OPERATION_NOT_BUILT",
-                     "engine.native.operation_not_built", {}, {{"operation", operation}, {"requires", "native_session_and_transaction_s4"}});
+                     "engine.native.operation_not_built", {}, {{"operation", operation}, {"requires", requires_token}});
+}
+
+// SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT (thin-slice S4f; owner Q298). The refusals of the NATIVE statement-context receipt.
+// One specific code per cause (owner Q193); the vector carries binary identities and machine tokens, never prose, and
+// every refusal is made BEFORE anything is written (the source is read-only). `restricted` is the Q299 code the other native
+// operations use (login is allowed on a restricted database, a transaction and so a receipt are not).
+static sb_engine_status_t native_receipt_failed_refusal(
+    const scratchbird::engine::internal_api::NativeServedDatabaseFacts& facts, sb_engine_result_t* out_result) {
+  scratchbird::engine::internal_api::EngineApiDiagnostic failed =
+      scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+          "ENGINE.STATEMENT_CONTEXT.NATIVE_DATABASE_FAILED", "engine.statement_context.native_database_failed", {}, true);
+  failed.fields.push_back({"reason", facts.CurrentServingDiagnosticCode()});
+  failed.fields.push_back({"requires", "reopen"});
+  failed.identity_fields.push_back({"database_uuid", facts.database_uuid});
+  return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4038, "ENGINE.STATEMENT_CONTEXT.NATIVE_DATABASE_FAILED",
+                     "engine.statement_context.native_database_failed", {}, {}, nullptr, &failed);
+}
+static sb_engine_status_t native_receipt_refusal(sb_engine_session_t session, sb_engine_result_t* out_result,
+                                                 scratchbird::engine::internal_api::NativeReceiptSourceError error,
+                                                 const scratchbird::engine::internal_api::NativeServedDatabaseFacts& facts) {
+  using E = scratchbird::engine::internal_api::NativeReceiptSourceError;
+  const auto refuse = [&](sb_engine_status_t status, const char* code, const char* key) {
+    scratchbird::engine::internal_api::EngineApiDiagnostic diagnostic =
+        scratchbird::engine::internal_api::MakeEngineApiDiagnostic(code, key, {}, true);
+    diagnostic.fields.push_back({"source_error", scratchbird::engine::internal_api::NativeReceiptSourceErrorName(error)});
+    diagnostic.identity_fields.push_back({"database_uuid", facts.database_uuid});
+    return fail_result(status, out_result, 4038, code, key, {}, {}, nullptr, &diagnostic);
+  };
+  switch (error) {
+    case E::none:
+    case E::invalid_request:
+      return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "ENGINE.STATEMENT_CONTEXT.EXACT_TRANSACTION_REQUIRED",
+                    "engine.statement_context.exact_transaction_required");
+    case E::closed:
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "ENGINE.STATEMENT_CONTEXT.NATIVE_RECEIPT_SOURCE_CLOSED",
+                    "engine.statement_context.native_receipt_source_closed");
+    case E::database_not_serving:
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "ENGINE.STATEMENT_CONTEXT.NATIVE_DATABASE_NOT_SERVING",
+                    "engine.statement_context.native_database_not_serving");
+    case E::database_failed: return native_receipt_failed_refusal(facts, out_result);
+    case E::database_restricted: return native_operation_not_built(session, out_result, "statement_context_acquire");
+    case E::busy:
+      return refuse(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, "ENGINE.STATEMENT_CONTEXT.NATIVE_SOURCE_BUSY",
+                    "engine.statement_context.native_source_busy");
+    case E::session_not_open:
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED, "ENGINE.STATEMENT_CONTEXT.NATIVE_SESSION_NOT_OPEN",
+                    "engine.statement_context.native_session_not_open");
+    case E::transaction_not_active:
+      return refuse(SB_ENGINE_STATUS_TRANSACTION_REQUIRED, "ENGINE.STATEMENT_CONTEXT.TRANSACTION_NOT_ACTIVE",
+                    "engine.statement_context.transaction_not_active");
+    case E::not_owner:
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED, "ENGINE.STATEMENT_CONTEXT.NATIVE_TRANSACTION_NOT_OWNED",
+                    "engine.statement_context.native_transaction_not_owned");
+    case E::identity_mismatch:
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "ENGINE.STATEMENT_CONTEXT.NATIVE_TRANSACTION_TIP_MISMATCH",
+                    "engine.statement_context.native_transaction_tip_mismatch");
+    case E::snapshot_unavailable:
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "ENGINE.STATEMENT_CONTEXT.NATIVE_SNAPSHOT_UNAVAILABLE",
+                    "engine.statement_context.native_snapshot_unavailable");
+    case E::inventory_unavailable:
+      return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR, "ENGINE.STATEMENT_CONTEXT.INVENTORY_UNAVAILABLE",
+                    "engine.statement_context.inventory_unavailable");
+    case E::names_unavailable:
+      return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR, "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_UNAVAILABLE",
+                    "engine.statement_context.native_catalog_generation_unavailable");
+    case E::isolation_unsupported:
+      return refuse(SB_ENGINE_STATUS_UNSUPPORTED, "ENGINE.STATEMENT_CONTEXT.NATIVE_ISOLATION_UNSUPPORTED",
+                    "engine.statement_context.native_isolation_unsupported");
+  }
+  return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR, "ENGINE.STATEMENT_CONTEXT.INVENTORY_UNAVAILABLE",
+                "engine.statement_context.inventory_unavailable");
 }
 
 sb_engine_status_t check_struct(std::uint32_t struct_size,
@@ -7425,27 +7497,31 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "ENGINE.STATEMENT_CONTEXT.CALLER_AUTHORITY_FORBIDDEN",
         "engine.statement_context.caller_authority_forbidden");
   }
-  // SEARCH_KEY: SB_NATIVE_RECEIPT_SESSION_REQUIRED (thin-slice S3e, plan 38 section 2f). A native handle opens
-  // and answers every registry lookup natively, but no native session or transaction exists until S4/S5: this
-  // receipt needs a transaction (local id, exact UUID) and a session, and the legacy structures below (the
-  // catalog identity read, the strong transaction inventory snapshot, txn_publish, the prepared-statement,
-  // diagnostic-identity and transaction-begin registries, catalog object events) read .sb.* files. It therefore
-  // refuses, specifically, instead of inventing state. S4 replaces this refusal with the native receipt: cohort
-  // from the facts, inventory snapshot from the native TIP reader, availability from the native table.
-  if (engine_context.native_served_facts) {
-    scratchbird::engine::internal_api::EngineApiDiagnostic native_diagnostic =
-        scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
-            "ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4",
-            "engine.statement_context.session_required_native_s4", {}, true);
-    native_diagnostic.fields.push_back({"native_session_available", "false"});
-    native_diagnostic.fields.push_back({"native_transaction_available", "false"});
-    native_diagnostic.fields.push_back(
-        {"serving_state", std::to_string(static_cast<unsigned>(engine_context.native_served_facts->CurrentServingState()))});
-    native_diagnostic.identity_fields.push_back({"database_uuid", engine_context.native_served_facts->database_uuid});
-    return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038,
-                       "ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4",
-                       "engine.statement_context.session_required_native_s4", {}, {}, nullptr,
-                       &native_diagnostic);
+  // SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT (thin-slice S4f; owner Q298 = the receipt forks, cohort from the facts and
+  // inventory from the native TIP, are built with S4's session and transaction). WAS (S3e, SB_NATIVE_RECEIPT_SESSION_REQUIRED):
+  // a native handle refused ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4 here, whatever the context held, because no native
+  // session or transaction existed. Now a native handle whose session was APPROVED by the loop (S4e) and which owns an ACTIVE
+  // transaction gets a receipt; everything else refuses with its own code, and nothing is written. The database's live state
+  // comes first: `restricted` (Q299: login is allowed, a transaction and so a receipt are not) and `failed` (needs a reopen).
+  const auto native_facts = engine_context.native_served_facts;
+  if (native_facts) {
+    switch (native_facts->CurrentServingState()) {
+      case scratchbird::engine::internal_api::NativeServedServingState::restricted:
+        return native_operation_not_built(session, out_result, "statement_context_acquire");
+      case scratchbird::engine::internal_api::NativeServedServingState::failed:
+        return native_receipt_failed_refusal(*native_facts, out_result);
+      case scratchbird::engine::internal_api::NativeServedServingState::serving: break;
+    }
+    if (!native_facts->receipt_source) {
+      scratchbird::engine::internal_api::EngineApiDiagnostic missing =
+          scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+              "ENGINE.STATEMENT_CONTEXT.NATIVE_RECEIPT_SOURCE_UNAVAILABLE",
+              "engine.statement_context.native_receipt_source_unavailable", {}, true);
+      missing.identity_fields.push_back({"database_uuid", native_facts->database_uuid});
+      return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038,
+                         "ENGINE.STATEMENT_CONTEXT.NATIVE_RECEIPT_SOURCE_UNAVAILABLE",
+                         "engine.statement_context.native_receipt_source_unavailable", {}, {}, nullptr, &missing);
+    }
   }
   if (engine_context.local_transaction_id == 0 ||
       request->exact_transaction_uuid.is_nil() ||
@@ -7470,18 +7546,85 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "ENGINE.STATEMENT_CONTEXT.TRANSACTION_UUID_INVALID",
         "engine.statement_context.transaction_uuid_invalid");
   }
+  // SB_NATIVE_STATEMENT_RECEIPT (S4f): what only the database loop knows, asked once and read-only: the session is open, the
+  // transaction is active and OWNED by that session, the transaction's snapshot (what it saw when it began), the live TIP
+  // inventory and the catalog generation as that snapshot sees the committed names. The caller's context must agree with it.
+  std::optional<scratchbird::engine::internal_api::NativeReceiptInput> native_input;
+  if (native_facts) {
+    auto input = native_facts->receipt_source->Lookup(
+        scratchbird::core::platform::Uuid{engine_context.session_uuid.bytes},
+        scratchbird::core::platform::Uuid{request->exact_transaction_uuid.bytes});
+    if (!input.ok()) return native_receipt_refusal(session, out_result, input.error, *native_facts);
+    if (input.transaction_order != engine_context.local_transaction_id) {
+      scratchbird::engine::internal_api::EngineApiDiagnostic mismatch =
+          scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+              "ENGINE.STATEMENT_CONTEXT.NATIVE_TRANSACTION_ORDER_MISMATCH",
+              "engine.statement_context.native_transaction_order_mismatch", {}, true);
+      mismatch.fields.push_back({"context_local_transaction_id", std::to_string(engine_context.local_transaction_id)});
+      mismatch.fields.push_back({"native_local_transaction_id", std::to_string(input.transaction_order)});
+      return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4038,
+                         "ENGINE.STATEMENT_CONTEXT.NATIVE_TRANSACTION_ORDER_MISMATCH",
+                         "engine.statement_context.native_transaction_order_mismatch", {}, {}, nullptr, &mismatch);
+    }
+    if (input.principal_uuid.bytes != engine_context.principal_uuid.bytes ||
+        input.session_uuid.bytes != engine_context.session_uuid.bytes) {
+      return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4036,
+                         "ENGINE.STATEMENT_CONTEXT.SESSION_CONTEXT_MISMATCH",
+                         "engine.statement_context.session_context_mismatch");
+    }
+    if (input.catalog_generation_id == 0) {
+      return native_receipt_refusal(session, out_result,
+                                    scratchbird::engine::internal_api::NativeReceiptSourceError::names_unavailable,
+                                    *native_facts);
+    }
+    // STALE GENERATION: the generation is the catalog's as the transaction's snapshot sees it; the context and the materialized
+    // authorization were built against a generation, and a different one is a stale (or forged) claim. The refusal carries the
+    // current values (counters, not text) so the caller can rebuild its context from them.
+    if (engine_context.catalog_generation_id != input.catalog_generation_id ||
+        engine_context.authorization_context.catalog_generation_id != input.catalog_generation_id) {
+      scratchbird::engine::internal_api::EngineApiDiagnostic stale =
+          scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+              "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
+              "engine.statement_context.native_catalog_generation_stale", {}, true);
+      stale.fields.push_back({"current_catalog_generation_id", std::to_string(input.catalog_generation_id)});
+      stale.fields.push_back({"current_name_resolution_epoch", std::to_string(input.name_resolution_epoch)});
+      stale.fields.push_back({"context_catalog_generation_id", std::to_string(engine_context.catalog_generation_id)});
+      stale.fields.push_back({"authorization_catalog_generation_id",
+                              std::to_string(engine_context.authorization_context.catalog_generation_id)});
+      stale.identity_fields.push_back({"database_uuid", native_facts->database_uuid});
+      return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4038,
+                         "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
+                         "engine.statement_context.native_catalog_generation_stale", {}, {}, nullptr, &stale);
+    }
+    engine_context.name_resolution_epoch = input.name_resolution_epoch;
+    native_input = std::move(input);
+  }
   // Caller observations and process defaults cannot choose a node's datatype
   // cohort. Resolve the actual owned, committed record before coordination
   // effects. A frozen V1 record needs explicit migration, never relabelling.
-  const auto datatype_catalog = scratchbird::storage::database::ReadDatabaseCatalogIdentity(
-      engine_context.database_path, engine_context.database_uuid,
-      engine_context.served_route_owner);
-  if (!datatype_catalog.ok() || !datatype_catalog.record->datatype_cohort)
-    return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4044,
-        "DATATYPE.DESCRIPTOR.INVALID", "engine.statement_context.datatype_catalog_unavailable",
-        datatype_catalog.ok() ? "explicit_datatype_cohort_migration_required"
-                              : datatype_catalog.diagnostic.diagnostic_code);
-  const auto& datatype_cohort = *datatype_catalog.record->datatype_cohort;
+  // SB_NATIVE_STATEMENT_RECEIPT (S4f): a native handle's cohort is the one the loop captured from the database record at open
+  // (the served facts); no catalog identity file is read.
+  scratchbird::core::catalog::CatalogDatabaseDatatypeCohort datatype_cohort;
+  if (native_facts) {
+    if (!native_facts->datatype_cohort_present)
+      return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4044,
+          "DATATYPE.DESCRIPTOR.INVALID", "engine.statement_context.datatype_catalog_unavailable",
+          "explicit_datatype_cohort_migration_required");
+    datatype_cohort.catalog_snapshot_uuid = {scratchbird::core::platform::UuidKind::object,
+                                             native_facts->datatype_catalog_snapshot_uuid};
+    datatype_cohort.catalog_generation = native_facts->datatype_catalog_generation;
+    datatype_cohort.registry_generation = native_facts->datatype_registry_generation;
+  } else {
+    const auto datatype_catalog = scratchbird::storage::database::ReadDatabaseCatalogIdentity(
+        engine_context.database_path, engine_context.database_uuid,
+        engine_context.served_route_owner);
+    if (!datatype_catalog.ok() || !datatype_catalog.record->datatype_cohort)
+      return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4044,
+          "DATATYPE.DESCRIPTOR.INVALID", "engine.statement_context.datatype_catalog_unavailable",
+          datatype_catalog.ok() ? "explicit_datatype_cohort_migration_required"
+                                : datatype_catalog.diagnostic.diagnostic_code);
+    datatype_cohort = *datatype_catalog.record->datatype_cohort;
+  }
   const auto kCanonicalDatatypeCatalogUuid = datatype_cohort.catalog_snapshot_uuid.value;
   engine_context.datatype_catalog_snapshot_uuid = kCanonicalDatatypeCatalogUuid;
   engine_context.datatype_catalog_generation = datatype_cohort.catalog_generation;
@@ -7494,6 +7637,12 @@ sb_engine_status_t AcquireStatementContextReceipt(
       selector.prepared_binding_handle == 0 &&
       selector.batch_execution_handle == 0 &&
       selector.dynamic_package_handle == 0;
+  // SB_NATIVE_STATEMENT_RECEIPT (S4f): prepared / batch / dynamic parameter coordination and variable frames are registry
+  // coordinations whose legacy form is a side-file journal (Q243/Q303); a native receipt is DIRECT only until they have native
+  // homes. Refused before either registry is touched.
+  if (native_input && (!direct_selector || request->variable_frame_selector.version != 0))
+    return native_operation_not_built(session, out_result, "statement_context_acquire_coordinated",
+                                      "native_parameter_and_variable_registries");
   if (!direct_selector) {
     if (selector.version != 1 || selector.reserved != 0 ||
         selector.mode != StatementParameterExecutionMode::kPrepared ||
@@ -7675,26 +7824,48 @@ sb_engine_status_t AcquireStatementContextReceipt(
 
   mark_acquire_phase("request_validation");
 
-  const auto inventory_guard =
-      scratchbird::engine::internal_api::AcquireTransactionInventoryGuard(
-          engine_context.database_path);
-  const auto inventory_snapshot = scratchbird::storage::database::
-      AcquireStrongLocalTransactionInventorySnapshot(
-          engine_context.database_path, engine_context.served_route_owner);
-  if (!inventory_snapshot.ok()) {
-    return fail_result(
-        SB_ENGINE_STATUS_INTERNAL_ERROR,
-        out_result,
-        4041,
-        "ENGINE.STATEMENT_CONTEXT.INVENTORY_UNAVAILABLE",
-        "engine.statement_context.inventory_unavailable",
-        inventory_snapshot.diagnostic.diagnostic_code);
+  // SB_NATIVE_STATEMENT_RECEIPT (S4f): a native handle's inventory is the one the loop read from the native TIP for this
+  // lookup (no path-keyed guard, no inventory file); the legacy form is unchanged.
+  std::unique_lock<std::recursive_mutex> inventory_guard;
+  std::shared_ptr<const scratchbird::storage::database::LocalTransactionInventorySnapshot> statement_inventory;
+  if (native_input) {
+    auto native_snapshot = std::make_shared<scratchbird::storage::database::LocalTransactionInventorySnapshot>();
+    native_snapshot->database_path = engine_context.database_path;
+    native_snapshot->inventory = *native_input->inventory;
+    const auto native_horizons =
+        scratchbird::transaction::mga::ComputeLocalTransactionHorizons(native_snapshot->inventory);
+    if (!native_horizons.ok()) {
+      return fail_result(
+          SB_ENGINE_STATUS_INTERNAL_ERROR,
+          out_result,
+          4041,
+          "ENGINE.STATEMENT_CONTEXT.INVENTORY_UNAVAILABLE",
+          "engine.statement_context.inventory_unavailable",
+          native_horizons.diagnostic.diagnostic_code);
+    }
+    native_snapshot->horizons = native_horizons.horizons;
+    statement_inventory = std::move(native_snapshot);
+  } else {
+    inventory_guard = scratchbird::engine::internal_api::AcquireTransactionInventoryGuard(
+        engine_context.database_path);
+    const auto inventory_snapshot = scratchbird::storage::database::
+        AcquireStrongLocalTransactionInventorySnapshot(
+            engine_context.database_path, engine_context.served_route_owner);
+    if (!inventory_snapshot.ok()) {
+      return fail_result(
+          SB_ENGINE_STATUS_INTERNAL_ERROR,
+          out_result,
+          4041,
+          "ENGINE.STATEMENT_CONTEXT.INVENTORY_UNAVAILABLE",
+          "engine.statement_context.inventory_unavailable",
+          inventory_snapshot.diagnostic.diagnostic_code);
+    }
+    statement_inventory = inventory_snapshot.snapshot;
   }
-  engine_context.statement_transaction_inventory_snapshot =
-      inventory_snapshot.snapshot;
+  engine_context.statement_transaction_inventory_snapshot = statement_inventory;
   const auto exact_transaction =
       scratchbird::transaction::mga::LookupLocalTransaction(
-          inventory_snapshot.snapshot->inventory,
+          statement_inventory->inventory,
           scratchbird::transaction::mga::MakeLocalTransactionId(
               engine_context.local_transaction_id));
   if (!exact_transaction.ok() ||
@@ -7763,9 +7934,13 @@ sb_engine_status_t AcquireStatementContextReceipt(
   scratchbird::engine::internal_api::EnginePublishStatementSnapshotRequest
       publish_request;
   publish_request.context = engine_context;
-  const auto published =
-      scratchbird::engine::internal_api::EnginePublishStatementSnapshot(
-          publish_request);
+  // SB_NATIVE_BEGIN_VIEW_SNAPSHOT (S4f): a native receipt's snapshot is the one the transaction saw when it BEGAN (captured by
+  // the loop before the begin; the native TIP does not record it), published into the same registry as the legacy one.
+  const auto published = native_input
+      ? scratchbird::engine::internal_api::EnginePublishNativeStatementSnapshot(
+            publish_request, *native_input->inventory, *native_input->snapshot)
+      : scratchbird::engine::internal_api::EnginePublishStatementSnapshot(
+            publish_request);
   if (!published.ok) {
     const auto* diagnostic = published.diagnostics.empty()
                                  ? nullptr
@@ -8360,7 +8535,10 @@ sb_engine_status_t AcquireStatementContextReceipt(
       datatype_cohort.catalog_generation;
   view.literal_registry_generation =
       datatype_cohort.registry_generation;
-  {
+  // SB_NATIVE_STATEMENT_RECEIPT (S4f): NO native source exists yet for the diagnostic identity registry (its legacy form is a
+  // side file; a process-local one would mint new identities at every restart, Q243/Q303). A native receipt carries no
+  // diagnostic registry snapshot (nil uuid, generation 0, no rows); a consumer that needs one refuses on its own.
+  if (!native_input) {
     auto diagnostic_context = engine_context;
     diagnostic_context.statement_metadata_snapshot_engine_owned = true;
     const auto diagnostic_snapshot = scratchbird::engine::internal_api::
@@ -8389,6 +8567,20 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
   mark_acquire_phase("diagnostic_registry_projection");
 
+  // SB_NATIVE_STATEMENT_RECEIPT (S4f): the executor-availability cohort. A native handle answers every availability lookup from
+  // the per-build native table (S3e), whose allow-list is EMPTY until SELECT 1 runs natively end to end (owner Q302): so on a
+  // native receipt every executor generation below is 0 (not installed natively) and NOTHING here refuses the receipt. What an
+  // executor needs, it asks the table for again at its own use (bind, dispatch) and refuses there with the table's specific
+  // code (SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, binary fields, no prose). The legacy receipt refuses when ANY of the ~100 rows
+  // is missing; a native one cannot, or no native receipt could ever exist before the allow-list does. The transaction-begin
+  // authority (isolation profile, policy snapshot) has no native source either (see the field table), so the TXBH handle
+  // bytes are not built natively. The statements that fill the same `view` fields are skipped as one block.
+  scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot parameter_executor_snapshot;
+  std::optional<scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot> variable_executor_snapshot;
+  if (native_input) {
+    view.parse_text_language_profile_generation =
+        engine_context.language_context.language_resource_epoch;
+  } else {
   using ExecutorRow = scratchbird::engine::internal_api::
       SblrExecutorAvailabilityRowIdentity;
 #define SB_STATEMENT_EXECUTOR_ROW(Name)                                      \
@@ -8933,9 +9125,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
   view.parameter_executor_availability_generation =
       parameter_executor.snapshot.generation;
-  std::optional<scratchbird::engine::internal_api::
-                    SblrExecutorAvailabilitySnapshot>
-      variable_executor_snapshot;
+  parameter_executor_snapshot = parameter_executor.snapshot;
   if (variable_frame.has_value()) {
     view.variable_scope_uuid = variable_frame->scope_uuid;
     view.variable_scope_generation = variable_frame->scope_generation;
@@ -8975,6 +9165,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
         variable_executor.snapshot.generation;
     variable_executor_snapshot = variable_executor.snapshot;
   }
+  }  // !native_input
   mark_acquire_phase("parameter_variable_projection");
   view.security_epoch = engine_context.security_epoch;
   view.resource_epoch = engine_context.resource_epoch;
@@ -9057,6 +9248,11 @@ sb_engine_status_t AcquireStatementContextReceipt(
   view.route_fence_present = engine_context.route_fence_present;
   mark_acquire_phase("receipt_binding_projection");
 
+  // SB_NATIVE_STATEMENT_RECEIPT (S4f): the published TXBH transaction handle is built from the transaction-begin authority
+  // (isolation profile uuid and generation, transaction policy snapshot uuid and generation) and the TxnBegin executor
+  // generation, none of which has a native source yet (no native begin authority, empty allow-list): a native receipt
+  // carries no TXBH bytes (empty), publishes no private transaction handle, and a statement that needs one refuses on its own.
+  if (!native_input) {
   // The always-active transaction created during attach predates the private
   // public-ABI session.  Publish (or reuse) its exact engine-owned private
   // handle here, after the MGA inventory identity and all TXBH authority rows
@@ -9186,6 +9382,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
       }
     }
   }
+  }  // !native_input
 
   mark_acquire_phase("transaction_handle_projection");
 
@@ -9342,7 +9539,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "engine.statement_context.contextual_text_adapter_allocation_failed");
   }
   receipt->parameter_executor_availability_snapshot =
-      parameter_executor.snapshot;
+      parameter_executor_snapshot;
   if (variable_frame.has_value()) {
     receipt->variable_frame_snapshot = *variable_frame;
     receipt->variable_executor_availability_snapshot =
@@ -11378,6 +11575,32 @@ sb_engine_status_t BindStatementNameResolveAuthorityV1(
     view = receipt.view;
     context = receipt.engine_context;
     session = receipt.session;
+  }
+
+  // SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT (S4f). A native receipt's executor generations come from the native availability
+  // table (S3e), whose allow-list is empty until SELECT 1 runs natively end to end (owner Q302): NAME_RESOLVE is not installed
+  // natively, so its generation in the receipt is 0 and this bind can issue no descriptor (a descriptor carries that
+  // generation, and the executor would refuse it anyway). Say so with the table's OWN code and structured fields
+  // (SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED: table uuid, database uuid, opcode, row identity digest), not as a stale epoch.
+  // Once the table lists the row, the same lookup succeeds and the bind proceeds into the checks below unchanged.
+  if (context.native_served_facts && view.name_resolve_executor_availability_generation == 0) {
+    scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity name_resolve_identity{
+        scratchbird::engine::internal_api::kSblrNameResolveExecutorId,
+        scratchbird::engine::internal_api::kSblrNameResolveOpcodeCode,
+        scratchbird::engine::internal_api::kSblrNameResolveOpcodeVersion,
+        scratchbird::engine::internal_api::kSblrNameResolveOperandDescriptorId,
+        scratchbird::engine::internal_api::kSblrNameResolveResultDescriptorId,
+        scratchbird::engine::internal_api::kSblrNameResolveResultDescriptorVersion};
+    const auto availability = scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(
+        context, name_resolve_identity);
+    if (!availability.ok || !availability.snapshot.installed) {
+      out_ack->failure_code = availability.diagnostic.code;
+      out_ack->failure_message_key = availability.diagnostic.message_key;
+      out_ack->failure_detail = availability.diagnostic.detail;
+      return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4102, availability.diagnostic.code,
+                         availability.diagnostic.message_key, availability.diagnostic.detail, {}, nullptr,
+                         &availability.diagnostic);
+    }
   }
 
   if (!context.security_context_present ||
@@ -21588,6 +21811,22 @@ sb_engine_status_t DispatchStatementContextReceipt(
         4050,
         "ENGINE.STATEMENT_CONTEXT.DISPATCH_REQUEST_INVALID",
         "engine.statement_context.dispatch_request_invalid");
+  }
+  // SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT_DISPATCH_GATE (thin-slice S4f). A native receipt exists (S4f) but EXECUTING SBLR
+  // natively is S4g (SELECT 1 and the executor allow-list, owner Q302): this body reaches ~80 legacy side-file families that
+  // only the receipt refusal used to keep away from a native file. So a native receipt dispatches nothing: the same specific
+  // code the handle's own dispatch refuses with (ENGINE.NATIVE.OPERATION_NOT_BUILT; the Q299 code on a restricted database).
+  {
+    sb_engine_session_t native_session = nullptr;
+    {
+      std::lock_guard<std::mutex> registry_guard(g_statement_context_receipt_registry_mutex);
+      const auto live = g_live_statement_context_receipts.find(request->receipt.opaque_id);
+      if (live != g_live_statement_context_receipts.end() && live->second->engine_context.native_served_facts)
+        native_session = live->second->session;
+    }
+    if (native_session != nullptr)
+      return native_operation_not_built(native_session, out_result, "dispatch_statement_context",
+                                        "native_executor_availability_s4g");
   }
   if (request->result_delivery_mode !=
           StatementContextResultDeliveryMode::kDirect &&
