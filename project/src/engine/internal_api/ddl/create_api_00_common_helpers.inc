@@ -419,6 +419,9 @@ bool NameMatchesIdentifierSegmentLocal(const EngineRequestContext& context,
                                        const std::string& candidate,
                                        const std::string& segment) {
   if (candidate.empty() || segment.empty()) { return false; }
+  // PART B S3: byte equality on a NATIVE context (no profile fold; case rules are the parser's). The folded comparison below
+  // is the legacy context's, removed with the legacy cut.
+  if (NativeServedContext(context)) { return candidate == segment; }
   const std::string profile = NameRegistryDefaultIdentifierProfile(context);
   return NameRegistryLookupKey(candidate, profile, false) ==
          NameRegistryLookupKey(segment, profile, false);

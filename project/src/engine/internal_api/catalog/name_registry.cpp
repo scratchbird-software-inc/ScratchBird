@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/name_registry.hpp"
+#include "catalog/name_list_api.hpp"
 #include "native_legacy_registry_refusal.hpp"
 #include "native_served_database_facts.hpp"
 #include "catalog_language.hpp"
@@ -627,16 +628,12 @@ EngineApiDiagnostic RetireNameRegistryEntriesForObject(const EngineRequestContex
 // facts), never read from the legacy side files (.sb.name_events.v2, the CRUD / MGA relation / schema-tree /
 // behavior-record / domain stores): no legacy file is opened, created or probed for a native context.
 //
-// The projection is a type adaptation, not a decision: the native row carries a u16 kind, a language UUID and a
-// profile UUID where the legacy entry carries a class text, a language tag and a profile LABEL. The label is the
-// minimum the existing matcher needs (NameRegistryLookupKey folds by label); it is derived from the profile row's
-// own fold mode. PART B (a separate, later step) removes the engine fold, the label, the "" refusals, the language
-// fallback and the search-path walk; this projection then shrinks to a copy. Marked SB_PART_B_PROFILE_LABEL.
-// PART B S2 (2026-11-29): NAME -> UUID on a native context no longer reads this projection: ResolveNativeExactName (below,
-// SB_NATIVE_EXACT_NAME) matches the names source's rows by exact bytes. This projection, with its label and derived lookup
-// keys, remains ONLY for the other consumers of LoadNameRegistryState on a native context (they are S3 / S4 / S6 work, listed
-// in the S2 report): sblr_dispatch.cpp ResolveSchemaParentPathToUuid, relation_descriptor_projection.cpp, the schema-create
-// journal, NameRegistryWouldConflict, MapNameRegistryUuidToName*, show/plan/aggregate-view readers.
+// The projection is a type adaptation, not a decision: the native row carries a u16 kind and a language UUID where the legacy
+// entry carries a class text and a language tag. PART B S3 (2026-12-01): it carries NO profile label and NO derived key (those
+// existed only for the legacy fold; the owner's rule is that the engine stores and compares names as given). NAME -> UUID on a
+// native context reads the rows directly (SB_NATIVE_EXACT_NAME, below), UUID -> NAME is UuidToName (SB_NATIVE_UUID_TO_NAME);
+// this copy remains for the consumers that read identities, scopes, languages, classes and stored text: show_api, plan_api,
+// global_aggregate_view, relation_projection_view and the tests' offline comparisons.
 //
 // SB_NAME_SNAPSHOT_OWN_TXN (owner rule 2026-11-20: every read runs inside a full MGA transaction and sees its own
 // uncommitted names): SEAM. `observer_tx` is not used here yet: the source reads the committed snapshot, as S4a/S4b
@@ -700,23 +697,9 @@ EngineUuid NativeEngineUuid(const scratchbird::core::platform::Uuid& id) {
   return out;
 }
 
-// SB_PART_B_PROFILE_LABEL: the legacy matcher folds by a profile LABEL; the label of a native profile row is derived
-// from that row's own fold mode (the same three folds ProfileFold knows). An entry whose profile row is absent from
-// the snapshot gets a label that folds nothing (and never equals a request's label).
-std::string NativeProfileLabel(const NativeNamesSnapshot& snapshot, const scratchbird::core::platform::Uuid& profile) {
-  for (const auto& known : snapshot.profiles) {
-    if (known.profile_uuid != profile) continue;
-    switch (known.unquoted_fold_mode) {
-      case 1:
-      case 3: return "sbsql_v3";
-      case 2:
-      case 4: return "postgresql_family";
-      default: return "identifier_fold_none";
-    }
-  }
-  return "identifier_profile_unresolved";
-}
-
+// PART B S3 (2026-12-01): NativeProfileLabel is REMOVED. The projection below carries no identifier-profile label and no derived
+// lookup key: nothing native folds, matches by lane, or compares profiles (the exact matcher and UuidToName read the rows
+// directly; the other consumers of this projection use only its identities, scopes, languages, classes and stored text).
 NameRegistryLoadResult LoadNativeNameRegistryState(const EngineRequestContext& context) {
   NameRegistryLoadResult result;
   const auto& source = context.native_served_facts->names_source;
@@ -743,15 +726,13 @@ NameRegistryLoadResult LoadNativeNameRegistryState(const EngineRequestContext& c
     if (row.has_parent_schema) entry.parent_schema_uuid = NativeEngineUuid(row.parent_schema_uuid);
     entry.language_tag = NativeLanguageTag(row.language_uuid);
     entry.name_class = NativeNameClassText(row.name_class);
-    entry.identifier_profile_uuid = NativeProfileLabel(snapshot, row.identifier_profile_uuid);
+    entry.identifier_profile_uuid.clear();  // no label (the struct's default is the legacy "sbsql_v3"); nothing native folds or compares one
     entry.raw_name_text = row.raw_name_text;
     entry.display_name = row.raw_name_text;
     entry.was_quoted = row.was_quoted;
     entry.quote_style = NativeQuoteStyleText(row.quote_style);
     entry.requires_exact_match = row.requires_exact_match;
-    entry.normalized_lookup_key = NameRegistryLookupKey(row.raw_name_text, entry.identifier_profile_uuid, false);
-    entry.exact_lookup_key = row.raw_name_text;
-    entry.full_path_lookup_key = entry.normalized_lookup_key;
+    // (normalized_lookup_key, exact_lookup_key, full_path_lookup_key: empty. Nothing native derives or compares a key.)
     // The generation and both epochs are the ROW's: the SBLR bind and execute generation checks compare them with
     // the receipt view (public_abi: bind namespace, execute lookup_authority_stale).
     entry.catalog_generation_id = row.catalog_generation_id;
@@ -912,6 +893,14 @@ NameRegistryResolveResult ResolveNativeExactName(const EngineApiRequest& request
 }  // namespace
 
 std::string NameRegistryLanguageTagOfUuid(const EngineUuid& language) { return NativeLanguageTag(language); }
+
+bool NameRegistryLanguageUuidOfTag(const std::string& tag, EngineUuid* language) {
+  if (language == nullptr) return false;
+  scratchbird::core::platform::Uuid parsed;
+  if (!NativeLanguageUuidOfTag(tag, &parsed)) return false;
+  *language = NativeEngineUuid(parsed);
+  return true;
+}
 
 NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context,
                                              std::uint64_t observer_tx) {
@@ -1301,6 +1290,68 @@ NameRegistryNameResult SelectUuidToNameCandidate(const EngineApiRequest& request
 
 }  // namespace
 
+// SB_NATIVE_UUID_TO_NAME (Part B S3, owner: "the engine uses names ONLY in the exact UUID -> path.name and path.name -> UUID
+// procedures"): UUID -> name on a NATIVE context is the S4 EngineUuidToName answer, never the legacy selection below (which
+// walked LanguageCandidates, compared identifier-profile labels and preferred a primary class). One explicit language
+// (the context's language tag, a known tag or 32 hex digits); the object's name in that language, else its default name (the
+// S4 rule: is_fallback). The entry returned is the LEAF component of that path, as stored; the class filter applies to it.
+NameRegistryNameResult NativeMapUuidToName(const EngineApiRequest& request, const EngineUuid& target_uuid,
+                                           const std::string& requested_object_class) {
+  NameRegistryNameResult result;
+  EngineUuidToNameRequest path_request;
+  static_cast<EngineApiRequest&>(path_request) = request;
+  path_request.object_uuid = target_uuid;
+  if (!NameRegistryLanguageUuidOfTag(request.context.language_context.language_tag, &path_request.language_uuid) ||
+      path_request.language_uuid.is_nil()) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.NAME.LANGUAGE_REQUIRED", "catalog.name.language_required", {}, true);
+    result.diagnostic.fields.push_back({"cause", "language_tag_not_a_language"});
+    result.diagnostic.identity_fields.push_back({"database_uuid", request.context.database_uuid});
+    return result;
+  }
+  const auto path = EngineUuidToName(path_request);
+  if (!path.ok || path.components.empty()) {
+    result.diagnostic = path.ok ? MakeEngineApiDiagnostic("CATALOG.NAME.NOT_FOUND", StandardNameNotFoundMessageKey(),
+                                                          "item_not_found_or_does_not_exist")
+                                : path.diagnostic;
+    return result;
+  }
+  const auto& leaf = path.components.back();
+  const std::string leaf_class = NativeKindClassText(leaf.object_kind);
+  if (!ObjectClassMatchesRequest(leaf_class, requested_object_class)) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.NAME.NOT_FOUND", StandardNameNotFoundMessageKey(),
+                                                "item_not_found_or_does_not_exist");
+    return result;
+  }
+  NameRegistryEntry entry;
+  entry.native_exact = true;
+  entry.name_entry_uuid = leaf.name_entry_uuid;
+  entry.object_uuid = leaf.object_uuid;
+  entry.object_class = leaf_class;
+  entry.scope_uuid = leaf.scope_uuid;
+  entry.language_uuid = leaf.language_uuid;
+  entry.language_tag = NameRegistryLanguageTagOfUuid(leaf.language_uuid);
+  entry.object_kind = leaf.object_kind;
+  entry.name_class = NativeNameClassText(leaf.name_class);
+  entry.name_class_code = leaf.name_class;
+  entry.identifier_profile_uuid.clear();  // no label (the struct default is the legacy one)
+  entry.raw_name_text = leaf.name;
+  entry.display_name = leaf.name;
+  entry.was_quoted = leaf.was_quoted;
+  entry.quote_style = NativeQuoteStyleText(leaf.quote_style);
+  entry.quote_style_code = leaf.quote_style;
+  entry.requires_exact_match = leaf.requires_exact_match;
+  entry.catalog_generation_id = leaf.catalog_generation_id;
+  entry.resource_epoch = leaf.resource_epoch;
+  entry.name_resolution_epoch = leaf.name_resolution_epoch;
+  entry.lifecycle_state = "active";
+  // (parent_object_uuid / parent_schema_uuid: not part of the path component; the legacy shape's other consumers of them are
+  // the registry projection's, not this answer's.)
+  result.ok = true;
+  result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  result.entry = std::move(entry);
+  return result;
+}
+
 NameRegistryNameResult MapNameRegistryUuidToNamePrivate(const EngineApiRequest& request,
                                                         const EngineUuid& object_uuid,
                                                         const std::string& requested_object_class) {
@@ -1310,6 +1361,7 @@ NameRegistryNameResult MapNameRegistryUuidToNamePrivate(const EngineApiRequest& 
     result.diagnostic = MakeInvalidRequestDiagnostic("catalog.map_uuid_to_name", "object_uuid_required");
     return result;
   }
+  if (NativeServedContext(request.context)) return NativeMapUuidToName(request, target_uuid, requested_object_class);
 
   const auto loaded = LoadNameRegistryState(request.context, request.context.local_transaction_id);
   if (!loaded.ok) {
@@ -1337,6 +1389,7 @@ NameRegistryNameResult MapNameRegistryUuidToNamePublic(const EngineApiRequest& r
     result.diagnostic = MakeInvalidRequestDiagnostic("catalog.map_uuid_to_name", "object_uuid_required");
     return result;
   }
+  if (NativeServedContext(request.context)) return NativeMapUuidToName(request, target_uuid, requested_object_class);
 
   const auto loaded = LoadNameRegistryState(request.context, request.context.local_transaction_id);
   if (!loaded.ok) {
@@ -1385,6 +1438,24 @@ bool NameRegistryWouldConflict(const EngineRequestContext& context,
   const auto loaded = LoadNameRegistryState(context, observer_tx);
   diagnostic = loaded.ok ? MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false) : loaded.diagnostic;
   if (!loaded.ok) return false;
+  // PART B S3 (owner Q2, 2026-11-22: "the namespace does not allow language/name duplicates, regardless if the same type of
+  // object or not"; names are compared as bytes): on a NATIVE context a name conflicts with another object's name in the same
+  // scope and language when the BYTES are equal. No profile, no lane key, no fold, no per-class namespace split. (The native
+  // writer enforces the same uniqueness durably; this is the API-level pre-check.) The wanted name's language is its own
+  // language tag, else the session language.
+  if (NativeServedContext(context)) {
+    for (const auto& name : names) {
+      const std::string wanted_text = !name.raw_name_text.empty() ? name.raw_name_text : name.name;
+      const std::string wanted_language = !name.language_tag.empty() ? name.language_tag : context.language_context.language_tag;
+      for (const auto& entry : loaded.state.entries) {
+        if (entry.object_uuid == object_uuid || entry.scope_uuid != scope_uuid) continue;
+        if (entry.language_tag != wanted_language || entry.raw_name_text != wanted_text) continue;
+        if (conflict_name) *conflict_name = wanted_text;
+        return true;
+      }
+    }
+    return false;
+  }
   const std::string default_language = NameRegistryDefaultLanguage(context);
   for (const auto& name : names) {
     const auto wanted = MakeNameRegistryEntry(context, object_uuid, object_class, scope_uuid, name, name.name);

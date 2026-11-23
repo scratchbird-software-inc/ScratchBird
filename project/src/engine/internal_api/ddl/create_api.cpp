@@ -18,6 +18,7 @@
 #include "datatype_operations.hpp"
 #include "security/authorization_api.hpp"
 
+#include "native_legacy_registry_refusal.hpp"
 #include "create_api_00_common_helpers.inc"
 #include "create_api_01_schema_table_create.inc"
 #include "create_api_02_index_sequence_create.inc"

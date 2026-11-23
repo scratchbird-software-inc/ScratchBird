@@ -1242,7 +1242,8 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
       Check(snapshot.ok() && snapshot.database_uuid == database, "the names source reads the served file");
       Check(snapshot.principal_schemas.size() == 1 && snapshot.principal_schemas.front() == security_scope,
             "the names source reports the authorization policy's user schema as the principals' scope");
-      Check(!snapshot.profiles.empty(), "the names source reports the identifier profiles");
+      // PART B S3 (2026-12-01): the names source no longer reports identifier profiles (nothing native folds; owner: the engine
+      // stores and compares names as given). Was: Check(!snapshot.profiles.empty(), "the names source reports the identifier profiles").
       Check(snapshot.rows.size() == offline.names.size(), "the names source lists exactly the offline live entries");
       for (const auto& fact : offline.names) {
         const auto* row = RowOf(snapshot, fact.entry_uuid);

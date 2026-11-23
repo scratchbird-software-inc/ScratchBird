@@ -57,6 +57,7 @@
 #include "catalog/catalog_lookup_api.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_registry.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/relation_projection_view.hpp"
 #include "catalog/schema_tree_api.hpp"
@@ -6966,6 +6967,12 @@ std::optional<api::EngineUuid> ResolveSchemaParentPathToUuid(const api::EngineAp
                                                          const std::string& parent_path,
                                                          std::string* normalized_path) {
   if (parent_path.empty()) { return std::nullopt; }
+  // PART B S3 (owner: the engine gets UUIDs for objects, names are used only in the exact UUID<->name procedures; splitting,
+  // folding and search are parser rules): a DOTTED TEXT parent path is a legacy-channel name. On a native context it is NEVER
+  // split, folded or looked up here: the parent stays unresolved, so the caller records unresolved_schema_parent_path and the
+  // create API refuses it (create_api_01_schema_table_create.inc "unresolved_schema_parent_path:"). A native parser sends the
+  // parent schema's UUID (target_schema.uuid / schema_parent_uuid). The legacy resolution below is legacy-cut work.
+  if (api::NativeServedContext(request.context)) { return std::nullopt; }
   const auto parts = SplitDottedIdentifierPath(parent_path);
   const std::string normalized = JoinDottedIdentifierPath(parts);
   if (normalized.empty()) { return std::nullopt; }

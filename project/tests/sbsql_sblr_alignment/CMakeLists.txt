@@ -8810,6 +8810,15 @@ set_tests_properties(
   sbsql_sblr_alignment_ia05_name_resolve_codec PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-03;SBLR_NAME_RESOLVE;CSC-TEST-003614;contract;malformed_operand;codec"
   TIMEOUT 30)
+# PART B S3 (2026-12-01): no fold, text split or fallback reachable from a NATIVE context. The source-policy half: the fold tokens
+# appear in no production file except the explicit allowed-legacy list (the remaining legacy-cut work), and every mixed file's
+# legacy entry is guarded by a native refusal before its first fold. Reads sources only; no database, no /tmp.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME sbsql_sblr_alignment_native_name_fold_free
+  COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_CURRENT_SOURCE_DIR}/native_name_fold_free_test.py ${PROJECT_SOURCE_DIR})
+set_tests_properties(sbsql_sblr_alignment_native_name_fold_free PROPERTIES
+  LABELS "sbsql_sblr_alignment;source_policy;native_name;part_b_s3;not_runtime_acceptance"
+  TIMEOUT 60)
 add_executable(sbsql_sblr_alignment_ia05_name_resolve_availability
   ia05_name_resolve_availability_test.cpp)
 target_compile_features(

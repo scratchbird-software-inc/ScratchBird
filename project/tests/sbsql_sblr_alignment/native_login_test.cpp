@@ -55,6 +55,7 @@
 #include "server/native_database_loop.hpp"
 #include "server/process_crypto_owner.hpp"
 #include "session_registry.hpp"
+#include "ipc_server.hpp"
 #include "../support/native_offline_file_reader.hpp"
 #include "../support/owned_temp_directory.hpp"
 
@@ -616,6 +617,46 @@ int S4eState(const std::string& state, const fs::path& path) {
               s2.approval.transaction_order > s1.approval.transaction_order && s2.approval.attachment_uuid != s1.approval.attachment_uuid &&
               s2.approval.connection_record_uuid != s1.approval.connection_record_uuid,
           "a second session gets a different session, transaction, attachment and connection record");
+    // PART B S3 (2026-12-01; owner: splitting, folding and quoting of dotted text are the PARSER's; the engine uses names only in the
+    // exact UUID<->name procedures): the dotted-TEXT name-resolve frame (schema 7001, the 7001-7008 wire) on a NATIVE session is
+    // refused with the one specific code ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5 BEFORE anything is split, folded, cached or looked up,
+    // whatever the text; it used to be split and folded by the server (and, when the frame asked for the persisted relation
+    // descriptor, reached the exact matcher with the folded text). S5 replaces it with atoms and an explicit language over the wire.
+    {
+      const auto name_frame = [&](const std::string& text, bool quoted) {
+        std::vector<std::uint8_t> payload;
+        const auto put_string = [&](const std::string& value) {
+          payload.push_back(static_cast<std::uint8_t>(value.size() & 0xff));
+          payload.push_back(static_cast<std::uint8_t>(value.size() >> 8));
+          payload.insert(payload.end(), value.begin(), value.end());
+        };
+        put_string(text);
+        payload.push_back(quoted ? 1 : 0);
+        payload.insert(payload.end(), hello.dialect_profile_uuid.begin(), hello.dialect_profile_uuid.end());
+        put_string("en");
+        put_string("");
+        put_string("");
+        payload.push_back(0);
+        auto frame = MakeFrame(sbps::MessageType::kResolveNameRequest, std::move(payload), s2.attempt.connection);
+        frame.header.payload_schema_id = sbps::kSchemaResolveNameRequestV1;
+        frame.header.session_uuid = s2.approval.session_uuid;
+        return frame;
+      };
+      const auto contains = [](const std::vector<std::uint8_t>& bytes, std::string_view needle) {
+        return std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end()) != bytes.end();
+      };
+      const auto next_before = NextTransaction();
+      for (const auto& [text, quoted] : std::vector<std::pair<std::string, bool>>{
+               {std::string(kBootstrapName), false}, {"\"" + std::string(kBootstrapName) + "\"", true},
+               {"sys.security." + std::string(kBootstrapName), false}, {"a.b.c", false}, {"UPPER", false}, {"\".\"", true}}) {
+        const auto bytes = srv::ResolveNamePublicFrameForEmbedded(name_frame(text, quoted), served.started.state, s2.attempt.registry.get());
+        Check(contains(bytes, "ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5"),
+              "the dotted-text name-resolve frame on a native session is refused with ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5 (" + text + ")");
+        Check(!contains(bytes, "PARSER_SERVER_IPC.RESOLVE_NAME_INVALID") && !contains(bytes, "DIALECT_PROFILE_MISMATCH"),
+              "and it is that refusal, not a malformed-request or dialect refusal");
+      }
+      Check(NextTransaction() == next_before, "the refusal took no transaction number and wrote nothing");
+    }
     // Six logins from six threads.
     constexpr int kThreads = 6;
     std::vector<std::future<Attempt>> futures;

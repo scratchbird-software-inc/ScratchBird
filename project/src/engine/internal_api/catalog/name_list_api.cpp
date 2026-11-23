@@ -328,6 +328,10 @@ EngineUuidToNameResult EngineUuidToName(const EngineUuidToNameRequest& request) 
     component.was_quoted = row.was_quoted;
     component.quote_style = row.quote_style;
     component.requires_exact_match = row.requires_exact_match;
+    component.scope_uuid = row.scope_uuid;
+    component.catalog_generation_id = row.catalog_generation_id;
+    component.resource_epoch = row.resource_epoch;
+    component.name_resolution_epoch = row.name_resolution_epoch;
     result.components.push_back(std::move(component));
   }
   result.ok = true;

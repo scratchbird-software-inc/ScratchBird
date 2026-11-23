@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "native_legacy_registry_refusal.hpp"
 #include "catalog/relation_descriptor_projection.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 
@@ -274,6 +275,12 @@ bool NameEntryMatches(const NameRegistryEntry& entry,
   if (!schema_uuid.is_nil() && entry.scope_uuid != schema_uuid &&
       entry.parent_schema_uuid != schema_uuid) {
     return false;
+  }
+  // PART B S3 (owner: names are used as given, byte equality; case rules are the parser's): on a NATIVE context the stored name
+  // must equal the expected name BYTE FOR BYTE. (Was, for every context: ASCII-case-insensitive, then the folded profile key.)
+  // The folded comparison below is the legacy context's and goes with the legacy cut.
+  if (NativeServedContext(context)) {
+    return entry.raw_name_text == expected_name || entry.display_name == expected_name;
   }
   if (EqualsAsciiInsensitive(entry.raw_name_text, expected_name) ||
       EqualsAsciiInsensitive(entry.display_name, expected_name)) {

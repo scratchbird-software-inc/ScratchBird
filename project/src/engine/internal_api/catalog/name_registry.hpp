@@ -97,6 +97,9 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
 // lower-case hex digits (the token the native projection has always given an unknown language). The inverse mapping the
 // native exact matcher applies to a request's language tag.
 std::string NameRegistryLanguageTagOfUuid(const EngineUuid& language);
+// Part B S3: the language UUID a tag names, by the SAME exact rule the native matcher applies (a known tag spelled exactly, or
+// 32 hex digits); false for anything else (the caller refuses, no default, no fallback).
+bool NameRegistryLanguageUuidOfTag(const std::string& tag, EngineUuid* language);
 
 std::string NameRegistryDefaultLanguage(const EngineRequestContext& context);
 std::string NameRegistrySessionLanguage(const EngineRequestContext& context);

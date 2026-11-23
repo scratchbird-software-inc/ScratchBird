@@ -116,7 +116,7 @@ bool KeyValid(const SblrNameResolveJournalKeyV1& key) {
   return NonZero(key.database_uuid) &&
          NonZero(key.statement_receipt_uuid) &&
          NonZero(key.resolution_uuid) && NonZero(key.descriptor_sha256) &&
-         NonZero(key.canonical_name_sha256) && key.catalog_generation != 0 &&
+         NonZero(key.name_atoms_sha256) && key.catalog_generation != 0 &&
          key.security_epoch != 0 && key.resource_epoch != 0;
 }
 
@@ -126,7 +126,7 @@ bool SameKey(const SblrNameResolveJournalKeyV1& left,
          left.statement_receipt_uuid == right.statement_receipt_uuid &&
          left.resolution_uuid == right.resolution_uuid &&
          left.descriptor_sha256 == right.descriptor_sha256 &&
-         left.canonical_name_sha256 == right.canonical_name_sha256 &&
+         left.name_atoms_sha256 == right.name_atoms_sha256 &&
          left.namespace_generation == right.namespace_generation &&
          left.catalog_generation == right.catalog_generation &&
          left.security_epoch == right.security_epoch &&
@@ -182,7 +182,7 @@ std::vector<std::uint8_t> Encode(
   Put(&bytes, snapshot.key.statement_receipt_uuid);
   Put(&bytes, snapshot.key.resolution_uuid);
   Put(&bytes, snapshot.key.descriptor_sha256);
-  Put(&bytes, snapshot.key.canonical_name_sha256);
+  Put(&bytes, snapshot.key.name_atoms_sha256);
   PutLe(&bytes, snapshot.key.namespace_generation, 8);
   PutLe(&bytes, snapshot.key.catalog_generation, 8);
   PutLe(&bytes, snapshot.key.security_epoch, 8);
@@ -224,7 +224,7 @@ bool Decode(const std::vector<std::uint8_t>& bytes,
   Get(bytes.data() + 32, &value.key.statement_receipt_uuid);
   Get(bytes.data() + 48, &value.key.resolution_uuid);
   Get(bytes.data() + 64, &value.key.descriptor_sha256);
-  Get(bytes.data() + 96, &value.key.canonical_name_sha256);
+  Get(bytes.data() + 96, &value.key.name_atoms_sha256);
   value.key.namespace_generation = GetLe(bytes.data() + 128, 8);
   value.key.catalog_generation = GetLe(bytes.data() + 136, 8);
   value.key.security_epoch = GetLe(bytes.data() + 144, 8);

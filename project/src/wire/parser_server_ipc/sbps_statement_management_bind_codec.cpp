@@ -1204,13 +1204,30 @@ Hash256 ParameterBindRequestEvidenceV1(
 
 namespace {
 
+// Part B S3 (owner: names are DATA; the engine refuses only NUL and invalid UTF-8; "" is a valid name): with names_are_data the
+// vector admits any UTF-8 step without a NUL byte, "" included, up to kMaximumNameDataBytes each, whether or not it is flagged
+// quoted (the flag is the parser's opaque datum). Without it (the catalog-epoch-check and database-attach users, still on the
+// old identifier-syntax rule: listed as S3 follow-up) the earlier rule applies unchanged.
+constexpr std::size_t kMaximumNameDataBytes = 4096;
+constexpr std::size_t kMaximumNameDataAtoms = 16;
+
 std::vector<std::uint8_t> EncodeNameAtomVector(
-    const std::vector<NameResolveNameAtomV1>& atoms, bool allow_empty) {
+    const std::vector<NameResolveNameAtomV1>& atoms, bool allow_empty,
+    bool names_are_data = false) {
   std::vector<std::uint8_t> bytes;
-  if ((!allow_empty && atoms.empty()) || atoms.size() > 3) return bytes;
+  const std::size_t maximum_atoms =
+      names_are_data ? kMaximumNameDataAtoms : 3;
+  if ((!allow_empty && atoms.empty()) || atoms.size() > maximum_atoms)
+    return bytes;
   for (const auto& atom : atoms) {
-    if (atom.raw_utf8.empty() || atom.raw_utf8.size() > 256 ||
-        !ValidName(atom.raw_utf8, atom.quoted)) {
+    if (names_are_data) {
+      if (atom.raw_utf8.size() > kMaximumNameDataBytes ||
+          (!atom.raw_utf8.empty() &&
+           !IsValidUtf8Extent(atom.raw_utf8, kMaximumNameDataBytes))) {
+        return {};
+      }
+    } else if (atom.raw_utf8.empty() || atom.raw_utf8.size() > 256 ||
+               !ValidName(atom.raw_utf8, atom.quoted)) {
       return {};
     }
     PutU16(&bytes, static_cast<std::uint16_t>(atom.raw_utf8.size()));
@@ -1222,8 +1239,11 @@ std::vector<std::uint8_t> EncodeNameAtomVector(
 
 bool DecodeNameAtomVector(const std::uint8_t* bytes, std::size_t size,
                           std::uint8_t count,
-                          std::vector<NameResolveNameAtomV1>* output) {
-  if (output == nullptr || count > 3 || (count == 0) != (size == 0))
+                          std::vector<NameResolveNameAtomV1>* output,
+                          bool names_are_data = false) {
+  const std::size_t maximum_atoms =
+      names_are_data ? kMaximumNameDataAtoms : 3;
+  if (output == nullptr || count > maximum_atoms || (count == 0) != (size == 0))
     return false;
   output->clear();
   std::size_t offset = 0;
@@ -1231,14 +1251,23 @@ bool DecodeNameAtomVector(const std::uint8_t* bytes, std::size_t size,
     if (size - offset < 3) return false;
     const auto length = GetU16(bytes + offset);
     offset += 2;
-    if (length == 0 || length > 256 || size - offset < length + 1)
+    if ((!names_are_data && (length == 0 || length > 256)) ||
+        (names_are_data && length > kMaximumNameDataBytes) ||
+        size - offset < static_cast<std::size_t>(length) + 1)
       return false;
     NameResolveNameAtomV1 atom;
     atom.raw_utf8.assign(reinterpret_cast<const char*>(bytes + offset),
                          length);
     offset += length;
     const auto quoted = bytes[offset++];
-    if (quoted > 1 || !ValidName(atom.raw_utf8, quoted != 0)) return false;
+    if (quoted > 1) return false;
+    if (names_are_data) {
+      if (!atom.raw_utf8.empty() &&
+          !IsValidUtf8Extent(atom.raw_utf8, kMaximumNameDataBytes))
+        return false;
+    } else if (!ValidName(atom.raw_utf8, quoted != 0)) {
+      return false;
+    }
     atom.quoted = quoted != 0;
     output->push_back(std::move(atom));
   }
@@ -1253,9 +1282,9 @@ bool EncodeNameResolveBindRequestV1(const NameResolveBindRequestV1& value,
   if (output == nullptr)
     return Fail(detail, "name_resolve_bind.output_missing");
   output->clear();
-  const auto target = EncodeNameAtomVector(value.target_name_atoms, false);
+  const auto target = EncodeNameAtomVector(value.target_name_atoms, false, true);
   const auto name_space =
-      EncodeNameAtomVector(value.namespace_name_atoms, true);
+      EncodeNameAtomVector(value.namespace_name_atoms, true, true);
   if (!NonZero(value.authenticated_receipt_uuid) || value.occurrence == 0 ||
       target.empty() ||
       (!value.namespace_name_atoms.empty() && name_space.empty()) ||
@@ -1263,7 +1292,8 @@ bool EncodeNameResolveBindRequestV1(const NameResolveBindRequestV1& value,
       (value.resolution_mode == 1 && value.target_name_atoms.size() == 1 &&
        value.namespace_name_atoms.empty()) ||
       value.object_class > 16 ||
-      target.size() + name_space.size() > 4096) {
+      target.size() + name_space.size() >
+          2 * kMaximumNameDataAtoms * (kMaximumNameDataBytes + 3)) {
     return Fail(detail, "name_resolve_bind.fields_invalid");
   }
   const auto target_hash = Hash(target);
@@ -1329,11 +1359,11 @@ bool DecodeNameResolveBindRequestV1(const std::uint8_t* bytes,
           size - kNameResolveBindRequestPrefixBytes ||
       !DecodeNameAtomVector(bytes + kNameResolveBindRequestPrefixBytes,
                             target_size, target_count,
-                            &value.target_name_atoms) ||
+                            &value.target_name_atoms, true) ||
       !DecodeNameAtomVector(bytes + kNameResolveBindRequestPrefixBytes +
                                 target_size,
                             namespace_size, namespace_count,
-                            &value.namespace_name_atoms)) {
+                            &value.namespace_name_atoms, true)) {
     return Fail(detail, "name_resolve_bind.extent_invalid");
   }
   std::vector<std::uint8_t> canonical;

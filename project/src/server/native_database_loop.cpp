@@ -793,7 +793,6 @@ engine::internal_api::NativeNamesSnapshot RetainedBy(const engine::internal_api:
   out.relation_error = all.relation_error;
   out.custody_error = all.custody_error;
   out.database_uuid = all.database_uuid;
-  out.profiles = all.profiles;
   out.principal_schemas = all.principal_schemas;
   out.names_digest = all.names_digest;
   out.visible_entry_count = all.visible_entry_count;

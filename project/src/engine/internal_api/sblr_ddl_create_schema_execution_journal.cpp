@@ -8,6 +8,7 @@
 #include "api_diagnostics.hpp"
 #include "engine/authority_hash_material.hpp"
 #include "catalog/name_registry.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "ddl/create_api.hpp"
@@ -875,6 +876,16 @@ bool ValidateInputs(
     const SblrDdlCreateSchemaJournalKeyV1& key,
     scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1* descriptor,
     SblrDdlCreateSchemaJournalResultV1* refusal) {
+  // PART B S3: this journal is a side-file registry (.sb.* record + lock) whose recovery postcondition folds and joins TEXT
+  // names (NormalizeRecoveryPath lower-cases and '.'-joins; ExactRecoveryPostcondition compares NameRegistryLookupKey).
+  // A native context refuses before anything is read or created (the same family refusal as the other legacy registries);
+  // it goes with the legacy cut.
+  if (NativeServedContext(context)) {
+    SblrDdlCreateSchemaJournalResultV1 refused;
+    refused.diagnostic = NativeLegacyRegistryRefusal("sblr_ddl_create_schema_execution_journal", context);
+    *refusal = std::move(refused);
+    return false;
+  }
   if (!DecodeDescriptor(key, descriptor)) {
     *refusal = Refused(
         "SBLR.OPERAND_INVALID",
@@ -995,6 +1006,11 @@ RecoverSblrDdlCreateSchemaExecutionJournalV1(
     const EngineRequestContext& authenticated_context,
     const scratchbird::engine::sblr::
         SblrDdlCreateSchemaRecoveryRequestV1& request) {
+  if (NativeServedContext(authenticated_context)) {  // PART B S3: see ValidateInputs
+    SblrDdlCreateSchemaJournalResultV1 refused;
+    refused.diagnostic = NativeLegacyRegistryRefusal("sblr_ddl_create_schema_execution_journal", authenticated_context);
+    return refused;
+  }
   const auto exact_request = scratchbird::engine::sblr::
       EncodeSblrDdlCreateSchemaRecoveryRequestV1(request);
   if (exact_request.empty()) {

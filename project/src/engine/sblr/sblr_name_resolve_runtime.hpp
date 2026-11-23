@@ -19,9 +19,15 @@ inline constexpr std::size_t kSblrNameResolveRequestBytes = 64;
 inline constexpr std::size_t kSblrNameResolveDescriptorPrefixBytes = 256;
 inline constexpr std::size_t kSblrNameResolveResultBytes = 192;
 // Part B S6 (owner 2026-11-23): the descriptor's name bound IS the engine's one name capacity (4096 bytes of UTF-8), derived rather
-// than a second literal that happens to be equal. (Was: = 4096.) The empty-name and NUL refusals of Utf8() below are S3's (SBLR layout).
-inline constexpr std::size_t kSblrNameResolveMaximumCanonicalNameBytes =
+// than a second literal that happens to be equal. (Was: = 4096.)
+// Part B S3 (owner 2026-11-20..26: the engine stores and uses names as given; "" is a valid name, NULL and NUL bytes are not;
+// "we are in development, layout changes are fully allowed"): the descriptor carries the name STEPS exactly as the parser gave
+// them, each with its own explicit length, "" legal, never joined with '.' and never folded; the descriptor's header version is
+// 2 and the case_folding_profile byte and the '.'-joined canonical_name_utf8 are gone. The name bound is PER ATOM.
+inline constexpr std::size_t kSblrNameResolveMaximumAtomBytes =
     scratchbird::core::catalog::kCatalogNameCapacityBytes;
+inline constexpr std::size_t kSblrNameResolveMaximumAtoms = 64;
+inline constexpr std::uint16_t kSblrNameResolveDescriptorVersion = 2;
 
 using SblrNameResolveUuidV1 = std::array<std::uint8_t, 16>;
 using SblrNameResolveSha256V1 = std::array<std::uint8_t, 32>;
@@ -42,17 +48,21 @@ struct SblrNameResolveDescriptorV1 {
   SblrNameResolveUuidV1 security_context_uuid{};
   SblrNameResolveUuidV1 namespace_uuid{};
   std::uint64_t namespace_generation = 0;
-  std::string canonical_name_utf8;
-  SblrNameResolveSha256V1 canonical_name_sha256{};
+  // The name steps exactly as given (path order, leaf last): UTF-8, no NUL byte, "" legal, each bounded by
+  // kSblrNameResolveMaximumAtomBytes; the engine never joins, splits, folds or trims them.
+  std::vector<std::string> name_atoms;
+  // SHA-256 of the atom block (each atom as u32 little-endian length then its bytes); zero on input means "compute".
+  SblrNameResolveSha256V1 name_atoms_sha256{};
   std::uint8_t resolution_mode = 0;
   std::uint8_t object_class = 0;
-  std::uint8_t case_folding_profile = 0;
   std::uint64_t executor_availability_generation = 0;
   SblrNameResolveSha256V1 descriptor_sha256{};
   SblrNameResolveUuidV1 parser_package_uuid{};
   SblrNameResolveUuidV1 language_profile_uuid{};
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
+  // The ONE language the name steps are looked up in (a catalog language UUID); explicit, never defaulted or fallen back.
+  SblrNameResolveUuidV1 name_language_uuid{};
 };
 
 struct SblrNameResolveResultV1 {
@@ -110,8 +120,9 @@ inline bool Zero(const std::uint8_t* begin, const std::uint8_t* end) {
                      [](std::uint8_t byte) { return byte == 0; });
 }
 
+// A name step is DATA: valid UTF-8 without a NUL byte, at most the engine's name capacity; "" is valid (Part B S3).
 inline bool Utf8(std::string_view text) {
-  if (text.empty() || text.size() > kSblrNameResolveMaximumCanonicalNameBytes ||
+  if (text.size() > kSblrNameResolveMaximumAtomBytes ||
       text.find('\0') != std::string_view::npos) {
     return false;
   }
@@ -162,9 +173,10 @@ inline SblrNameResolveSha256V1 Hash(const std::uint8_t* bytes,
 
 inline std::vector<std::uint8_t> Header(std::string_view magic,
                                         std::size_t header_bytes,
-                                        std::size_t total_bytes) {
+                                        std::size_t total_bytes,
+                                        std::uint16_t version = 1) {
   std::vector<std::uint8_t> out(magic.begin(), magic.end());
-  PutLe(&out, 1, 2);
+  PutLe(&out, version, 2);
   PutLe(&out, header_bytes, 2);
   PutLe(&out, total_bytes, 4);
   PutLe(&out, 0, 4);
@@ -173,13 +185,44 @@ inline std::vector<std::uint8_t> Header(std::string_view magic,
 
 inline bool HeaderValid(const std::uint8_t* in, std::size_t size,
                         std::string_view magic, std::size_t header_bytes,
-                        bool fixed) {
+                        bool fixed, std::uint16_t version = 1) {
   return in != nullptr && size >= header_bytes && magic.size() == 4 &&
          std::equal(magic.begin(), magic.end(), in) &&
-         GetLe(in + 4, 2) == 1 && GetLe(in + 6, 2) == header_bytes &&
+         GetLe(in + 4, 2) == version && GetLe(in + 6, 2) == header_bytes &&
          GetLe(in + 8, 4) == size && Zero(in + 12, in + 16) &&
          (!fixed || size == header_bytes);
 }
+
+// The atom block: for each atom its byte length (u32 little-endian) then its bytes. Lengths are explicit so no byte value
+// (a '.', a quote) can ever act as a separator; the engine never joins or splits a name.
+inline std::vector<std::uint8_t> AtomBlock(
+    const std::vector<std::string>& atoms) {
+  std::vector<std::uint8_t> out;
+  for (const auto& atom : atoms) {
+    PutLe(&out, atom.size(), 4);
+    out.insert(out.end(), atom.begin(), atom.end());
+  }
+  return out;
+}
+
+inline bool AtomsValid(const std::vector<std::string>& atoms) {
+  if (atoms.empty() || atoms.size() > kSblrNameResolveMaximumAtoms) return false;
+  return std::all_of(atoms.begin(), atoms.end(),
+                     [](const std::string& atom) { return Utf8(atom); });
+}
+
+}  // namespace name_resolve_detail
+
+// The BIND's one step derivation (Part B S3): the descriptor's name steps are the target atoms exactly as the parser gave them,
+// in order. No fold, no join, no split, no trim, no case or normalization: the engine uses a name only as given. Refuses only the
+// empty vector (a descriptor needs its leaf); NUL, invalid UTF-8 and capacity are the codec's refusals (EncodeSblrNameResolveDescriptorV1).
+inline bool BindSblrNameResolveStepsV1(const std::vector<std::string>& atoms_as_given, std::vector<std::string>* steps) {
+  if (steps == nullptr) return false;
+  steps->assign(atoms_as_given.begin(), atoms_as_given.end());
+  return !steps->empty();
+}
+
+namespace name_resolve_detail {
 
 inline bool DescriptorFieldsValid(const SblrNameResolveDescriptorV1& value) {
   const bool namespace_present = NonZero(value.namespace_uuid);
@@ -192,13 +235,13 @@ inline bool DescriptorFieldsValid(const SblrNameResolveDescriptorV1& value) {
          NonZero(value.catalog_snapshot_uuid) &&
          value.catalog_generation != 0 &&
          NonZero(value.security_context_uuid) &&
-         Utf8(value.canonical_name_utf8) &&
+         AtomsValid(value.name_atoms) &&
          (value.resolution_mode == 1 || value.resolution_mode == 2) &&
          value.object_class <= 16 &&
-         value.case_folding_profile == 1 &&
          value.executor_availability_generation != 0 &&
          NonZero(value.parser_package_uuid) &&
-         NonZero(value.language_profile_uuid) && value.security_epoch != 0 &&
+         NonZero(value.language_profile_uuid) &&
+         NonZero(value.name_language_uuid) && value.security_epoch != 0 &&
          value.resource_epoch != 0;
 }
 
@@ -270,21 +313,17 @@ inline bool DecodeSblrNameResolveRequestV1(
 inline std::vector<std::uint8_t> EncodeSblrNameResolveDescriptorV1(
     const SblrNameResolveDescriptorV1& value) {
   using namespace name_resolve_detail;
-  if (!DescriptorFieldsValid(value) ||
-      value.canonical_name_utf8.size() >
-          std::numeric_limits<std::uint32_t>::max()) {
-    return {};
-  }
-  const auto name_hash = Hash(
-      reinterpret_cast<const std::uint8_t*>(value.canonical_name_utf8.data()),
-      value.canonical_name_utf8.size());
-  if (NonZero(value.canonical_name_sha256) &&
-      value.canonical_name_sha256 != name_hash) {
+  if (!DescriptorFieldsValid(value)) return {};
+  const auto atom_block = AtomBlock(value.name_atoms);
+  if (atom_block.size() > std::numeric_limits<std::uint32_t>::max()) return {};
+  const auto atoms_hash = Hash(atom_block.data(), atom_block.size());
+  if (NonZero(value.name_atoms_sha256) &&
+      value.name_atoms_sha256 != atoms_hash) {
     return {};
   }
   auto out = Header("SNRD", kSblrNameResolveDescriptorPrefixBytes,
-                    kSblrNameResolveDescriptorPrefixBytes +
-                        value.canonical_name_utf8.size());
+                    kSblrNameResolveDescriptorPrefixBytes + atom_block.size(),
+                    kSblrNameResolveDescriptorVersion);
   Put(&out, value.resolution_uuid);
   Put(&out, value.statement_receipt_uuid);
   Put(&out, value.catalog_snapshot_uuid);
@@ -292,21 +331,19 @@ inline std::vector<std::uint8_t> EncodeSblrNameResolveDescriptorV1(
   Put(&out, value.security_context_uuid);
   Put(&out, value.namespace_uuid);
   PutLe(&out, value.namespace_generation, 8);
-  PutLe(&out, value.canonical_name_utf8.size(), 4);
-  Put(&out, name_hash);
+  PutLe(&out, atom_block.size(), 4);
+  Put(&out, atoms_hash);
   out.push_back(value.resolution_mode);
   out.push_back(value.object_class);
-  out.push_back(value.case_folding_profile);
-  out.push_back(0);
+  PutLe(&out, value.name_atoms.size(), 2);
   PutLe(&out, value.executor_availability_generation, 8);
   out.insert(out.end(), 32, 0);
   Put(&out, value.parser_package_uuid);
   Put(&out, value.language_profile_uuid);
   PutLe(&out, value.security_epoch, 8);
   PutLe(&out, value.resource_epoch, 8);
-  out.insert(out.end(), 16, 0);
-  out.insert(out.end(), value.canonical_name_utf8.begin(),
-             value.canonical_name_utf8.end());
+  Put(&out, value.name_language_uuid);
+  out.insert(out.end(), atom_block.begin(), atom_block.end());
   const auto descriptor_hash = Hash(out.data(), out.size());
   if (NonZero(value.descriptor_sha256) &&
       value.descriptor_sha256 != descriptor_hash) {
@@ -322,14 +359,17 @@ inline bool DecodeSblrNameResolveDescriptorV1(
   using namespace name_resolve_detail;
   if (output == nullptr ||
       !HeaderValid(in, size, "SNRD", kSblrNameResolveDescriptorPrefixBytes,
-                   false) ||
-      in[151] != 0 || !Zero(in + 240, in + 256)) {
+                   false, kSblrNameResolveDescriptorVersion)) {
     if (detail != nullptr) *detail = "name_resolve_descriptor_header_invalid";
     return false;
   }
-  const auto name_size = GetLe(in + 112, 4);
-  if (name_size == 0 || name_size > kSblrNameResolveMaximumCanonicalNameBytes ||
-      name_size != size - kSblrNameResolveDescriptorPrefixBytes) {
+  const auto block_size = GetLe(in + 112, 4);
+  const auto atom_count = GetLe(in + 150, 2);
+  if (atom_count == 0 || atom_count > kSblrNameResolveMaximumAtoms ||
+      block_size != size - kSblrNameResolveDescriptorPrefixBytes ||
+      block_size < atom_count * 4U ||
+      block_size > kSblrNameResolveMaximumAtoms *
+                       (4U + kSblrNameResolveMaximumAtomBytes)) {
     if (detail != nullptr) *detail = "name_resolve_descriptor_extent_invalid";
     return false;
   }
@@ -341,24 +381,42 @@ inline bool DecodeSblrNameResolveDescriptorV1(
   Get(in + 72, &value.security_context_uuid);
   Get(in + 88, &value.namespace_uuid);
   value.namespace_generation = GetLe(in + 104, 8);
-  Get(in + 116, &value.canonical_name_sha256);
+  Get(in + 116, &value.name_atoms_sha256);
   value.resolution_mode = in[148];
   value.object_class = in[149];
-  value.case_folding_profile = in[150];
   value.executor_availability_generation = GetLe(in + 152, 8);
   Get(in + 160, &value.descriptor_sha256);
   Get(in + 192, &value.parser_package_uuid);
   Get(in + 208, &value.language_profile_uuid);
   value.security_epoch = GetLe(in + 224, 8);
   value.resource_epoch = GetLe(in + 232, 8);
-  value.canonical_name_utf8.assign(
-      reinterpret_cast<const char*>(in + kSblrNameResolveDescriptorPrefixBytes),
-      name_size);
+  Get(in + 240, &value.name_language_uuid);
+  // Walk the atom block by its explicit lengths; an atom that does not fit the block is a malformed extent.
+  std::size_t offset = kSblrNameResolveDescriptorPrefixBytes;
+  for (std::uint64_t index = 0; index < atom_count; ++index) {
+    if (size - offset < 4) {
+      if (detail != nullptr) *detail = "name_resolve_descriptor_extent_invalid";
+      return false;
+    }
+    const auto length = GetLe(in + offset, 4);
+    offset += 4;
+    if (length > kSblrNameResolveMaximumAtomBytes || size - offset < length) {
+      if (detail != nullptr) *detail = "name_resolve_descriptor_extent_invalid";
+      return false;
+    }
+    value.name_atoms.emplace_back(reinterpret_cast<const char*>(in + offset),
+                                  static_cast<std::size_t>(length));
+    offset += static_cast<std::size_t>(length);
+  }
+  if (offset != size) {
+    if (detail != nullptr) *detail = "name_resolve_descriptor_extent_invalid";
+    return false;
+  }
   auto hash_material = std::vector<std::uint8_t>(in, in + size);
   std::fill(hash_material.begin() + 160, hash_material.begin() + 192, 0);
   if (!DescriptorFieldsValid(value) ||
-      value.canonical_name_sha256 !=
-          Hash(in + kSblrNameResolveDescriptorPrefixBytes, name_size) ||
+      value.name_atoms_sha256 !=
+          Hash(in + kSblrNameResolveDescriptorPrefixBytes, block_size) ||
       value.descriptor_sha256 !=
           Hash(hash_material.data(), hash_material.size()) ||
       EncodeSblrNameResolveDescriptorV1(value) !=

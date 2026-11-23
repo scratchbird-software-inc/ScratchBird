@@ -26,7 +26,7 @@ struct SblrNameResolveJournalKeyV1 {
   SblrNameResolveJournalUuidV1 statement_receipt_uuid{};
   SblrNameResolveJournalUuidV1 resolution_uuid{};
   SblrNameResolveJournalHashV1 descriptor_sha256{};
-  SblrNameResolveJournalHashV1 canonical_name_sha256{};
+  SblrNameResolveJournalHashV1 name_atoms_sha256{};
   std::uint64_t namespace_generation = 0;
   std::uint64_t catalog_generation = 0;
   std::uint64_t security_epoch = 0;

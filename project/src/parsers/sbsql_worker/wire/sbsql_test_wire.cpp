@@ -37046,6 +37046,14 @@ PipelineResult SbsqlTestWireSession::RunNameResolveForWire(
       descriptor.catalog_snapshot_uuid != *catalog_snapshot ||
       descriptor.catalog_generation != coordinate_request.catalog_generation ||
       descriptor.security_context_uuid != *security_context ||
+      // PART B S3 (2026-12-01): the engine-bound descriptor carries the target steps EXACTLY as this request sent them (the engine
+      // neither folds, joins, splits nor trims them) and an explicit language.
+      !std::ranges::equal(descriptor.name_atoms, canonical_bind_request.target_name_atoms,
+                          [](const std::string& step, const bind::NameResolveNameAtomV1& atom) {
+                            return step == atom.raw_utf8;
+                          }) ||
+      std::ranges::all_of(descriptor.name_language_uuid,
+                          [](std::uint8_t byte) { return byte == 0; }) ||
       descriptor.resolution_mode != canonical_bind_request.resolution_mode ||
       descriptor.object_class != canonical_bind_request.object_class ||
       descriptor.executor_availability_generation == 0 ||

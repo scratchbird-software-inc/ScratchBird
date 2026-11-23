@@ -492,6 +492,75 @@ int NameListServe(const std::string& state, const Offline& offline, srv::NativeD
       std::cout << "INFO database_root_default_name_bytes=" << root.components[0].name.size() << " name=" << root.components[0].name
                 << " kind=" << root.components[0].object_kind << " scope_names=" << scopes.size() << std::endl;
     }
+    // 6b. PART B S3 (2026-12-01; owner: "the engine uses names ONLY in the exact UUID -> path.name and path.name -> UUID procedures"):
+    //     EngineMapUuidToName on a NATIVE context answers through UuidToName, never the legacy selection (language candidates, a
+    //     profile-label compare, a primary-class preference). For each object and language the answer is the LEAF component of
+    //     EngineUuidToName: the same object, scope, language of the entry used, stored bytes, kind, generation, and the
+    //     fallback to the default name when the language has none.
+    {
+      const auto map_request = [&](const p::Uuid& object, const char* tag) {
+        eng::EngineMapUuidToNameRequest r;
+        r.context.native_served_facts = env.facts;
+        r.context.database_uuid = ToEngine(env.database);
+        r.context.language_context.language_tag = tag;
+        r.target_object.uuid = ToEngine(object);
+        return r;
+      };
+      std::size_t compared = 0;
+      for (const auto& [object, language, tag] : std::vector<std::tuple<p::Uuid, p::Uuid, const char*>>{
+               {bootstrap, en, "en"}, {bootstrap, de, "de-DE"}, {bootstrap, fr, "fr-CA"}, {database, en, "en"}, {service, en, "en"},
+               {security_scope, en, "en"}}) {
+        const auto path = eng::EngineUuidToName(PathRequest(object, language));
+        const auto mapped = eng::EngineMapUuidToName(map_request(object, tag));
+        Check(path.ok == mapped.ok, "MapUuidToName and UuidToName agree on success (" + std::string(tag) + ")");
+        if (!path.ok || !mapped.ok) continue;
+        const auto& leaf = path.components.back();
+        Check(Same(mapped.primary_object.uuid, leaf.object_uuid) && Same(mapped.bound_object_identity.object_uuid, leaf.object_uuid),
+              "MapUuidToName answers the object UuidToName names");
+        Check(Same(mapped.bound_object_identity.resolved_schema_uuid, leaf.scope_uuid),
+              "MapUuidToName's scope is the leaf entry's own scope");
+        Check(mapped.bound_object_identity.catalog_generation_id == leaf.catalog_generation_id &&
+                  mapped.bound_object_identity.resource_epoch == leaf.resource_epoch,
+              "MapUuidToName carries the leaf row's generation and epoch");
+        Check(mapped.primary_object.object_kind == eng::NameRegistryObjectClassText(leaf.object_kind),
+              "MapUuidToName's class is the leaf kind's class text");
+        ++compared;
+      }
+      Check(compared >= 5, "MapUuidToName was compared with UuidToName for several objects and languages");
+      // The same bytes the path names: ask for the registry entry directly.
+      {
+        eng::EngineApiRequest as_request;
+        as_request.context = map_request(bootstrap, "de-DE").context;
+        const auto entry = eng::MapNameRegistryUuidToNamePublic(as_request, ToEngine(bootstrap), {});
+        const auto path = eng::EngineUuidToName(PathRequest(bootstrap, de));
+        Check(entry.ok && path.ok, "the native registry entry and the path both answer: " + CodeOf(entry.diagnostic) + " / " + CodeOf(path.diagnostic));
+        Check(entry.entry.raw_name_text == path.components.back().name && entry.entry.native_exact,
+              "the native registry entry is the leaf as stored (bytes and native marker)");
+        Check(entry.entry.identifier_profile_uuid.empty() && entry.entry.normalized_lookup_key.empty() &&
+                  entry.entry.exact_lookup_key.empty() && entry.entry.full_path_lookup_key.empty(),
+              "the native registry entry has no profile label and no derived lookup key");
+      }
+      // Refusals keep their own codes: no language, an unknown language, a nil object, an object with no name, a class filter.
+      {
+        auto r = map_request(bootstrap, "");
+        auto x = eng::EngineMapUuidToName(r);
+        Check(!x.ok && !x.diagnostics.empty() && x.diagnostics.front().code == "CATALOG.NAME.LANGUAGE_REQUIRED",
+              "MapUuidToName: an empty language tag is refused (no default language)");
+        r = map_request(bootstrap, "xx-YY");
+        x = eng::EngineMapUuidToName(r);
+        Check(!x.ok && !x.diagnostics.empty() && x.diagnostics.front().code == "CATALOG.NAME.LANGUAGE_REQUIRED",
+              "MapUuidToName: a tag that is no language is refused");
+        x = eng::EngineMapUuidToName(map_request(NewId(), "en"));
+        Check(!x.ok && !x.diagnostics.empty() && x.diagnostics.front().code == "CATALOG.NAMES_PATH_OBJECT_NOT_FOUND",
+              "MapUuidToName: an unnamed object is UuidToName's NOT_FOUND");
+        r = map_request(bootstrap, "en");
+        r.target_object.object_kind = "schema";
+        x = eng::EngineMapUuidToName(r);
+        Check(!x.ok && !x.diagnostics.empty() && x.diagnostics.front().code == "CATALOG.NAME.NOT_FOUND",
+              "MapUuidToName: the class filter applies to the leaf (a user is not a schema)");
+      }
+      calls += 20;
+    }
     mark("before_section_5");
     // 7. Metadata-visibility policy hides objects from both procedures (the same predicate as every public lookup).
     {

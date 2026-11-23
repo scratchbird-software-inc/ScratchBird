@@ -164,10 +164,12 @@ void AddExactCatalogOperand(sblr::SblrOperationEnvelope* envelope) {
     descriptor.security_context_uuid = SeededBytes<16>(61);
     descriptor.namespace_uuid = SeededBytes<16>(81);
     descriptor.namespace_generation = 3;
-    descriptor.canonical_name_utf8 = "customers";
+    // Part B S3 (2026-12-01): the descriptor carries the name steps as given plus the explicit language (was a folded
+    // canonical_name_utf8 and case_folding_profile = 1).
+    descriptor.name_atoms = {"customers"};
+    descriptor.name_language_uuid = SeededBytes<16>(141);
     descriptor.resolution_mode = 1;
     descriptor.object_class = 2;
-    descriptor.case_folding_profile = 1;
     descriptor.executor_availability_generation = 5;
     descriptor.parser_package_uuid = SeededBytes<16>(101);
     descriptor.language_profile_uuid = SeededBytes<16>(121);

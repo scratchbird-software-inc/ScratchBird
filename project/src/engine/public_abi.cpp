@@ -1720,7 +1720,7 @@ bool statement_management_exact_name_resolve_request(
       bytes[41] != request.object_class || request.object_class > 63 ||
       target_count != request.target_name_atoms.size() ||
       namespace_count != request.namespace_name_atoms.size() ||
-      target_count == 0 || target_count > 3 || namespace_count > 3 ||
+      target_count == 0 || target_count > 16 || namespace_count > 16 ||
       (request.resolution_mode == 1 && target_count == 1 &&
        namespace_count == 0) ||
       static_cast<std::uint64_t>(target_size) + namespace_size !=
@@ -1732,7 +1732,10 @@ bool statement_management_exact_name_resolve_request(
   const auto encode_atoms = [&](const auto& atoms) {
     std::vector<std::uint8_t> encoded;
     for (const auto& atom : atoms) {
-      if (!statement_management_valid_name(atom.raw_text, atom.quoted))
+      // Part B S3: a name step is DATA (valid UTF-8, no NUL, at most the 4096-byte engine name capacity, "" legal);
+      // the identifier-syntax rule is the parser's. Mirrors the SNBQ codec's names_are_data rule.
+      if (atom.raw_text.size() > 4096 ||
+          !bulk_import_canonical_utf8(atom.raw_text, true))
         return std::vector<std::uint8_t>{};
       bulk_import_append_u16(
           &encoded, static_cast<std::uint16_t>(atom.raw_text.size()));
@@ -11435,28 +11438,30 @@ sb_engine_status_t BindStatementNameResolveAuthorityV1(
         "sblr.name_resolve.bind_cluster_fallthrough_forbidden");
   }
 
-  const auto canonicalize_atoms = [&](const auto& atoms,
-                                      std::string* canonical) {
-    if (canonical == nullptr) return false;
-    canonical->clear();
-    for (const auto& atom : atoms) {
-      const auto component =
-          scratchbird::engine::internal_api::NameRegistryLookupKey(
-              atom.raw_text, context.identifier_profile_uuid, atom.quoted);
-      if (component.empty() || component.find('\0') != std::string::npos) {
-        canonical->clear();
-        return false;
-      }
-      if (!canonical->empty()) canonical->push_back('.');
-      canonical->append(component);
-    }
-    return !canonical->empty();
-  };
-  std::string canonical_name;
-  if (!canonicalize_atoms(request->target_name_atoms, &canonical_name)) {
+  // Part B S3 (owner rulings 2026-11-20..26: the engine uses names exactly as given; folding, joining and splitting are the
+  // PARSER's): the bound name is the target atoms AS GIVEN, one descriptor step each, with its explicit language. (Was: each
+  // atom folded through NameRegistryLookupKey by the context's identifier profile, joined with '.', and "" or a NUL refused.)
+  // "" is a legal step; NUL and invalid UTF-8 are refused by the descriptor codec below (bind_name_invalid). The quoted flag is
+  // the parser's opaque datum and takes no part in the descriptor.
+  std::vector<std::string> given_atoms;
+  for (const auto& atom : request->target_name_atoms) {
+    given_atoms.push_back(atom.raw_text);
+  }
+  std::vector<std::string> name_atoms;
+  if (!scratchbird::engine::sblr::BindSblrNameResolveStepsV1(given_atoms, &name_atoms)) {
     return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
                   "CATALOG.NAME_INVALID",
                   "sblr.name_resolve.bind_name_invalid");
+  }
+  // The ONE language of the lookup: the receipt context's explicit language tag (a known tag or 32 hex digits), mapped by the
+  // native matcher's own rule. No default and no fallback: an unmapped tag refuses.
+  scratchbird::engine::internal_api::EngineUuid name_language_uuid;
+  if (!scratchbird::engine::internal_api::NameRegistryLanguageUuidOfTag(
+          context.language_context.language_tag, &name_language_uuid) ||
+      name_language_uuid.is_nil()) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                  "CATALOG.NAME.LANGUAGE_REQUIRED",
+                  "sblr.name_resolve.bind_language_required");
   }
 
   scratchbird::engine::internal_api::EngineUuid namespace_uuid;
@@ -11549,10 +11554,10 @@ sb_engine_status_t BindStatementNameResolveAuthorityV1(
   descriptor.security_context_uuid = view.security_context_uuid.bytes;
   descriptor.namespace_uuid = namespace_uuid.bytes;
   descriptor.namespace_generation = namespace_generation;
-  descriptor.canonical_name_utf8 = canonical_name;
+  descriptor.name_atoms = std::move(name_atoms);
+  descriptor.name_language_uuid = name_language_uuid.bytes;
   descriptor.resolution_mode = request->resolution_mode;
   descriptor.object_class = request->object_class;
-  descriptor.case_folding_profile = 1;
   descriptor.executor_availability_generation =
       view.name_resolve_executor_availability_generation;
   descriptor.parser_package_uuid =
@@ -16076,7 +16081,7 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
           name_authority.canonical_descriptor_bytes.data(),
           name_authority.canonical_descriptor_bytes.size(),
           &name_descriptor, &detail) ||
-      name_descriptor.canonical_name_utf8.empty()) {
+      name_descriptor.name_atoms.empty()) {
     return refuse(SB_ENGINE_STATUS_CONFLICT,
                   "SBSQL.SHOW.DESCRIPTOR_INCOMPLETE",
                   "sblr.catalog_introspect.bound_name_incomplete", detail);
@@ -16097,7 +16102,15 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
       loaded.descriptor.descriptor_uuid;
   authority.relation_descriptor_generation =
       loaded.descriptor.descriptor_generation;
-  authority.canonical_path_utf8 = name_descriptor.canonical_name_utf8;
+  // The introspect (SHOW) descriptor still carries ONE text path (S5 / message-vector work replaces it with the UUIDs): it is
+  // the descriptor's name steps as given, joined with '.' for that display field ONLY; no engine lookup reads it, and the
+  // SBLR_NAME_RESOLVE descriptor itself never joins its steps.
+  for (const auto& atom : name_descriptor.name_atoms) {
+    if (!authority.canonical_path_utf8.empty()) {
+      authority.canonical_path_utf8.push_back('.');
+    }
+    authority.canonical_path_utf8.append(atom);
+  }
   authority.statement_snapshot_uuid = view.statement_snapshot_uuid;
   authority.catalog_epoch = view.catalog_generation_id;
   authority.security_epoch = view.security_epoch;
@@ -27587,8 +27600,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
       journal_key.resolution_uuid = name_resolve_descriptor.resolution_uuid;
       journal_key.descriptor_sha256 =
           name_resolve_descriptor.descriptor_sha256;
-      journal_key.canonical_name_sha256 =
-          name_resolve_descriptor.canonical_name_sha256;
+      journal_key.name_atoms_sha256 =
+          name_resolve_descriptor.name_atoms_sha256;
       journal_key.namespace_generation =
           name_resolve_descriptor.namespace_generation;
       journal_key.catalog_generation =
@@ -27708,6 +27721,12 @@ sb_engine_status_t DispatchStatementContextReceipt(
         scratchbird::engine::internal_api::EngineResolveNameRequest
             resolve_request;
         resolve_request.context = receipt->engine_context;
+        // Part B S3: the descriptor's explicit language is THE lookup language (bind derived it once from the receipt context;
+        // execute no longer re-derives it).
+        resolve_request.context.language_context.language_tag =
+            scratchbird::engine::internal_api::NameRegistryLanguageTagOfUuid(
+                scratchbird::engine::internal_api::EngineUuid{
+                    name_resolve_descriptor.name_language_uuid});
         resolve_request.operation_id = "catalog.resolve_name";
         resolve_request.sql_object_reference.expected_object_type =
             expected_class;

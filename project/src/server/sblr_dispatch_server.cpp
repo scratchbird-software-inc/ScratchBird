@@ -2988,9 +2988,19 @@ engine_api::EngineIdentifierAtom DispatchIdentifierAtom(
   return atom;
 }
 
+// PART B S3 (owner: the engine gets UUIDs for objects; splitting, folding, search paths and default-schema fallbacks are PARSER
+// rules): a dispatch operation that names an object by dotted TEXT is the legacy channel. On a NATIVE session the server does not
+// split, trim, quote-parse or fall back: the path stays UNRESOLVED (an empty result, which every caller of the resolvers below
+// already treats as "not resolved"). A native parser sends UUIDs (or, through ListNames, the stored spelling as atoms: S5). The
+// legacy resolution that follows each guard is legacy-cut work.
+bool DispatchNativeTextPathRefused(const ServerSessionRecord& session) {
+  return session.native_served_facts != nullptr;
+}
+
 engine_api::EngineUuid ResolveObjectPathForDispatch(
     const ServerSessionRecord& session, std::string_view path,
     std::string_view expected_kind) {
+  if (DispatchNativeTextPathRefused(session)) return {};
   const auto parts = SplitDispatchIdentifierPath(path);
   if (parts.empty()) return {};
   engine_api::EngineResolveNameRequest request;
@@ -3038,6 +3048,7 @@ std::string DispatchSchemaParentPathCacheKey(const ServerSessionRecord& session,
 std::string ResolveSchemaParentPathForDispatch(
     const ServerSessionRecord& session,
     std::string_view schema_parent_path) {
+  if (DispatchNativeTextPathRefused(session)) return {};
   const auto parts = SplitDispatchIdentifierPath(schema_parent_path);
   if (parts.empty()) return {};
   const std::string cache_key =
@@ -3069,6 +3080,8 @@ std::string ResolveSchemaParentPathForDispatch(
 }
 
 std::string ResolveDefaultSchemaForDispatch(const ServerSessionRecord& session) {
+  // (Native: no default-schema fallback among "users.public", "public" and "app": those spellings are guesses, not facts.)
+  if (DispatchNativeTextPathRefused(session)) return {};
   for (std::string_view candidate : {"users.public", "public", "app"}) {
     const std::string resolved = ResolveSchemaParentPathForDispatch(session, candidate);
     if (!resolved.empty()) return resolved;
@@ -3078,6 +3091,7 @@ std::string ResolveDefaultSchemaForDispatch(const ServerSessionRecord& session) 
 
 std::string ResolveDomainTypePathForDispatch(const ServerSessionRecord& session,
                                              std::string_view domain_path) {
+  if (DispatchNativeTextPathRefused(session)) return {};
   const auto parts = SplitDispatchIdentifierPath(domain_path);
   if (parts.empty()) return {};
   if (parts.size() > 1) {
@@ -3136,6 +3150,7 @@ std::string ResolveSequencePathForDispatch(const ServerSessionRecord& session,
                                            std::string_view sequence_path) {
   if (sequence_path.empty()) return {};
   if (LooksLikeBinaryUuid(sequence_path)) return NormalizeBinaryUuid(sequence_path);
+  if (DispatchNativeTextPathRefused(session)) return {};
   const auto parts = SplitDispatchIdentifierPath(sequence_path);
   if (parts.empty()) return {};
   engine_api::EngineResolveNameRequest request;
@@ -3157,6 +3172,7 @@ std::string ResolveRelationPathForDispatch(const ServerSessionRecord& session,
                                            std::string_view relation_path) {
   if (relation_path.empty()) return {};
   if (LooksLikeBinaryUuid(relation_path)) return NormalizeBinaryUuid(relation_path);
+  if (DispatchNativeTextPathRefused(session)) return {};
   const auto parts = SplitDispatchIdentifierPath(relation_path);
   if (parts.empty()) return {};
   for (const auto expected : {"table", "view", "materialized_view", "relation"}) {

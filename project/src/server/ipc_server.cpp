@@ -2700,6 +2700,27 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
     const auto found = session_registry->sessions_by_uuid.find(
         scratchbird::core::platform::Uuid{frame.header.session_uuid});
     if (found != session_registry->sessions_by_uuid.end()) {
+      // PART B S3 (owner 2026-11-20..26: the engine stores and uses names as given; splitting dotted text, folding, quoting, search
+      // paths and language fallback are the PARSER's, and the engine uses names only in the exact UUID<->path.name procedures): the
+      // dotted-TEXT name-resolve frame (7001-7008) carries ONE presented text that the server would have to split, quote-parse and
+      // fold (PsNameLower, the virtual sys.* match, PsNameSplitPresentedName, the profile canonicalisation, the name caches), and
+      // whose language is the session's, not an explicit one. On a NATIVE session it is refused FIRST, before any of that runs
+      // (and before the legacy default-transaction gating): a native parser resolves by ListNames (list-and-compare in its own
+      // rules) and sends the stored spelling or UUIDs; the wire for that is S5 (ListNames over the wire; the frame will carry atoms
+      // and an explicit language). When the frame asked for the persisted relation descriptor, the old path built a native context
+      // (EngineContextForSessionProjection sets native_served_facts) and reached the exact matcher with the server's FOLDED text;
+      // that no longer happens. The legacy text path below is unchanged and is legacy-cut work.
+      if (found->second.native_served_facts != nullptr) {
+        return ErrorFrame(
+            {PsRelationProjectionDiagnostic(
+                "ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5",
+                "engine.native.wire_name_resolve_s5",
+                "A native session resolves names by listing a scope's names, not by dotted text.",
+                "dotted_text_name_resolve_refused_on_native_session")},
+            frame.header.request_uuid,
+            frame.header.sequence_number,
+            static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+      }
       if (found->second.detached_recovery_quarantined) {
         return ErrorFrame(
             {sbps::IpcDiagnostic(

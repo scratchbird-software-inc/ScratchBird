@@ -9,6 +9,7 @@
 
 #include "engine/internal_api/sblr_name_resolve_journal.hpp"
 #include "engine/sblr/sblr_name_resolve_runtime.hpp"
+#include "catalog_language.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -133,12 +134,21 @@ int main() {
                 authority.canonical_descriptor_bytes.data(),
                 authority.canonical_descriptor_bytes.size(), &decoded_descriptor, &detail),
             "003616 engine SNRD did not decode");
+    // PART B S3 (2026-12-01): the bound descriptor carries the target steps exactly as the bind request gave them (never folded,
+    // joined or split) and the explicit language of the receipt context (the context's tag "en" = the catalog language constant).
+    Require(decoded_descriptor.name_atoms.size() == decoded_bind.target_name_atoms.size() &&
+                decoded_descriptor.name_atoms.front() == decoded_bind.target_name_atoms.front().raw_utf8 &&
+                decoded_descriptor.name_atoms.front() == "definitely_absent_name",
+            "003616 the engine SNRD does not carry the bind request's name steps as given");
+    Require(decoded_descriptor.name_language_uuid ==
+                scratchbird::core::catalog::kCatalogLanguage_en.bytes,
+            "003616 the engine SNRD does not carry the explicit language UUID of the context tag");
     auto& key = out->journal_key;
     key.database_uuid = RawUuid(context.database_uuid);
     key.statement_receipt_uuid = decoded_descriptor.statement_receipt_uuid;
     key.resolution_uuid = decoded_descriptor.resolution_uuid;
     key.descriptor_sha256 = decoded_descriptor.descriptor_sha256;
-    key.canonical_name_sha256 = decoded_descriptor.canonical_name_sha256;
+    key.name_atoms_sha256 = decoded_descriptor.name_atoms_sha256;  // Part B S3 rename
     key.namespace_generation = decoded_descriptor.namespace_generation;
     key.catalog_generation = decoded_descriptor.catalog_generation;
     key.security_epoch = decoded_descriptor.security_epoch;

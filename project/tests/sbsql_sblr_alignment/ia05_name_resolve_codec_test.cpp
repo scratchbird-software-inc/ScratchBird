@@ -115,10 +115,13 @@ int main() {
   descriptor.security_context_uuid = Bytes<16>(61);
   descriptor.namespace_uuid = Bytes<16>(81);
   descriptor.namespace_generation = 19;
-  descriptor.canonical_name_utf8 = "customers";
+  // PART B S3 (owner 2026-11-20..26, layout changes fully allowed): the descriptor carries the name steps AS GIVEN, each with
+  // its explicit length, plus the explicit language UUID; it no longer carries a folded '.'-joined canonical name or a case
+  // folding profile.
+  descriptor.name_atoms = {"customers"};
+  descriptor.name_language_uuid = Bytes<16>(141);
   descriptor.resolution_mode = 1;
   descriptor.object_class = 2;
-  descriptor.case_folding_profile = 1;
   descriptor.executor_availability_generation = 23;
   descriptor.parser_package_uuid = Bytes<16>(101);
   descriptor.language_profile_uuid = Bytes<16>(121);
@@ -128,12 +131,15 @@ int main() {
       sblr::EncodeSblrNameResolveDescriptorV1(descriptor);
   sblr::SblrNameResolveDescriptorV1 decoded_descriptor;
   Require(descriptor_bytes.size() ==
-                  sblr::kSblrNameResolveDescriptorPrefixBytes + 9 &&
+                  sblr::kSblrNameResolveDescriptorPrefixBytes + 4 + 9 &&
               sblr::DecodeSblrNameResolveDescriptorV1(
                   descriptor_bytes.data(), descriptor_bytes.size(),
                   &decoded_descriptor, &detail) &&
               decoded_descriptor.object_class == 2 &&
-              decoded_descriptor.canonical_name_utf8 == "customers" &&
+              decoded_descriptor.name_atoms ==
+                  std::vector<std::string>{"customers"} &&
+              decoded_descriptor.name_language_uuid ==
+                  descriptor.name_language_uuid &&
               sblr::EncodeSblrNameResolveDescriptorV1(decoded_descriptor) ==
                   descriptor_bytes,
           "canonical SNRD did not round trip byte-identically");
@@ -147,21 +153,129 @@ int main() {
   Require(sblr::EncodeSblrNameResolveDescriptorV1(invalid_descriptor).empty(),
           "SNRD with unknown Core object class was encoded");
   invalid_descriptor = descriptor;
-  invalid_descriptor.canonical_name_utf8 =
-      std::string("bad\0name", 8);
+  invalid_descriptor.name_atoms = {std::string("bad\0name", 8)};
   Require(sblr::EncodeSblrNameResolveDescriptorV1(invalid_descriptor).empty(),
           "SNRD with embedded NUL was encoded");
   invalid_descriptor = descriptor;
-  invalid_descriptor.canonical_name_utf8 = std::string("\xc0\xaf", 2);
+  invalid_descriptor.name_atoms = {std::string("\xc0\xaf", 2)};
   Require(sblr::EncodeSblrNameResolveDescriptorV1(invalid_descriptor).empty(),
           "SNRD with invalid UTF-8 was encoded");
+  invalid_descriptor = descriptor;
+  invalid_descriptor.name_atoms = {"ok", std::string("bad\0step", 8)};
+  Require(sblr::EncodeSblrNameResolveDescriptorV1(invalid_descriptor).empty(),
+          "SNRD with a NUL in a later step was encoded");
+  invalid_descriptor = descriptor;
+  invalid_descriptor.name_atoms.clear();
+  Require(sblr::EncodeSblrNameResolveDescriptorV1(invalid_descriptor).empty(),
+          "SNRD with no name step was encoded");
+  invalid_descriptor = descriptor;
+  invalid_descriptor.name_atoms = {std::string(
+      sblr::kSblrNameResolveMaximumAtomBytes + 1, 'a')};
+  Require(sblr::EncodeSblrNameResolveDescriptorV1(invalid_descriptor).empty(),
+          "SNRD with an over-capacity step was encoded");
+  invalid_descriptor = descriptor;
+  invalid_descriptor.name_atoms.assign(sblr::kSblrNameResolveMaximumAtoms + 1, "a");
+  Require(sblr::EncodeSblrNameResolveDescriptorV1(invalid_descriptor).empty(),
+          "SNRD with too many steps was encoded");
+  invalid_descriptor = descriptor;
+  invalid_descriptor.name_language_uuid = {};
+  Require(sblr::EncodeSblrNameResolveDescriptorV1(invalid_descriptor).empty(),
+          "SNRD with no explicit language was encoded");
+
+  // PART B S3: the steps are DATA, carried exactly. "" is a legal step; a step may contain '.', quotes and any case; steps are
+  // never joined, split or folded; the case-only twins and the dotted step are DISTINCT descriptors (distinct atom hashes);
+  // the language UUID is part of the descriptor hash.
+  const auto round_trip = [&](const std::vector<std::string>& atoms) {
+    auto value = descriptor;
+    value.name_atoms = atoms;
+    const auto bytes = sblr::EncodeSblrNameResolveDescriptorV1(value);
+    sblr::SblrNameResolveDescriptorV1 back;
+    Require(!bytes.empty() &&
+                sblr::DecodeSblrNameResolveDescriptorV1(bytes.data(), bytes.size(),
+                                                        &back, &detail) &&
+                back.name_atoms == atoms &&
+                sblr::EncodeSblrNameResolveDescriptorV1(back) == bytes,
+            "SNRD with data steps did not round trip exactly");
+    return back;
+  };
+  const auto empty_step = round_trip({""});
+  const auto empty_in_path = round_trip({"", "", ""});
+  const auto upper = round_trip({"CUSTOMERS"});
+  const auto lower = round_trip({"customers"});
+  const auto dotted_one = round_trip({"a.b"});
+  const auto dotted_two = round_trip({"a", "b"});
+  const auto quoted_text = round_trip({"\"Q\" x", "it's", "\xc3\xa9\xe4\xb8\xad\xf0\x9f\x98\x80"});
+  const auto max_step = round_trip({std::string(sblr::kSblrNameResolveMaximumAtomBytes, 'z')});
+  Require(empty_step.name_atoms.size() == 1 && empty_step.name_atoms[0].empty() &&
+              empty_in_path.name_atoms.size() == 3 &&
+              max_step.name_atoms[0].size() == sblr::kSblrNameResolveMaximumAtomBytes,
+          "empty or maximum steps lost their exact length");
+  Require(upper.name_atoms != lower.name_atoms &&
+              upper.name_atoms_sha256 != lower.name_atoms_sha256 &&
+              upper.descriptor_sha256 != lower.descriptor_sha256,
+          "case-distinct steps were folded together by the descriptor codec");
+  Require(dotted_one.name_atoms.size() == 1 && dotted_one.name_atoms[0] == "a.b" &&
+              dotted_two.name_atoms.size() == 2 &&
+              dotted_one.name_atoms_sha256 != dotted_two.name_atoms_sha256 &&
+              dotted_one.descriptor_sha256 != dotted_two.descriptor_sha256,
+          "a step containing '.' was joined or split by the descriptor codec");
+  {
+    // The BIND's step derivation (the function public_abi.cpp's name-resolve bind calls): the steps are the atoms as given.
+    // Mutations of it (a fold, a '.' join, a split, a trim) fail here.
+    for (const std::vector<std::string>& given : std::vector<std::vector<std::string>>{
+             {"customers"}, {"CUSTOMERS"}, {"Customers"}, {"a.b"}, {"a", "b"}, {"Mixed.Case", "x y", ""}, {""}, {" lead", "trail "},
+             {"\xc3\x89", "\xc3\xa9"}, {"a.b", "C"}}) {
+      std::vector<std::string> steps;
+      Require(sblr::BindSblrNameResolveStepsV1(given, &steps) && steps == given && steps.size() == given.size(),
+              "the bind's steps are not the atoms exactly as given");
+    }
+    std::vector<std::string> none;
+    Require(!sblr::BindSblrNameResolveStepsV1({}, &none) && none.empty(), "the bind accepted no atoms");
+    auto a = descriptor, b = descriptor, c = descriptor;
+    Require(sblr::BindSblrNameResolveStepsV1({"a.b", "C"}, &a.name_atoms) &&
+                sblr::BindSblrNameResolveStepsV1({"A.B", "c"}, &b.name_atoms) &&
+                sblr::BindSblrNameResolveStepsV1({"a", "b", "C"}, &c.name_atoms),
+            "bind steps");
+    const auto ab = sblr::EncodeSblrNameResolveDescriptorV1(a), bb = sblr::EncodeSblrNameResolveDescriptorV1(b),
+               cb = sblr::EncodeSblrNameResolveDescriptorV1(c);
+    Require(!ab.empty() && !bb.empty() && !cb.empty() && ab != bb && ab != cb && bb != cb,
+            "descriptors of {a.b,C}, {A.B,c} and {a,b,C} are not three distinct descriptors");
+    sblr::SblrNameResolveDescriptorV1 back;
+    Require(sblr::DecodeSblrNameResolveDescriptorV1(ab.data(), ab.size(), &back, &detail) &&
+                back.name_atoms == std::vector<std::string>{"a.b", "C"},
+            "the dotted and mixed-case steps did not survive a bind, encode and decode round trip as given");
+  }
+  {
+    auto other_language = descriptor;
+    other_language.name_language_uuid = Bytes<16>(142);
+    const auto other_bytes = sblr::EncodeSblrNameResolveDescriptorV1(other_language);
+    Require(!other_bytes.empty() && other_bytes != descriptor_bytes &&
+                other_bytes.size() == descriptor_bytes.size(),
+            "the language UUID is not carried in the descriptor bytes");
+  }
+  {
+    // The old (version 1) layout is not a version 2 descriptor.
+    auto old_layout = descriptor_bytes;
+    old_layout[4] = 1;
+    RefuseDescriptor(old_layout, "a version 1 SNRD was accepted as the step-vector layout");
+    // An atom length that does not fit the block, or a count that disagrees with the block, is a malformed extent.
+    auto bad_count = descriptor_bytes;
+    bad_count[150] = 2;
+    RefuseDescriptor(bad_count, "SNRD whose step count disagrees with its block was accepted");
+    auto bad_length = descriptor_bytes;
+    bad_length[sblr::kSblrNameResolveDescriptorPrefixBytes] = 200;
+    RefuseDescriptor(bad_length, "SNRD whose step length overruns its block was accepted");
+  }
 
   malformed = descriptor_bytes;
   malformed[12] = 1;
   RefuseDescriptor(malformed, "SNRD with nonzero flags was accepted");
   malformed = descriptor_bytes;
-  malformed[151] = 1;
-  RefuseDescriptor(malformed, "SNRD with nonzero reserved byte was accepted");
+  malformed[151] = 1;  // high byte of the u16 step count (was a reserved byte)
+  RefuseDescriptor(malformed, "SNRD with an altered step count was accepted");
+  malformed = descriptor_bytes;
+  std::fill(malformed.begin() + 240, malformed.begin() + 256, 0);
+  RefuseDescriptor(malformed, "SNRD with a zeroed language UUID was accepted");
   malformed = descriptor_bytes;
   malformed[116] ^= 1;
   RefuseDescriptor(malformed, "SNRD name-hash tamper was accepted");
@@ -260,6 +374,41 @@ int main() {
               bind::NameResolveBindRequestEvidenceV1(decoded_bind) ==
                   decoded_bind.request_evidence_sha256,
           "canonical SNBQ did not round trip with exact atom evidence");
+
+  // PART B S3: the bind request's name steps are DATA too ("" legal, any UTF-8 without NUL, flagged quoted or not, the quoted flag
+  // an opaque parser datum); the engine's old identifier-syntax rule on unquoted steps ("bad-name", "" refused) is gone from
+  // the name-resolve bind (the catalog-epoch-check bind keeps it; see its codec test).
+  for (const std::vector<bind::NameResolveNameAtomV1>& steps :
+       std::vector<std::vector<bind::NameResolveNameAtomV1>>{
+           {{"", false}},
+           {{"", true}, {"", false}},
+           {{"bad-name", false}},
+           {{"a.b", false}, {"C D", true}},
+           {{"Customers", false}, {"customers", true}},
+           {{"\xc3\xa9\xe4\xb8\xad", false}}}) {
+    auto data_request = bind_request;
+    data_request.target_name_atoms = steps;
+    data_request.namespace_name_atoms = {{"app", false}};
+    std::vector<std::uint8_t> data_bytes;
+    bind::NameResolveBindRequestV1 data_back;
+    Require(bind::EncodeNameResolveBindRequestV1(data_request, &data_bytes, &detail) &&
+                bind::DecodeNameResolveBindRequestV1(data_bytes.data(), data_bytes.size(),
+                                                     &data_back, &detail) &&
+                data_back.target_name_atoms.size() == steps.size(),
+            "SNBQ with data name steps did not round trip");
+    for (std::size_t i = 0; i < steps.size(); ++i)
+      Require(data_back.target_name_atoms[i].raw_utf8 == steps[i].raw_utf8 &&
+                  data_back.target_name_atoms[i].quoted == steps[i].quoted,
+              "SNBQ step bytes or quoted datum changed in transit");
+  }
+  for (const std::string& bad : {std::string("a\0b", 3), std::string("\xc0\xaf", 2),
+                                  std::string(4097, 'a')}) {
+    auto data_request = bind_request;
+    data_request.target_name_atoms = {{bad, true}};
+    std::vector<std::uint8_t> refused;
+    Require(!bind::EncodeNameResolveBindRequestV1(data_request, &refused, &detail),
+            "SNBQ with a NUL, invalid UTF-8 or over-capacity step was encoded");
+  }
 
   auto invalid_bind_request = bind_request;
   invalid_bind_request.object_class = 17;

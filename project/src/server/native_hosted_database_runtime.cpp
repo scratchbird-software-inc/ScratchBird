@@ -1267,16 +1267,13 @@ engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativ
         phase=r.error==db::NativeCatalogStreamError::history_exhausted?E::names_history_exhausted:source_phase;
         source.lease.Reset();
       };
-      // 1. The configuration relation (role 5): identifier profiles, and the security schema the principals live under.
+      // 1. The configuration relation (role 5): the security schema the principals live under (Part B S3: no longer the identifier profiles).
       {
         const auto visit_config=[&](const db::NativeCatalogVisibleRow& row) {
           if(!NativeNameRowLive(row)) return true;
           const auto& m=row.metadata;
-          if(c::IsCatalogIdentifierProfilePayload(m.record.payload)&&c::CatalogIdentifierProfileMatchesMetadata(m)&&
-              c::CatalogIdentifierProfileMatchesDatabase(m,self.database_)) {
-            auto decoded=c::DecodeCatalogIdentifierProfile(m.record.payload);
-            if(decoded.ok()) out.profiles.push_back({decoded.record->profile_uuid,static_cast<std::uint64_t>(decoded.record->unquoted_fold_mode)});
-          } else if(c::IsCatalogAuthorizationPolicyPayload(m.record.payload)&&
+          // PART B S3: the identifier-profile rows are no longer decoded here (nothing native folds); they are S7's.
+          if(c::IsCatalogAuthorizationPolicyPayload(m.record.payload)&&
               c::CatalogAuthorizationPolicyMatchesMetadata(m)&&c::CatalogAuthorizationPolicyMatchesDatabase(m,self.database_)) {
             const auto body=c::DecodeCatalogAuthorizationPolicy(m.record.payload);
             if(body.record&&std::find(out.principal_schemas.begin(),out.principal_schemas.end(),body.record->user_schema_uuid)==out.principal_schemas.end())

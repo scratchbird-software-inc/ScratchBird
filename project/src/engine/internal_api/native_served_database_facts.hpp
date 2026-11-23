@@ -62,11 +62,8 @@ struct NativeNameRowValue {
   std::string raw_name_text;          // the one stored copy of the name, bytes as given
   std::uint64_t catalog_generation_id = 0, resource_epoch = 0, name_resolution_epoch = 0;
 };
-// A role-5 identifier profile row, reduced to what the registry projection needs (Part B removes this need).
-struct NativeNameProfileValue {
-  core::platform::Uuid profile_uuid;
-  std::uint64_t unquoted_fold_mode = 0;  // IdentifierFoldMode: 0 none, 1 upper_ascii, 2 lower_ascii, 3 resource_upper, 4 resource_lower
-};
+// (Part B S3, 2026-12-01: NativeNameProfileValue, the role-5 identifier profile row reduced for the registry projection's
+// fold label, is REMOVED: nothing native folds, so nothing reads a profile's fold mode. The profile ROWS stay in the file until S7.)
 // SEARCH_KEY: SB_NAMES_SCOPE_ARGUMENT (2026-11-26). Which name rows a read RETAINS. Every committed name row is still
 // visited (the snapshot's digest, entry count and generation maxima are computed over ALL of them, so they change with any
 // committed name change whatever the filter), but only the rows the filter selects are copied into `rows`: the rows whose
@@ -161,7 +158,6 @@ struct NativeNamesSnapshot {
   std::vector<NativeNameRowValue> rows;          // live, active, committed name entries (role 2) the read's filter retained
   // SB_NAMES_SCOPE_ARGUMENT: over ALL live committed name entries, whatever the filter retained.
   std::uint64_t names_digest = 0, visible_entry_count = 0, max_catalog_generation_id = 0, max_name_resolution_epoch = 0;
-  std::vector<NativeNameProfileValue> profiles;  // live identifier profiles (role 5)
   // The database's authorization policy bodies' user schema (the principals' name scope); the login (S4c) reads it
   // here instead of a separate resolver. Distinct values, normally exactly one.
   std::vector<core::platform::Uuid> principal_schemas;

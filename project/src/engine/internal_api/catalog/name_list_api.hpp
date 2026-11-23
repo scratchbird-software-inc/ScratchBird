@@ -109,6 +109,12 @@ struct EngineNamePathComponent {
   bool was_quoted = false;         // the parser's opaque quoted datum, as stored
   std::uint8_t quote_style = 0;
   bool requires_exact_match = false;
+  // Part B S3: the entry's own scope and the row's generation and epochs (the native EngineMapUuidToName answer needs
+  // them: they are the row's, as stored).
+  EngineUuid scope_uuid;
+  std::uint64_t catalog_generation_id = 0;
+  std::uint64_t resource_epoch = 0;
+  std::uint64_t name_resolution_epoch = 0;
 };
 
 struct EngineUuidToNameRequest : EngineApiRequest {
