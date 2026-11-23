@@ -5170,6 +5170,174 @@ static sb_engine_status_t native_receipt_refusal(sb_engine_session_t session, sb
                 "engine.statement_context.inventory_unavailable");
 }
 
+// SEARCH_KEY: SB_NATIVE_RECEIPT_CONSUMER_GATE (thin-slice S4f exposure close, owner 2026-10-19 / 2026-11-16: the database is ONE file,
+// "no other files should be created", legacy side files are drift). A native receipt (an approved session's active, owned
+// transaction) is now ISSUED, and every receipt consumer below it (the Bind / Copy / Negotiate / Finalize / Issue / Assign /
+// Retain / Resolve / Revoke / Prepare / JointConsume entries and the package-admission reservation) reaches a legacy side-file
+// family (".sb.*" next to the database) that has no native replacement. The consumers have NO common validation function (each
+// looks the receipt up inline in g_live_statement_context_receipts), so the choke point is THIS ONE helper, called as the first
+// statement of every consumer, keyed on the receipt alone, BEFORE any request validation: a native receipt may be consumed only
+// by an entry the table below ALLOWS; any other entry refuses ENGINE.NATIVE.OPERATION_NOT_BUILT (fields: operation = the entry,
+// requires = a build-time token naming the missing native feature; the Q299 code on a restricted database), writes nothing and
+// creates no file. An entry that is not in the table at all refuses too (fail closed: requires native_receipt_consumer_unlisted).
+// A receipt that is not live or not native falls through to the entry's own, unchanged, path.
+//
+// THE ALLOW-LIST IS DATA: the rows whose disposition is `allowed` / `own_gate`. The owner enables an entry (changes its row)
+// ONLY AFTER its native storage exists; a test (native_receipt_gate_*) pins every row and a source-policy test
+// (native_receipt_gate_coverage_test.py) fails for a consumer declared in statement_context.hpp that is not in this table or
+// does not call the gate.
+//   refuse   - the gate refuses a native receipt (the entry's family has no native store yet)
+//   allowed  - works natively today (the receipt's own acquire / release, the read of its immutable context)
+//   own_gate - the entry already refuses a native receipt with its OWN code in its body (Dispatch, the name-resolve bind, the
+//              parameter-coordination begin); the gate passes it through unchanged
+enum class NativeReceiptConsumerDisposition : std::uint8_t { refuse, allowed, own_gate };
+struct NativeReceiptConsumerRow {
+  const char* entry;
+  const char* family;
+  const char* requires_token;
+  NativeReceiptConsumerDisposition disposition;
+};
+constexpr NativeReceiptConsumerDisposition kRefuse = NativeReceiptConsumerDisposition::refuse;
+constexpr NativeReceiptConsumerDisposition kAllowed = NativeReceiptConsumerDisposition::allowed;
+constexpr NativeReceiptConsumerDisposition kOwnGate = NativeReceiptConsumerDisposition::own_gate;
+// NATIVE_RECEIPT_CONSUMER_TABLE_BEGIN (the source-policy test parses between these markers)
+constexpr NativeReceiptConsumerRow kNativeReceiptConsumerTable[] = {
+    // receipt lifecycle: works natively (S4f)
+    {"AcquireStatementContextReceipt", "receipt_lifecycle", "", kAllowed},
+    {"ReleaseStatementContextReceipt", "receipt_lifecycle", "", kAllowed},
+    {"CopyStatementContextEngineContextV1", "receipt_lifecycle", "", kAllowed},
+    // own gates (unchanged)
+    {"DispatchStatementContextReceipt", "dispatch", "native_executor_availability_s4g", kOwnGate},
+    {"BindStatementNameResolveAuthorityV1", "name_resolve", "native_executor_availability_s4g", kOwnGate},
+    {"BeginStatementParameterExecutionCoordinationV1", "parameter_coordination", "native_session_and_transaction_s4", kOwnGate},
+    // refused until the family has a native store
+    {"CoordinateSessionValueDescriptorV1", "session_value_descriptor", "native_parameter_and_variable_registries", kRefuse},
+    {"AttachStatementRelationOccurrenceMappingsV1", "relation_occurrence_mappings", "native_statement_occurrence_mappings", kRefuse},
+    {"CopyStatementRelationOccurrenceMappingsV1", "relation_occurrence_mappings", "native_statement_occurrence_mappings", kRefuse},
+    {"BindStatementTableTruncateTargetV1", "table_truncate", "native_relation_store", kRefuse},
+    {"BindStatementBulkImportAuthorityV1", "bulk_import", "native_bulk_import_registry", kRefuse},
+    {"CopyStatementBulkImportAuthorityV1", "bulk_import", "native_bulk_import_registry", kRefuse},
+    {"BindStatementPrepareAuthorityV1", "prepared_statement", "native_prepared_statement_registry", kRefuse},
+    {"CopyStatementPrepareAuthorityV1", "prepared_statement", "native_prepared_statement_registry", kRefuse},
+    {"BindStatementExecuteAuthorityV1", "prepared_statement", "native_prepared_statement_registry", kRefuse},
+    {"CopyStatementExecuteAuthorityV1", "prepared_statement", "native_prepared_statement_registry", kRefuse},
+    {"BindStatementFreeAuthorityV1", "prepared_statement", "native_prepared_statement_registry", kRefuse},
+    {"CopyStatementFreeAuthorityV1", "prepared_statement", "native_prepared_statement_registry", kRefuse},
+    {"BindStatementExecuteDirectAuthorityV1", "execute_direct", "native_executor_availability_s4g", kRefuse},
+    {"CopyStatementExecuteDirectAuthorityV1", "execute_direct", "native_executor_availability_s4g", kRefuse},
+    {"BindStatementQueryExplainAuthorityV1", "query_explain", "native_explain_message_vectors", kRefuse},
+    {"CopyStatementQueryExplainAuthorityV1", "query_explain", "native_explain_message_vectors", kRefuse},
+    {"CopyStatementNameResolveAuthorityV1", "name_resolve", "native_executor_availability_s4g", kRefuse},
+    {"BindStatementDdlCreateSchemaAuthorityV1", "ddl_create_schema", "native_ddl_execution_journal", kRefuse},
+    {"CopyStatementDdlCreateSchemaAuthorityV1", "ddl_create_schema", "native_ddl_execution_journal", kRefuse},
+    {"BindStatementSecurityAlterPolicyAuthorityV1", "security_policy", "native_security_catalog_writes", kRefuse},
+    {"CopyStatementSecurityAlterPolicyAuthorityV1", "security_policy", "native_security_catalog_writes", kRefuse},
+    {"BindStatementSecurityCreatePrivilegeTemplateAuthorityV1", "security_policy", "native_security_catalog_writes", kRefuse},
+    {"CopyStatementSecurityCreatePrivilegeTemplateAuthorityV1", "security_policy", "native_security_catalog_writes", kRefuse},
+    {"BindStatementDdlCreateTriggerAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"CopyStatementDdlCreateTriggerAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"BindStatementDdlAlterTriggerAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"CopyStatementDdlAlterTriggerAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"BindStatementDdlDropTriggerAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"CopyStatementDdlDropTriggerAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"BindStatementDdlCreateProcedureAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"CopyStatementDdlCreateProcedureAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"BindStatementProcedureInvokeAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"CopyStatementProcedureInvokeAuthorityV1", "executable_objects", "native_executable_object_catalog", kRefuse},
+    {"BindStatementCatalogIntrospectAuthorityV1", "catalog_introspect", "native_catalog_introspection", kRefuse},
+    {"CopyStatementCatalogIntrospectAuthorityV1", "catalog_introspect", "native_catalog_introspection", kRefuse},
+    {"BindStatementCatalogEpochCheckAuthorityV1", "catalog_epoch_check", "native_catalog_epoch_journal", kRefuse},
+    {"CopyStatementCatalogEpochCheckAuthorityV1", "catalog_epoch_check", "native_catalog_epoch_journal", kRefuse},
+    {"BindStatementParseTextAuthorityV1", "parse_text", "native_parse_text_journal", kRefuse},
+    {"CopyStatementParseTextAuthorityV1", "parse_text", "native_parse_text_journal", kRefuse},
+    {"BindStatementDatabaseAttachAuthorityV1", "database_attach", "native_database_attach_journal", kRefuse},
+    {"CopyStatementDatabaseAttachAuthorityV1", "database_attach", "native_database_attach_journal", kRefuse},
+    {"BindStatementOptimizerStatsReadAuthorityV1", "optimizer_stats", "native_optimizer_stats_store", kRefuse},
+    {"CopyStatementOptimizerStatsReadAuthorityV1", "optimizer_stats", "native_optimizer_stats_store", kRefuse},
+    {"BindStatementOptimizerStatsDropAuthorityV1", "optimizer_stats", "native_optimizer_stats_store", kRefuse},
+    {"CopyStatementOptimizerStatsDropAuthorityV1", "optimizer_stats", "native_optimizer_stats_store", kRefuse},
+    {"BindStatementCancelAuthorityV1", "statement_cancel", "native_statement_cancellation_registry", kRefuse},
+    {"CopyStatementCancelAuthorityV1", "statement_cancel", "native_statement_cancellation_registry", kRefuse},
+    {"BindStatementParameterBindAuthorityV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
+    {"CopyStatementParameterBindAuthorityV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
+    {"NegotiateStatementParameterDescriptorsV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
+    {"FinalizeStatementParameterBindingV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
+    {"FinalizeStatementVariableBindingV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
+    {"AssignStatementVariableValuesV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
+    {"NegotiateStatementLiteralDescriptorsV1", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
+    {"FinalizeStatementLiteralBindingV1", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
+    {"IssueStatementContextualTextLiteralProfilesV2", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
+    {"PrepareStatementContextualTextLiteralExecutionV2", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
+    {"JointConsumeStatementContextualTextLiteralExecutionV2", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
+    {"RevokeStatementContextualTextLiteralProfilesV2", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
+    {"RetainStatementSourceArtifactV1", "source_artifact", "native_source_artifact_registry", kRefuse},
+    {"ResolveStatementSourceArtifactV1", "source_artifact", "native_source_artifact_registry", kRefuse},
+    {"IssueStatementSourceMapDescriptorV1", "sblr_descriptor_registries", "native_sblr_descriptor_registries", kRefuse},
+    {"IssueStatementErrorVectorDescriptorV1", "sblr_descriptor_registries", "native_sblr_descriptor_registries", kRefuse},
+    {"AcquireStatementPackageAdmissionReservation", "package_admission", "native_package_admission_registry", kRefuse},
+    // a native SESSION (not a receipt) reaching the prepared-metadata binding: it would run the dispatch path past the handle's gate
+    {"CreatePreparedMetadataBinding", "prepared_metadata_binding", "native_prepared_statement_registry", kRefuse},
+    {"DispatchWithPreparedMetadataBinding", "prepared_metadata_binding", "native_executor_availability_s4g", kRefuse},
+};
+// NATIVE_RECEIPT_CONSUMER_TABLE_END
+
+const NativeReceiptConsumerRow* native_receipt_consumer_row(std::string_view entry) noexcept {
+  for (const auto& row : kNativeReceiptConsumerTable)
+    if (entry == row.entry) return &row;
+  return nullptr;
+}
+
+// The refusal itself. Same vector as native_operation_not_built (operation + requires; the Q299 code when the database is
+// restricted), built from the database's facts so it needs no session object.
+sb_engine_status_t native_receipt_consumer_refusal(
+    const std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts>& facts,
+    sb_engine_result_t* out_result, const char* operation, const char* requires_token) {
+  if (facts && facts->CurrentServingState() == scratchbird::engine::internal_api::NativeServedServingState::restricted) {
+    scratchbird::engine::internal_api::EngineApiDiagnostic restricted =
+        scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+            "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY", "engine.native.database_restricted_read_only", {}, true);
+    restricted.fields.push_back({"operation", operation});
+    restricted.fields.push_back({"reason", facts->CurrentServingDiagnosticCode()});
+    restricted.fields.push_back({"requires", "unresolved_transaction_resolver_s5"});
+    restricted.identity_fields.push_back({"database_uuid", facts->database_uuid});
+    return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY",
+                       "engine.native.database_restricted_read_only", {}, {}, nullptr, &restricted);
+  }
+  return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.OPERATION_NOT_BUILT",
+                     "engine.native.operation_not_built", {}, {{"operation", operation}, {"requires", requires_token}});
+}
+
+std::optional<sb_engine_status_t> native_receipt_consumer_decide(
+    const std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts>& facts, const char* entry,
+    sb_engine_result_t* out_result) {
+  if (!facts) return std::nullopt;  // not a native database: the entry's own path
+  const auto* row = native_receipt_consumer_row(entry);
+  if (row == nullptr) return native_receipt_consumer_refusal(facts, out_result, entry, "native_receipt_consumer_unlisted");
+  if (row->disposition != NativeReceiptConsumerDisposition::refuse) return std::nullopt;
+  return native_receipt_consumer_refusal(facts, out_result, entry, row->requires_token);
+}
+
+// The gate for an entry that takes a RECEIPT. Never call it while holding g_statement_context_receipt_registry_mutex (it takes it).
+std::optional<sb_engine_status_t> native_receipt_consumer_gate(const char* entry, std::uint64_t receipt_id,
+                                                               sb_engine_result_t* out_result) {
+  if (receipt_id == 0) return std::nullopt;
+  std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> facts;
+  {
+    std::lock_guard<std::mutex> registry_guard(g_statement_context_receipt_registry_mutex);
+    const auto live = g_live_statement_context_receipts.find(receipt_id);
+    if (live == g_live_statement_context_receipts.end()) return std::nullopt;
+    facts = live->second->engine_context.native_served_facts;
+  }
+  return native_receipt_consumer_decide(facts, entry, out_result);
+}
+
+// The gate for an entry that takes a SESSION (call it AFTER the entry's own session validity check).
+std::optional<sb_engine_status_t> native_session_consumer_gate(const char* entry, sb_engine_session_t session,
+                                                               sb_engine_result_t* out_result) {
+  if (session == nullptr || session->engine == nullptr) return std::nullopt;
+  return native_receipt_consumer_decide(session->engine->native_served_facts, entry, out_result);
+}
+
 sb_engine_status_t check_struct(std::uint32_t struct_size,
                                 std::uint32_t abi_version,
                                 std::uint32_t minimum_size,
@@ -9704,6 +9872,8 @@ sb_engine_status_t CoordinateSessionValueDescriptorV1(
     sb_engine_result_t* out_result) try {
   clear_result(out_result);
   if (out_descriptor) *out_descriptor = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CoordinateSessionValueDescriptorV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || !demand || !out_descriptor)
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4050,
         "SBLR.OPERAND.INVALID", "engine.session_value.coordination_invalid");
@@ -9745,6 +9915,8 @@ sb_engine_status_t AttachStatementRelationOccurrenceMappingsV1(
     const std::vector<StatementRelationOccurrenceMappingV1>& mappings,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("AttachStatementRelationOccurrenceMappingsV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4051,
                        "ENGINE.STATEMENT_CONTEXT.RECEIPT_MISMATCH",
@@ -9788,6 +9960,8 @@ sb_engine_status_t CopyStatementRelationOccurrenceMappingsV1(
     std::vector<StatementRelationOccurrenceMappingV1>* out_mappings,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementRelationOccurrenceMappingsV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (out_mappings == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4051,
                        "SBLR.OPERAND_INVALID",
@@ -9831,6 +10005,8 @@ sb_engine_status_t BindStatementTableTruncateTargetV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementTableTruncateTargetV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -10012,6 +10188,8 @@ sb_engine_status_t BindStatementBulkImportAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementBulkImportAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -10441,6 +10619,8 @@ sb_engine_status_t CopyStatementBulkImportAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementBulkImportAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || structural_occurrence == 0 || import_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4053,
@@ -10480,6 +10660,8 @@ sb_engine_status_t BindStatementPrepareAuthorityV1(
     StatementPrepareBindAckV1* out_ack, sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementPrepareAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -10914,6 +11096,8 @@ sb_engine_status_t CopyStatementPrepareAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementPrepareAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4085,
                        "SBLR.OPERAND.INVALID",
@@ -10953,6 +11137,8 @@ sb_engine_status_t BindStatementExecuteDirectAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementExecuteDirectAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -11196,6 +11382,8 @@ sb_engine_status_t CopyStatementExecuteDirectAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementExecuteDirectAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4086,
                        "SBLR.OPERAND.INVALID",
@@ -11235,6 +11423,8 @@ sb_engine_status_t BindStatementQueryExplainAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementQueryExplainAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -11476,6 +11666,8 @@ sb_engine_status_t CopyStatementQueryExplainAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementQueryExplainAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4100,
                        "SBLR.OPERAND.INVALID",
@@ -11880,6 +12072,8 @@ sb_engine_status_t CopyStatementNameResolveAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementNameResolveAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4103,
                        "SBLR.OPERAND.INVALID",
@@ -11919,6 +12113,8 @@ sb_engine_status_t BindStatementDdlCreateSchemaAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementDdlCreateSchemaAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4126, std::move(code),
@@ -12332,6 +12528,8 @@ sb_engine_status_t CopyStatementDdlCreateSchemaAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementDdlCreateSchemaAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || schema_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4126,
@@ -12373,6 +12571,8 @@ sb_engine_status_t BindStatementSecurityAlterPolicyAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementSecurityAlterPolicyAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4210, std::move(code),
@@ -12819,6 +13019,8 @@ sb_engine_status_t CopyStatementSecurityAlterPolicyAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementSecurityAlterPolicyAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || policy_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4210,
@@ -12861,6 +13063,8 @@ sb_engine_status_t BindStatementSecurityCreatePrivilegeTemplateAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementSecurityCreatePrivilegeTemplateAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4143, std::move(code),
@@ -13356,6 +13560,8 @@ sb_engine_status_t CopyStatementSecurityCreatePrivilegeTemplateAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementSecurityCreatePrivilegeTemplateAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || template_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(
@@ -13403,6 +13609,8 @@ sb_engine_status_t BindStatementDdlCreateTriggerAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementDdlCreateTriggerAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4125, std::move(code),
@@ -14017,6 +14225,8 @@ sb_engine_status_t CopyStatementDdlCreateTriggerAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementDdlCreateTriggerAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || trigger_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4125,
@@ -14059,6 +14269,8 @@ sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementDdlCreateProcedureAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4130, std::move(code),
@@ -14575,6 +14787,8 @@ sb_engine_status_t CopyStatementDdlCreateProcedureAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementDdlCreateProcedureAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || procedure_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4130,
@@ -14617,6 +14831,8 @@ sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementProcedureInvokeAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4131, std::move(code),
@@ -15181,6 +15397,8 @@ sb_engine_status_t CopyStatementProcedureInvokeAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementProcedureInvokeAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || invocation_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4131,
@@ -15222,6 +15440,8 @@ sb_engine_status_t BindStatementDdlAlterTriggerAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementDdlAlterTriggerAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4127, std::move(code),
@@ -15674,6 +15894,8 @@ sb_engine_status_t CopyStatementDdlAlterTriggerAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementDdlAlterTriggerAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || trigger_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4127,
@@ -15716,6 +15938,8 @@ sb_engine_status_t BindStatementDdlDropTriggerAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementDdlDropTriggerAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4128, std::move(code),
@@ -16084,6 +16308,8 @@ sb_engine_status_t CopyStatementDdlDropTriggerAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementDdlDropTriggerAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || trigger_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4128,
@@ -16125,6 +16351,8 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementCatalogIntrospectAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4104, std::move(code),
@@ -16569,6 +16797,8 @@ sb_engine_status_t CopyStatementCatalogIntrospectAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementCatalogIntrospectAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || object_occurrence == 0 ||
       out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4105,
@@ -16610,6 +16840,8 @@ sb_engine_status_t BindStatementParseTextAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementParseTextAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -16872,6 +17104,8 @@ sb_engine_status_t CopyStatementParseTextAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementParseTextAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4109,
                        "SBLR.OPERAND_INVALID",
@@ -16911,6 +17145,8 @@ sb_engine_status_t BindStatementCatalogEpochCheckAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementCatalogEpochCheckAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -17262,6 +17498,8 @@ sb_engine_status_t CopyStatementCatalogEpochCheckAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementCatalogEpochCheckAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(
         SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4111,
@@ -17304,6 +17542,8 @@ sb_engine_status_t BindStatementDatabaseAttachAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementDatabaseAttachAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -17655,6 +17895,8 @@ sb_engine_status_t CopyStatementDatabaseAttachAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementDatabaseAttachAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(
         SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4113,
@@ -17697,6 +17939,8 @@ sb_engine_status_t RetainStatementSourceArtifactV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_retention != nullptr) *out_retention = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("RetainStatementSourceArtifactV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_retention != nullptr) {
@@ -17838,6 +18082,8 @@ sb_engine_status_t ResolveStatementSourceArtifactV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_retention != nullptr) *out_retention = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("ResolveStatementSourceArtifactV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_retention != nullptr) {
@@ -17905,6 +18151,8 @@ sb_engine_status_t BindStatementOptimizerStatsReadAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementOptimizerStatsReadAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4104, std::move(code),
@@ -18122,6 +18370,8 @@ sb_engine_status_t CopyStatementOptimizerStatsReadAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementOptimizerStatsReadAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4105,
                        "SBLR.OPERAND.INVALID",
@@ -18162,6 +18412,8 @@ sb_engine_status_t BindStatementOptimizerStatsDropAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementOptimizerStatsDropAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4106, std::move(code),
@@ -18411,6 +18663,8 @@ sb_engine_status_t CopyStatementOptimizerStatsDropAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementOptimizerStatsDropAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4107,
                        "SBLR.OPERAND.INVALID",
@@ -18452,6 +18706,8 @@ sb_engine_status_t BindStatementExecuteAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_descriptor_bytes != nullptr) out_descriptor_bytes->clear();
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementExecuteAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4088, std::move(code),
@@ -18811,6 +19067,8 @@ sb_engine_status_t CopyStatementExecuteAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementExecuteAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4088,
                        "SBLR.OPERAND.INVALID",
@@ -18849,6 +19107,8 @@ sb_engine_status_t BindStatementFreeAuthorityV1(
     StatementFreeBindAckV1* out_ack, sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementFreeAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -19047,6 +19307,8 @@ sb_engine_status_t CopyStatementFreeAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementFreeAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4087,
                        "SBLR.OPERAND.INVALID",
@@ -19084,6 +19346,8 @@ sb_engine_status_t BindStatementCancelAuthorityV1(
     StatementCancelBindAckV1* out_ack, sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_ack != nullptr) *out_ack = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementCancelAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     if (out_ack != nullptr) {
@@ -19340,6 +19604,8 @@ sb_engine_status_t CopyStatementCancelAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementCancelAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4089,
                        "SBLR.OPERAND.INVALID",
@@ -19379,6 +19645,8 @@ sb_engine_status_t BindStatementParameterBindAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_descriptor_bytes != nullptr) out_descriptor_bytes->clear();
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("BindStatementParameterBindAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   const auto refuse = [&](sb_engine_status_t status, std::string code,
                           std::string key, std::string detail = {}) {
     return fail_result(status, out_result, 4097, std::move(code),
@@ -19679,6 +19947,8 @@ sb_engine_status_t CopyStatementParameterBindAuthorityV1(
     sb_engine_result_t* out_result) {
   clear_result(out_result);
   if (out_authority != nullptr) *out_authority = {};
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("CopyStatementParameterBindAuthorityV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || occurrence == 0 || out_authority == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4097,
                        "SBLR.OPERAND.INVALID",
@@ -19717,6 +19987,8 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
     std::vector<std::uint8_t>* out_canonical_sblq,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("NegotiateStatementLiteralDescriptorsV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || out_canonical_sblq == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4070,
                        "SBLR.OPERAND_INVALID",
@@ -19876,7 +20148,10 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
     const std::vector<std::uint8_t>& canonical_sblf,
     std::vector<std::uint8_t>* out_canonical_sbla,
     sb_engine_result_t* out_result){
-  clear_result(out_result);if(!receipt_handle||out_canonical_sbla==nullptr)return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4074,"SBLR.OPERAND_INVALID","sblr.literal_finalize.request_invalid");
+  clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("FinalizeStatementLiteralBindingV1", receipt_handle.opaque_id, out_result)) return *native_gate;
+  if(!receipt_handle||out_canonical_sbla==nullptr)return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4074,"SBLR.OPERAND_INVALID","sblr.literal_finalize.request_invalid");
   out_canonical_sbla->clear();
   scratchbird::engine::sblr::SblrLiteralFinalizeRequestV1 request;
   const bool decoded_under_v1_limits =
@@ -20249,6 +20524,8 @@ sb_engine_status_t IssueStatementContextualTextLiteralProfilesV2(
     std::vector<std::uint8_t>* out_exact_sbtlns02,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("IssueStatementContextualTextLiteralProfilesV2", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || out_exact_sbtlns02 == nullptr ||
       exact_sbtlnr02.empty()) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4077,
@@ -20312,6 +20589,8 @@ sb_engine_status_t PrepareStatementContextualTextLiteralExecutionV2(
         out_prepared,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("PrepareStatementContextualTextLiteralExecutionV2", request != nullptr ? request->receipt.opaque_id : 0, out_result)) return *native_gate;
   if (request == nullptr || !request->receipt || out_prepared == nullptr) {
     return fail_result(
         SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4078,
@@ -20383,6 +20662,8 @@ sb_engine_status_t JointConsumeStatementContextualTextLiteralExecutionV2(
         ContextualTextExecutionAuthorityLeaseV2* out_lease,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("JointConsumeStatementContextualTextLiteralExecutionV2", request != nullptr ? request->receipt.opaque_id : 0, out_result)) return *native_gate;
   if (request == nullptr || !request->receipt || request->prepared == nullptr ||
       out_lease == nullptr) {
     return fail_result(
@@ -20470,6 +20751,8 @@ sb_engine_status_t RevokeStatementContextualTextLiteralProfilesV2(
     std::string_view reason,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("RevokeStatementContextualTextLiteralProfilesV2", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || reason.empty()) {
     return fail_result(
         SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4079,
@@ -20507,6 +20790,8 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
     std::vector<std::uint8_t>* out_canonical_sbpg,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("NegotiateStatementParameterDescriptorsV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || out_canonical_sbpg == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4080,
                        "SBLR.OPERAND_INVALID",
@@ -20751,6 +21036,8 @@ sb_engine_status_t FinalizeStatementParameterBindingV1(
     std::vector<std::uint8_t>* out_canonical_sbpa,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("FinalizeStatementParameterBindingV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || out_canonical_sbpa == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4083,
                        "SBLR.OPERAND_INVALID",
@@ -20964,6 +21251,8 @@ sb_engine_status_t FinalizeStatementVariableBindingV1(
     std::vector<std::uint8_t>* out_canonical_sbva,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("FinalizeStatementVariableBindingV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || out_canonical_sbva == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4090,
                        "SBLR.OPERAND_INVALID",
@@ -21091,6 +21380,8 @@ sb_engine_status_t AssignStatementVariableValuesV1(
     std::vector<std::uint8_t>* out_canonical_sbvw,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("AssignStatementVariableValuesV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || out_canonical_sbvw == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4091,
                        "SBLR.OPERAND_INVALID",
@@ -21196,6 +21487,8 @@ sb_engine_status_t IssueStatementSourceMapDescriptorV1(
     sb_engine_result_t* out_result) try {
   clear_result(out_result);
   if (out_canonical_smrs != nullptr) out_canonical_smrs->clear();
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("IssueStatementSourceMapDescriptorV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || out_canonical_smrs == nullptr)
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4092,
                        "SBLR.OPERAND_INVALID", "sblr.source_map.request_invalid");
@@ -21328,6 +21621,8 @@ sb_engine_status_t IssueStatementErrorVectorDescriptorV1(
     sb_engine_result_t* out_result) try {
   clear_result(out_result);
   if (out_canonical_evrs) out_canonical_evrs->clear();
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("IssueStatementErrorVectorDescriptorV1", receipt_handle.opaque_id, out_result)) return *native_gate;
   if (!receipt_handle || !out_canonical_evrs)
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4093,
                        "SBLR.OPERAND_INVALID", "sblr.error_vector.request_invalid");
@@ -21434,6 +21729,8 @@ sb_engine_status_t AcquireStatementPackageAdmissionReservation(
     StatementPackageAdmissionReservationView* out_view,
     sb_engine_result_t* out_result) {
   clear_result(out_result);
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native receipt reaches this entry only if the allow-list says so.
+  if (const auto native_gate = native_receipt_consumer_gate("AcquireStatementPackageAdmissionReservation", request != nullptr ? request->receipt.opaque_id : 0, out_result)) return *native_gate;
   if (request == nullptr || out_handle == nullptr || out_view == nullptr ||
       !request->receipt || request->canonical_payload_bytes == nullptr ||
       request->payload_kind != StatementSblrPayloadKind::kOpcodeStream) {
@@ -36187,6 +36484,8 @@ sb_engine_status_t CreatePreparedMetadataBinding(
                        "ENGINE.ABI.INVALID_HANDLE",
                        "engine.abi.invalid_handle");
   }
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native session reaches the prepared-metadata binding only if the allow-list says so.
+  if (const auto native_gate = native_session_consumer_gate("CreatePreparedMetadataBinding", session, out_result)) return *native_gate;
   if (prepare_context == nullptr || invoke_params == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
                        out_result,
@@ -36553,6 +36852,8 @@ sb_engine_status_t DispatchWithPreparedMetadataBinding(
                        "ENGINE.ABI.INVALID_HANDLE",
                        "engine.abi.invalid_handle");
   }
+  // SB_NATIVE_RECEIPT_CONSUMER_GATE: a native session reaches the prepared-metadata dispatch only if the allow-list says so.
+  if (const auto native_gate = native_session_consumer_gate("DispatchWithPreparedMetadataBinding", session, out_result)) return *native_gate;
   if (transaction != nullptr &&
       (!valid_transaction(transaction) || transaction->session != session)) {
     return fail_result(SB_ENGINE_STATUS_INVALID_HANDLE,

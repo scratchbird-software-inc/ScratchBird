@@ -4550,6 +4550,56 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
       TIMEOUT 900)
   endforeach()
 endif()
+# SB_NATIVE_RECEIPT_GATE (S4f exposure close; owner 2026-10-19 / 2026-11-16: ONE file, no other files). Every receipt consumer of the
+# bridge refuses a NATIVE receipt at one gate (engine/public_abi.cpp native_receipt_consumer_gate) unless an explicit allow-list row
+# says it works natively. native_receipt_gate_<size> calls every consumer on a native session's receipt (production-created database,
+# real handoff) and asserts the exact refusal, a byte-identical file and no new file or directory entry; native_receipt_gate_strace_<size>
+# adds 0 `.sb.*` syscalls and 0 data-file writes in the region; native_receipt_gate_coverage is the source-policy test (a new consumer
+# declared in statement_context.hpp that is not in the engine's table, the test's table or the gate fails it). NEW targets, one ctest
+# entry per page size.
+add_executable(sbsql_sblr_alignment_native_receipt_gate native_receipt_gate_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_receipt_gate sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)
+target_compile_definitions(sbsql_sblr_alignment_native_receipt_gate PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_receipt_gate PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_receipt_gate PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_receipt_gate PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_receipt_gate PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"
+  SB_NATIVE_LOGIN_MATERIAL_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_login_material>")
+foreach(sb_ng_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_ng_parts "${sb_ng_size}")
+  list(GET sb_ng_parts 0 sb_ng_bytes)
+  list(GET sb_ng_parts 1 sb_ng_label)
+  add_test(NAME sbsql_sblr_alignment_native_receipt_gate_${sb_ng_label}
+    COMMAND sbsql_sblr_alignment_native_receipt_gate size ${sb_ng_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_receipt_gate_${sb_ng_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_receipt_gate;binary_uuid"
+    TIMEOUT 900)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_ng_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_ng_parts "${sb_ng_size}")
+    list(GET sb_ng_parts 0 sb_ng_bytes)
+    list(GET sb_ng_parts 1 sb_ng_label)
+    add_test(NAME sbsql_sblr_alignment_native_receipt_gate_strace_${sb_ng_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_receipt_gate_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_receipt_gate>
+        --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --size ${sb_ng_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_receipt_gate_strace_${sb_ng_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_receipt_gate;strace"
+      TIMEOUT 900)
+  endforeach()
+endif()
+add_test(NAME sbsql_sblr_alignment_native_receipt_gate_coverage
+  COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_CURRENT_SOURCE_DIR}/native_receipt_gate_coverage_test.py ${PROJECT_SOURCE_DIR})
+set_tests_properties(sbsql_sblr_alignment_native_receipt_gate_coverage PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_receipt_gate;source_policy" TIMEOUT 120)
 if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   foreach(sb_nl_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     string(REPLACE ":" ";" sb_nl_parts "${sb_nl_size}")
