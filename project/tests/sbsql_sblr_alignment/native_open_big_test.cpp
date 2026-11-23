@@ -252,7 +252,7 @@ void OpenBigOneSize(const std::string& self, const fs::path& root, std::uint32_t
     };
     const auto forge_names = [&](int rows, int start) {
       const auto t0 = std::chrono::steady_clock::now();
-      const auto forged = Capture("'" + self + "' bigforge '" + path.string() + "' " + boot + " " + std::to_string(rows) + " 0 250 " + std::to_string(start), &status);
+      const auto forged = Capture("'" + self + "' bigforge '" + path.string() + "' " + boot + " " + std::to_string(rows) + " 0 2500 " + std::to_string(start), &status);
       Check(status == 0 && forged.find("FORGED rows=" + std::to_string(rows)) != std::string::npos, tag + state + ": forge: " + forged.substr(0, 1500));
       const auto seconds = Seconds(t0);
       std::printf("%s%s: forged %d name rows in %.1f s (%.1f rows/s)\n", tag.c_str(), state.c_str(), rows, seconds, rows / seconds);

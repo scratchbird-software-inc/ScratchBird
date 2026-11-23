@@ -784,44 +784,61 @@ class NameState {
     // name's key: startup judges every entry of the scope (a class bound under
     // two policy bodies), and the ASCII-folded and all-languages lanes compare
     // across language tags. The request's own entries are not in the tree yet.
-    std::set<Uuid> probed;
-    if (authoritative_) {
-      auto prefix = catalog::CatalogNameAuthoritativeTreeNamePrefix(xv, xkeys.own);
-      prefix.resize(32);  // scope16 | identifier profile16
-      if (!ProbeTreePrefix(*authoritative_, prefix, probed)) return {E::invalid_catalog};
-    }
-    std::optional<u64> blocker;
+    //
+    // SB_CATALOG_WRITER_SCOPE_INDEX (streaming work, 2026-11-28): the scope's holders are judged ONCE for this
+    // NameState (ScopeFor: the tree range probed once, each holder's group and lanes resolved once) and indexed; an
+    // entry is then checked against the holders the loop below would have stopped at, found by key. The verdicts are
+    // those of the scan this replaces (the scan, in holder order, for each holder of another object: no group ->
+    // invalid_catalog, or a blocker when pending; the entry's kind under another policy body -> invalid_name; a
+    // different group -> passed over; lanes the profile does not admit -> invalid_catalog, or a blocker when pending;
+    // lanes equal -> held, or a blocker when pending; a refusal at any holder beats held and blockers, the first
+    // blocker in holder order is reported). Before this every inserted name walked every holder of its scope:
+    // O(scope) per name.
+    const ScopeIndex* ix = ScopeFor(xv, *profile, xkeys.own);
+    if (!ix) return {E::invalid_catalog};
+    constexpr std::size_t kNone = std::numeric_limits<std::size_t>::max();
+    std::size_t fatal_at = kNone, blocker_at = kNone;
+    E fatal_error = E::none;
+    const auto refuse_at = [&](std::size_t member, E error) {
+      if (ix->members[member].at < fatal_at) {
+        fatal_at = ix->members[member].at;
+        fatal_error = error;
+      }
+    };
+    const auto pend_at = [&](std::size_t member) { blocker_at = std::min(blocker_at, ix->members[member].at); };
+    // The holder at `member` stops the check (invalid_catalog) unless it is pending, which only makes a blocker.
+    const auto unresolvable = [&](std::size_t member) {
+      if (ix->members[member].object == x.object_uuid.value) return;
+      if (holders_[ix->members[member].at].state != Hold::pending) refuse_at(member, E::invalid_catalog);
+      else pend_at(member);
+    };
+    for (const auto member : ix->unresolved) unresolvable(member);
+    if (const auto bad = ix->bad_keys.find({gx->body, gx->group}); bad != ix->bad_keys.end())
+      for (const auto member : bad->second) unresolvable(member);
+    if (const auto kind = ix->bodies.find(static_cast<u32>(x.object_kind)); kind != ix->bodies.end())
+      for (const auto& [body, members] : kind->second) {
+        if (body == gx->body) continue;
+        for (const auto member : members)
+          if (ix->members[member].object != x.object_uuid.value) {  // the entry's class bound under another policy body
+            refuse_at(member, E::invalid_name);
+            break;
+          }
+      }
     bool held = false;
-    for (const auto& holder : holders_) {
-      if (authoritative_ && holder.row && !probed.contains(*holder.row)) continue;  // outside the scope
-      const auto& y = std::get<catalog::CatalogNameEntry>(*holder.payload);
-      if (y.object_uuid.value == x.object_uuid.value) continue;  // an alias of the same object
-      const auto yv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(*holder.payload));
-      if (catalog::CompareCatalogNameCollisionScope(xv, yv)) continue;
-      const auto gy = GroupOf(y);
-      if (!gy) {
-        if (holder.state != Hold::pending) return {E::invalid_catalog};
-        if (!blocker) blocker = holder.order;
-        continue;
+    if (const auto same = ix->by_text.find(TextKey(gx->body, gx->group, xkeys.own)); same != ix->by_text.end())
+      for (const auto member : same->second) {
+        const auto& m = ix->members[member];
+        if (m.object == x.object_uuid.value) continue;  // an alias of the same object
+        const auto& holder = holders_[m.at];
+        const auto yv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(*holder.payload));
+        const auto& ykeys = HolderKeys(*ix->profile, x.identifier_profile_uuid.value, holder.payload, yv);
+        if (catalog::CompareCatalogNameCollisionLanes(xv, xkeys.own, yv, ykeys.own, gx->language, gx->key)) continue;
+        if (holder.state == Hold::held) held = true;
+        else pend_at(member);
       }
-      if (x.object_kind == y.object_kind && gy->body != gx->body) return {E::invalid_name};
-      if (gy->body != gx->body || gy->group != gx->group) continue;
-      // SB_NATIVE_NAME_ROW_V4: y shares x's scope and identifier profile (the
-      // scope order compares both), so its lane derives under x's profile. A
-      // holder that profile does not admit is invalid_catalog, as an
-      // unresolved group is.
-      const auto& ykeys = HolderKeys(*profile, x.identifier_profile_uuid.value, holder.payload, yv);
-      if (!ykeys.ok()) {
-        if (holder.state != Hold::pending) return {E::invalid_catalog};
-        if (!blocker) blocker = holder.order;
-        continue;
-      }
-      if (catalog::CompareCatalogNameCollisionLanes(xv, xkeys.own, yv, ykeys.own, gx->language, gx->key)) continue;
-      if (holder.state == Hold::held) held = true;
-      else if (!blocker) blocker = holder.order;
-    }
+    if (fatal_at != kNone) return {fatal_error};
     if (held) return {E::duplicate_name};
-    if (blocker) return {E::write_conflict, blocker};
+    if (blocker_at != kNone) return {E::write_conflict, holders_[blocker_at].order};
     return {E::none, std::nullopt, xkeys.own.fold};
   }
   // SB_CATALOG_WRITER_NAME_GROUP_MEMO (streaming work, 2026-11-25): a holder's lanes under an identifier profile depend only
@@ -838,12 +855,19 @@ class NameState {
   // This request's entry, once placed: later entries of the request see it.
   void HoldEntry(const catalog::CatalogNamePayload& payload) {
     holders_.push_back({&payload, Hold::held, order_, std::nullopt});
+    // SB_CATALOG_WRITER_SCOPE_INDEX: a scope already indexed takes the entry as its newest holder.
+    if (const auto* e = std::get_if<catalog::CatalogNameEntry>(&payload))
+      if (const auto it = scopes_.find({e->scope_uuid.value, e->identifier_profile_uuid.value}); it != scopes_.end())
+        AddMember(it->second, holders_.size() - 1);
   }
   // SB_NATIVE_NAME_PROBE (N3): the authoritative name tree (kind 22) as read
   // for this request; CheckEntry takes its candidates from it. Without one
   // (a database without name trees: component fixtures, owner Q44 = 1) every
   // holder is a candidate.
-  void ProbeWith(const std::vector<TreePage>* authoritative) { authoritative_ = authoritative; }
+  void ProbeWith(const std::vector<TreePage>* authoritative) {
+    authoritative_ = authoritative;
+    scopes_.clear();
+  }
   // SB_NATIVE_NAME_DEFAULT_INDEX (owner Q228 revisited, Q259): the UUID ->
   // name tree (kind 23) as read for this request; CheckDefault takes its
   // candidates from the object's entry range there. Without one every stored
@@ -947,6 +971,78 @@ class NameState {
     u64 order;
     std::optional<Uuid> row;  // a stored entry's row; none for the request's own
   };
+  // SB_CATALOG_WRITER_SCOPE_INDEX: one (scope, identifier profile)'s holders, each judged once.
+  struct ScopeMember {
+    std::size_t at = 0;  // its place in holders_
+    Uuid object;
+    u32 kind = 0;
+    std::optional<Group> group;  // none: the group does not resolve
+    bool keys_ok = false;        // its lanes derive under the scope's profile
+  };
+  struct ScopeIndex {
+    std::optional<catalog::CatalogIdentifierResolutionProfile> profile;
+    std::vector<ScopeMember> members;                                    // in holder order
+    std::vector<std::size_t> unresolved;                                 // members with no group
+    std::map<u32, std::map<Uuid, std::vector<std::size_t>>> bodies;      // object kind -> policy body -> members with a group
+    std::map<std::pair<Uuid, Uuid>, std::vector<std::size_t>> bad_keys;  // (body, group) -> members whose lanes do not derive
+    std::unordered_map<std::string, std::vector<std::size_t>> by_text;   // (body, group, own-lane text) -> members
+  };
+  static std::string TextKey(const Uuid& body, const Uuid& group, const catalog::CatalogNameDerivedText& own) {
+    std::string key;
+    key.reserve(32 + own.size());
+    key.append(reinterpret_cast<const char*>(body.bytes.data()), body.bytes.size());
+    key.append(reinterpret_cast<const char*>(group.bytes.data()), group.bytes.size());
+    for (std::size_t i = 0; i < own.size(); ++i) key.push_back(static_cast<char>(own[i]));
+    return key;
+  }
+  void AddMember(ScopeIndex& ix, std::size_t at) const {
+    const auto& holder = holders_[at];
+    const auto& y = std::get<catalog::CatalogNameEntry>(*holder.payload);
+    ScopeMember m;
+    m.at = at;
+    m.object = y.object_uuid.value;
+    m.kind = static_cast<u32>(y.object_kind);
+    m.group = GroupOf(y);
+    const auto position = ix.members.size();
+    if (!m.group) {
+      ix.members.push_back(m);
+      ix.unresolved.push_back(position);
+      return;
+    }
+    ix.bodies[m.kind][m.group->body].push_back(position);
+    const auto yv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(*holder.payload));
+    const auto& ykeys = HolderKeys(*ix.profile, y.identifier_profile_uuid.value, holder.payload, yv);
+    m.keys_ok = ykeys.ok();
+    const auto body = m.group->body, group = m.group->group;
+    ix.members.push_back(m);
+    if (m.keys_ok) ix.by_text[TextKey(body, group, ykeys.own)].push_back(position);
+    else ix.bad_keys[{body, group}].push_back(position);
+  }
+  // The index of `x`'s scope, built on first use: with the authoritative tree, the holders whose row its (scope,
+  // identifier profile) range holds (and the request's own), each then held to the scope order. Null when the
+  // tree walk fails (invalid_catalog).
+  const ScopeIndex* ScopeFor(const catalog::CatalogNameEntryView& xv, const catalog::CatalogIdentifierResolutionProfile& profile,
+                             const catalog::CatalogNameDerivedText& xown) const {
+    const std::pair<Uuid, Uuid> key{xv.scope_uuid.value, xv.identifier_profile_uuid.value};
+    if (const auto it = scopes_.find(key); it != scopes_.end()) return &it->second;
+    std::set<Uuid> probed;
+    if (authoritative_) {
+      auto prefix = catalog::CatalogNameAuthoritativeTreeNamePrefix(xv, xown);
+      prefix.resize(32);  // scope16 | identifier profile16
+      if (!ProbeTreePrefix(*authoritative_, prefix, probed)) return nullptr;
+    }
+    ScopeIndex ix;
+    ix.profile = profile;
+    for (std::size_t at = 0; at < holders_.size(); ++at) {
+      const auto& holder = holders_[at];
+      if (authoritative_ && holder.row && !probed.contains(*holder.row)) continue;  // outside the scope
+      const auto yv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(*holder.payload));
+      if (catalog::CompareCatalogNameCollisionScope(xv, yv)) continue;
+      AddMember(ix, at);
+    }
+    return &scopes_.emplace(key, std::move(ix)).first->second;
+  }
+  mutable std::map<std::pair<Uuid, Uuid>, ScopeIndex> scopes_;  // SB_CATALOG_WRITER_SCOPE_INDEX
   const std::vector<TreePage>* authoritative_ = nullptr;
   const std::vector<TreePage>* uuid_tree_ = nullptr;  // SB_NATIVE_NAME_DEFAULT_INDEX
   std::optional<mga::TransactionState> StateOf(const pg::RowDataRecord& row) const {
@@ -3513,6 +3609,18 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     if (any_comment && !ReadDefinitionRelations(sink, binding, page_size, *root.root, relations, &heads, result))
       return result;
     // ---- each row: checked, placed, indexed --------------------------------
+    // SB_CATALOG_WRITER_ROW_INDEX: see the row loop.
+    struct RowIndex {
+      struct Object {
+        bool held = false;
+        std::optional<u64> blocker;
+      };
+      bool built = false;
+      std::set<Uuid> ids, tree_rows;
+      std::map<Uuid, Object> objects;
+    };
+    std::map<u16, RowIndex> row_indexes;
+    std::map<Uuid, bool> own_definition;  // SB_CATALOG_WRITER_DEFINITION_MEMO
     // The pages a placement changes, by (role, index): their pages as changed.
     std::set<std::pair<u16, std::size_t>> changed_leaves;
     std::map<u16, std::set<std::size_t>> changed_tree;  // per role: tree pages changed or added
@@ -3523,6 +3631,26 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       if (state == mga::TransactionState::rolled_back || state == mga::TransactionState::failed_terminal)
         return Hold::none;
       return InProgress(state) && row.local_transaction_id != request.transaction_order ? Hold::pending : Hold::held;
+    };
+    const auto row_index_of = [&](u16 role) -> RowIndex& {
+      auto& rx = row_indexes[role];
+      if (rx.built) return rx;
+      const auto& rel = relations.at(role);
+      for (const auto& leaf : rel.leaves)
+        for (const auto& row : leaf.page.body.rows) {
+          rx.ids.insert(row.row_uuid.value);
+          rx.ids.insert(row.version_uuid);
+          const auto found = leaf.metadata.find(row.version_uuid);
+          if (found == leaf.metadata.end()) continue;
+          auto& object = rx.objects[found->second.record.header.object_uuid.value];
+          const auto state = hold(row);
+          if (state == Hold::held) object.held = true;
+          if (state == Hold::pending && !object.blocker) object.blocker = row.local_transaction_id;
+        }
+      for (const auto& page : rel.tree)
+        for (const auto& cell : page.page.cells) rx.tree_rows.insert(cell.key.row_uuid);
+      rx.built = true;
+      return rx;
     };
 
     // ---- names: what this transaction sees of profiles, policies, names ---
@@ -3580,28 +3708,22 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       // SB_CATALOG_SINGLE_WRITER: checked against images read above and
       // written below with nothing held between; only one catalog writer per
       // database makes the check still true when the pages are written.
-      std::optional<u64> blocker;
-      bool held = false;
-      for (const auto& leaf : relation.leaves)
-        for (const auto& row : leaf.page.body.rows) {
-          if (row.row_uuid.value == want.row_uuid || row.version_uuid == want.version_uuid ||
-              row.row_uuid.value == want.version_uuid || row.version_uuid == want.row_uuid)
-            return refuse_row(E::duplicate_row, i);
-          const auto found = leaf.metadata.find(row.version_uuid);
-          if (found == leaf.metadata.end() || found->second.record.header.object_uuid.value != h.object_uuid.value)
-            continue;
-          const auto state = hold(row);
-          if (state == Hold::held) held = true;
-          if (state == Hold::pending && !blocker) blocker = row.local_transaction_id;
+      // SB_CATALOG_WRITER_ROW_INDEX (streaming work, 2026-11-28): the same three checks, in the same order and with
+      // the same verdicts, from a per-relation index built once per pass and kept current as this request places
+      // rows (row and version UUIDs held, per object whether a held version and the first pending creator exist, the
+      // row UUIDs of the index's cells). Before this every inserted row scanned every row and cell of the relation.
+      {
+        auto& rx = row_index_of(want.role);
+        if (rx.ids.contains(want.row_uuid) || rx.ids.contains(want.version_uuid)) return refuse_row(E::duplicate_row, i);
+        if (const auto at = rx.objects.find(h.object_uuid.value); at != rx.objects.end()) {
+          if (at->second.held) return refuse_row(E::duplicate_object, i);
+          if (at->second.blocker) {
+            result.blocker_order = at->second.blocker;
+            return refuse_row(E::write_conflict, i);
+          }
         }
-      if (held) return refuse_row(E::duplicate_object, i);
-      if (blocker) {
-        result.blocker_order = blocker;
-        return refuse_row(E::write_conflict, i);
+        if (rx.tree_rows.contains(want.row_uuid)) return refuse_row(E::duplicate_row, i);
       }
-      for (const auto& page : relation.tree)
-        for (const auto& cell : page.page.cells)
-          if (cell.key.row_uuid == want.row_uuid) return refuse_row(E::duplicate_row, i);
 
       // SB_NATIVE_COMMENT_INSERT (owner Q82 = 1): one live comment per
       // (target, language): this request's earlier rows, then the stored ones.
@@ -3678,8 +3800,14 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
             if (!ReadDefinitionRelations(sink, binding, page_size, *root.root, relations, &heads, result)) return result;
             definitions_read = true;
           }
-          if (!OwnDefinitionVersion(relations, x.object_uuid.value, request.transaction_order))
-            return refuse_row(E::definition_not_locked, i);
+          // SB_CATALOG_WRITER_DEFINITION_MEMO (streaming work, 2026-11-28): the scan of the definition relations is
+          // decided once per object for this pass (the request inserts no row of a definition relation for an object
+          // it has not created here, so the answer cannot change inside the pass).
+          auto known = own_definition.find(x.object_uuid.value);
+          if (known == own_definition.end())
+            known = own_definition.emplace(x.object_uuid.value,
+                                           OwnDefinitionVersion(relations, x.object_uuid.value, request.transaction_order)).first;
+          if (!known->second) return refuse_row(E::definition_not_locked, i);
         }
         names.HoldEntry(*want.name);
       }
@@ -3713,12 +3841,23 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
 
       // Placement: the first reached base leaf with room (an unindexed
       // relation has one, its head).
+      // SB_CATALOG_WRITER_PLACEMENT_PRECHECK (streaming work, 2026-11-28): the encoded cell, and so the row's footprint,
+      // has the same size on every leaf (the name envelope's binding is fixed-width: page, slot and generation are
+      // numbers, not lengths), so once the first leaf has been tried the row's footprint is known and a leaf whose
+      // recorded body bytes cannot take it is passed over by arithmetic, as RowFits judges it, without encoding the
+      // row (a SHA-256 seal and a name envelope per leaf tried). Before this every leaf from the front of the relation
+      // was encoded for each inserted row: O(leaves) encodes per row, about half the writer's time at 1,100 rows.
+      std::optional<u64> footprint;
       std::optional<std::size_t> target;
       for (std::size_t l = 0; l < relation.leaves.size() && !target; ++l) {
         const auto& candidate = relation.leaves[l].page;
         u32 slot = 0;
         for (const auto& row : candidate.body.rows) slot = std::max(slot, row.stable_slot_id);
         if (slot == std::numeric_limits<u32>::max()) continue;
+        if (footprint && candidate.body.free_space_offset && candidate.header.page_size_bytes > 32 &&
+            u64{candidate.body.free_space_offset} + *footprint >
+                pg::RowDataPageBodyCapacity(candidate.header.page_size_bytes - 32))
+          continue;
         auto final_row = placed(candidate, slot + 1);
         if (!final_row) return refuse_row(E::invalid_insert, i);
         auto row = added;
@@ -3728,6 +3867,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
         cell_value.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
         cell_value.payload = std::move(final_row->second);
         row.cells = {{1, std::move(cell_value), {}}};
+        if (!footprint) footprint = pg::RowDataRecordFootprint(row);
         // SB_CATALOG_FREE_SPACE: only a page the row may fit is copied and
         // encoded; the encoder decides.
         if (RowFits(candidate, row) == false) continue;
@@ -3791,6 +3931,12 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       }
       if (!target) return refuse_row(E::relation_full, i);
       changed_leaves.insert({want.role, *target});
+      {
+        auto& rx = row_index_of(want.role);  // (SB_CATALOG_WRITER_ROW_INDEX: the placed row is held by this transaction)
+        rx.ids.insert(want.row_uuid);
+        rx.ids.insert(want.version_uuid);
+        rx.objects[h.object_uuid.value].held = true;
+      }
       // SB_NATIVE_COMMENT_TREE: the row's cell in the comment tree.
       if (comment && comment_tree) {
         const auto key = catalog::CatalogCommentTreeKey(comment_record->target_object_uuid, comment_record->language_uuid);
@@ -3861,6 +4007,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       if (const auto error = InsertTreeCell(sink, relation.tree, changed_tree[want.role], std::move(cell), E::index_full,
                                             E::invalid_insert, pages, page_size, binding.allocation_root.has_value(), result))
         return refuse_row(*error, i);
+      row_index_of(want.role).tree_rows.insert(want.row_uuid);
     }
 
     // ---- the paths (SB_NATIVE_NAME_CASCADE, owner Q48 = 1; since

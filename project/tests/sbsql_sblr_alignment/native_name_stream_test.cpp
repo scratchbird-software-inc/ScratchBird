@@ -372,7 +372,7 @@ void StreamOneSize(const std::string& self, const fs::path& root, std::uint32_t 
       std::printf("%sbig: step 0: %llu name rows, %llu leaf images read\n", tag.c_str(), (unsigned long long)base_rows, (unsigned long long)Num(at0, "leaf_reads"));
       for (int step = 1; step <= kSteps; ++step) {
         const auto t0 = std::chrono::steady_clock::now();
-        const auto forged = Capture("'" + self + "' bigforge '" + path.string() + "' " + boot + " " + std::to_string(kStep) + " 0 250 " + std::to_string((step - 1) * kStep), &status);
+        const auto forged = Capture("'" + self + "' bigforge '" + path.string() + "' " + boot + " " + std::to_string(kStep) + " 0 1200 " + std::to_string((step - 1) * kStep), &status);
         Check(status == 0 && forged.find("FORGED rows=" + std::to_string(kStep)) != std::string::npos, tag + "big: forge step " + std::to_string(step) + ": " + forged.substr(0, 1500));
         const auto out = read(2, 4, 1024, "noretain");
         reads.push_back(out);

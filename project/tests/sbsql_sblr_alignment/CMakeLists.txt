@@ -12578,21 +12578,25 @@ foreach(sb_open_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
       TIMEOUT 600)
   endif()
 endforeach()
-# One file grown past 10,000 name rows (the writer's rate is the cost: about 60 rows/s there) and the memory curve of one growing file.
+# One file grown past 10,000 name rows and the memory curve of one growing file. (The forge was the cost: about 60 rows/s here before
+# SB_CATALOG_WRITER_PLACEMENT_PRECHECK / _ROW_INDEX / _SCOPE_INDEX in native_catalog_version_writer.cpp and 2,500 names per insert call;
+# now measured in tens of seconds, so the timeout is the ordinary 300 s, was 900.)
 foreach(sb_open_long IN ITEMS names10k curve)
   add_test(NAME sbsql_sblr_alignment_native_open_big_${sb_open_long}_8k
     COMMAND sbsql_sblr_alignment_native_open_big size 8192 ${sb_open_long})
   set_tests_properties(sbsql_sblr_alignment_native_open_big_${sb_open_long}_8k PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;native_open_big;database_ownership;binary_uuid"
-    TIMEOUT 900)
+    TIMEOUT 300)
 endforeach()
-# SB_OPEN_COHORT_STREAM: a SEPARATE long target (the forge of 19,000 names is the cost: about 60-190 rows/s, O(scope) per inserted name): one
-# file past 20,000 name rows at 8 KiB opened and served. Timeout 1800 s (measured forge plus open and the served checks; see the commit).
-add_test(NAME sbsql_sblr_alignment_native_open_big_names20k_8k_long
+# SB_OPEN_COHORT_STREAM: one file past 20,000 name rows at 8 KiB opened and served. Formerly the separate target
+# sbsql_sblr_alignment_native_open_big_names20k_8k_long (the forge of 19,000 names took about 636 s alone and the target 1752 s under
+# -j8, timeout 1800 s, label "long"); REPLACED by this target (the _long name is no longer registered): the forge is now seconds, so it
+# is an ordinary target with an ordinary timeout.
+add_test(NAME sbsql_sblr_alignment_native_open_big_names20k_8k
   COMMAND sbsql_sblr_alignment_native_open_big size 8192 names20k)
-set_tests_properties(sbsql_sblr_alignment_native_open_big_names20k_8k_long PROPERTIES
-  LABELS "sbsql_sblr_alignment;native_storage;native_open_big;database_ownership;binary_uuid;long"
-  TIMEOUT 1800)
+set_tests_properties(sbsql_sblr_alignment_native_open_big_names20k_8k PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_open_big;database_ownership;binary_uuid"
+  TIMEOUT 300)
 # SB_NATIVE_NAME_LIST_TEST (Part B S4): ListNames / UuidToName on production-created native databases. The file
 # native_name_list_test.cpp includes native_name_resolve_test.cpp as its harness; the strace driver is the resolve one,
 # pointed at this binary (it runs create / forge / serve children, and the serve child is this test's checks).
