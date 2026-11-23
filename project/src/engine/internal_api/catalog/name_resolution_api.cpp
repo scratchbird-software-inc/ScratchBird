@@ -431,7 +431,23 @@ EngineResolveNameResult MakeNameRegistryResolveResult(
                               {"scope_uuid", match.scope_uuid},
                               {"identifier_profile_uuid", match.identifier_profile_uuid},
                               {"language_tag", match.language_tag}});
-  AddApiBehaviorEvidence(&result, "name_resolution", match.normalized_lookup_key);
+  // SB_NATIVE_EXACT_NAME: a native match carries the entry as stored; nothing was folded, so there is no lookup key.
+  if (match.native_exact) {
+    result.matched_name.present = true;
+    result.matched_name.name_entry_uuid = match.name_entry_uuid;
+    result.matched_name.scope_uuid = match.scope_uuid;
+    result.matched_name.language_uuid = match.language_uuid;
+    result.matched_name.object_kind = match.object_kind;
+    result.matched_name.name_class = match.name_class_code;
+    result.matched_name.default_for_language = match.default_for_language;
+    result.matched_name.default_for_object = match.default_for_object;
+    result.matched_name.was_quoted = match.was_quoted;
+    result.matched_name.quote_style = match.quote_style_code;
+    result.matched_name.requires_exact_match = match.requires_exact_match;
+    AddApiBehaviorEvidence(&result, "name_resolution", "exact_bytes");
+  } else {
+    AddApiBehaviorEvidence(&result, "name_resolution", match.normalized_lookup_key);
+  }
   AddApiBehaviorEvidence(&result, "name_entry", match.name_entry_uuid);
   if (temporary_shadow_match) {
     AddApiBehaviorEvidence(&result,

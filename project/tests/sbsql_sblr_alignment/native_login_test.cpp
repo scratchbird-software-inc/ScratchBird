@@ -1202,6 +1202,13 @@ int ServeMode(const fs::path& path, const std::string& state) {
     // in the same scope and language, which is the only way two objects can match one lookup. The login's handling of it
     // is therefore not exercised here.)
     causes.push_back(CredentialCase("empty name", {"", std::string(kBootstrapPassword)}, {Internal("NAME_NOT_FOUND")}));
+    // Part B S2 (owner 2026-11-20..26: the engine stores names as given and matches their BYTES; the parser folds): the claim is
+    // matched exactly, so the stored 'fixture_owner' is not found by another case, the right password notwithstanding. (Was: the
+    // login sent the claim unquoted and relied on the engine's case-insensitive match, so 'FIXTURE_OWNER' logged in. Case-
+    // insensitive login, if wanted, is an authentication-provider / parser policy over ListNames.) The failure is the one
+    // generic client failure: the identical-bytes check below covers it with every other credential cause.
+    for (const char* other_case : {"FIXTURE_OWNER", "Fixture_Owner", "fixture_Owner"})
+      causes.push_back(CredentialCase(std::string("the claim in another case: ") + other_case, {other_case, std::string(kBootstrapPassword)}, {Internal("NAME_NOT_FOUND")}));
     causes.push_back(CredentialCase("empty password", {std::string(kBootstrapName), ""}, {Internal("PASSWORD_INADMISSIBLE")}));
     causes.push_back(CredentialCase("a password over the limit", {std::string(kBootstrapName), std::string(2000, 'q')}, {Internal("PASSWORD_INADMISSIBLE")}));
     causes.push_back(CredentialCase("a password holding a NUL", {std::string(kBootstrapName), std::string("a\0b", 3)}, {Internal("PASSWORD_INADMISSIBLE")}));

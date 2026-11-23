@@ -146,11 +146,9 @@ EngineApiDiagnostic NativeLoginInfrastructureDiagnostic(const char* code, const 
   return diagnostic;
 }
 
-std::string NativeLanguageTagOf(const EngineUuid& language) {
-  for (const auto& known : scratchbird::core::catalog::kCatalogLanguages)
-    if (known.uuid == language) return std::string(known.tag);
-  return "";
-}
+// The language tag text the exact name matcher maps back to the language UUID: a known tag, else the UUID's own 32 hex
+// digits (so a database default language outside the five known constants still reaches its names).
+std::string NativeLanguageTagOf(const EngineUuid& language) { return NameRegistryLanguageTagOfUuid(language); }
 
 // Step 1, run ON THE LOOP THREAD inside the scope. Reads names, resolves, applies the hidden-name policy.
 NativeLoginSelection SelectNativeLoginPrincipal(const EngineRequestContext& caller, const std::string& name_text) {
@@ -165,7 +163,7 @@ NativeLoginSelection SelectNativeLoginPrincipal(const EngineRequestContext& call
   // the resolver's own read starts: a nested runtime read reports busy).
   // SB_NAMES_SCOPE_ARGUMENT: this read needs the principals' schema (the source reports it whatever the filter) and the
   // DATABASE object's own default name (its language); no other scope's rows are retained. The resolver's own read after it
-  // is the registry projection (all scopes).
+  // (the exact name matcher) retains only the principals' scope.
   NativeNamesReadFilter filter;
   filter.all_scopes = false;
   filter.objects.push_back(facts.database_uuid);
@@ -184,8 +182,8 @@ NativeLoginSelection SelectNativeLoginPrincipal(const EngineRequestContext& call
     return selection;
   }
   // SB_NATIVE_LOGIN_LANGUAGE: the database's default language = the language of the DATABASE object's own default name
-  // (the file keeps no separate field: every object's default name carries its language). The session language, when
-  // the request carries one, is tried first by the resolver; this is its fallback.
+  // (the file keeps no separate field: every object's default name carries its language). The claim is looked up in THAT
+  // language only: the engine has no language fallback (Part B S2), so the caller's session language is not consulted.
   std::string default_language;
   for (const auto& row : snapshot.rows)
     if (row.object_uuid == facts.database_uuid && row.default_for_object) {
@@ -193,23 +191,17 @@ NativeLoginSelection SelectNativeLoginPrincipal(const EngineRequestContext& call
       break;
     }
   // A FRESH minimal context: nothing of the caller's request (policy profiles, search path, schemas) can steer it.
+  // SB_PART_B_S2 (owner 2026-11-20..26, "Engine should stop folding and the parser should do that task"): the claim is sent
+  // AS GIVEN and the engine matches its BYTES against the stored name bytes, exactly: 'FIXTURE_OWNER' does not find
+  // 'fixture_owner'. Case-insensitive login, if it is wanted, is a parser / authentication-provider policy: list the user
+  // schema's names (ListNames), compare with the provider's own rule, and send the engine the stored spelling it matched.
   EngineResolveNameRequest request;
   request.context.native_served_facts = caller.native_served_facts;
   request.context.database_uuid = facts.database_uuid;
-  request.context.language_context.language_tag = caller.language_context.language_tag;
+  request.context.language_context.language_tag = default_language;
   request.context.language_context.default_language_tag = default_language;
-  request.context.identifier_profile_uuid = "sbsql_v3";   // SB_PART_B_PROFILE_LABEL: the shim's label for the SBsql profile
   request.target_schema.uuid = snapshot.principal_schemas.front();
-  auto& name = request.sql_object_reference.object_name;
-  name.raw_text = name_text;                              // exactly as given: the engine does not fold, trim or interpret
-  name.was_quoted = false;                                // the handoff carries no quoting; the PARSER's job (Part B)
-  name.requires_exact_match = false;
-  name.quote_style = "none";
-  name.identifier_profile_uuid = "sbsql_v3";
-  if (name_text.empty()) {
-    selection.error = NativeLoginSelectionError::name_not_found;  // the resolver refuses "" (Part B); nothing to look up
-    return selection;
-  }
+  request.sql_object_reference.object_name.raw_text = name_text;  // exactly as given; "" is a name like any other
   const auto matches = ResolveNameRegistryPublic(request, std::string());
   if (!matches.ok) {
     if (matches.diagnostic.code == "CATALOG.NAME.NOT_FOUND") {

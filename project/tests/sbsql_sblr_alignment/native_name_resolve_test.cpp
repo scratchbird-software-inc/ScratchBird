@@ -13,8 +13,12 @@
 // private NativeDatabaseLoop::SubmitResolveName, a duplicate of that resolver, now deleted.) The native read is the
 // names source the loop publishes in the served facts (NativeNamesSource): a native context never reads a legacy side
 // file. No session is needed at this level; the session's own uncommitted names arrive with S4e
-// (SB_NAME_SNAPSHOT_OWN_TXN). Assertions that depend on the engine's fold / language fallback / "" refusal are marked
-// "CHANGES WITH PART B".
+// (SB_NAME_SNAPSHOT_OWN_TXN). PART B STEP S2 (2026-11-29): the engine's name matcher on a native context is EXACT: a name
+// matches by its BYTES within (scope, language) and nothing else (no fold, no quoted-flag lane, no "" refusal, no language
+// fallback, no search path; the parser does those and calls again). Every assertion that used to depend on the fold /
+// quoted-first / twin rules / "" refusal / language fallback is marked "S2: was ..." with its old expectation and the owner
+// ruling (2026-11-20..26: "The engine stores the name as given. No manipulation. The index lookup is based upon the full
+// path, language and name." / "Engine should stop folding and the parser should do that task including quoting").
 //
 // Every case runs against a PRODUCTION-created database (EngineCreateLifecycle through the native create fixture).
 // Extra names (a second language, a quoted name, a case twin, a dropped name, an uncommitted name) are written by the
@@ -28,11 +32,14 @@
 // With no argument the driver runs every size and state; "size <bytes>" runs one page size. The strace half is
 // native_name_resolve_strace.py.
 //
-// SB_PARSER_NAME_RESOLUTION differential (Part B step S1, 2026-11-24): every state also runs a table of typed names through the
-// parser-side resolver (parsers/shared/name_resolution) and asserts that what the module sends to the CURRENT engine, and what the
-// module itself resolves from the engine's own entries, equal the engine's answer to the raw typed spelling. The engine's fold is
-// still there in S1 and the module's output is already folded, so the two agree; S2 removes the engine's fold and this block
-// then proves the module alone carries the rule.
+// SB_PARSER_NAME_RESOLUTION differential (Part B step S1, 2026-11-24; re-based by S2, 2026-11-29): every state also runs a
+// table of typed names through the parser-side resolver (parsers/shared/name_resolution). In S1 the engine folded too, so every
+// route was compared with the engine's answer to the raw typed spelling. In S2 the engine is exact, so the routes split:
+//   raw typed spelling, the SBsql wire text (W) and the module's folded key (E) sent to the engine are compared with an
+//   INDEPENDENT exact model computed from the offline read of the file (byte equality of scope, language and stored text): where
+//   the old engine folded they now legitimately differ from the module and are asserted as the NEW exact behaviour;
+//   the module's own walk (M) is the SBsql rule, and the STORED spelling of what it matched (S, run by the list test) must find
+//   the same object in the engine: the stored-spelling route is the ONLY route equivalent to the module.
 
 #include "engine/internal_api/catalog/name_registry.hpp"
 #include "engine/internal_api/catalog/name_resolution_api.hpp"
@@ -557,6 +564,11 @@ constexpr std::string_view kQuotedMixed = "Mixed_Q";
 constexpr std::string_view kTwinBootstrap = "TwinName";
 constexpr std::string_view kTwinService = "TWINNAME";
 constexpr std::string_view kAliasDrop = "Drop_Alias";
+// S2: the SAME text as an English alias of the bootstrap principal (kAliasKeep), in Canadian English (en-CA), on the L5
+// principal: one text, two languages, two objects, one scope (allowed by the owner's ruling: unique per (scope, language,
+// name)). en-CA, not French: the list test's expectations (only the bootstrap principal has a French name; no German name
+// exists) share this forge.
+constexpr std::string_view kSharedAcrossLanguages = "Owner_Alias_Keep";
 constexpr std::string_view kNeverCommitted = "Never_Committed";
 // S4c (native login) forge kind "login": names the login test needs, written by the same production writers.
 constexpr std::string_view kLoginAlias = "owner_login_alias";        // an alias-class name on the bootstrap principal
@@ -607,6 +619,7 @@ int ForgeMode(const fs::path& path, const std::string& kind, const p::Uuid& boot
     rows.push_back(EntryRow(*w, *base_boot, {std::string(kTwinBootstrap), true, std::nullopt, cat::CatalogNameClass::alias, false}));
     rows.push_back(EntryRow(*w, *base_svc, {std::string(kTwinService), true, std::nullopt, cat::CatalogNameClass::alias, false}));
     rows.push_back(EntryRow(*w, *base_boot, {std::string(kAliasDrop), false, std::nullopt, cat::CatalogNameClass::alias, false}));
+    rows.push_back(EntryRow(*w, *base_svc, {std::string(kSharedAcrossLanguages), false, cat::kCatalogLanguage_en_CA, cat::CatalogNameClass::alias, false}));
     Insert(*w, std::move(rows));
     Commit(*w);
     Check(w->device.Close().ok(), "close");
@@ -735,7 +748,8 @@ struct Ask {
   std::string text;
   bool quoted = false;
   std::string quote_style;                // "" : double_quote when quoted, none otherwise
-  std::string language = "en";            // the session language tag (the existing resolver falls back from it)
+  std::string language = "en";            // the ONE language the lookup asks in (S2: no fallback, no session/default walk)
+  std::string default_language;           // the context's default_language_tag; "" : the same as `language`. S2: IGNORED
   std::optional<p::Uuid> scope;           // default: the file's security schema (the principals' scope)
   std::string object_class;               // "" : any
 };
@@ -745,8 +759,8 @@ eng::EngineResolveNameRequest MakeRequest(const Ask& ask) {
   request.context.native_served_facts = env.facts;
   request.context.database_uuid = ToEngine(env.database);
   request.context.language_context.language_tag = ask.language;
-  request.context.language_context.default_language_tag = ask.language;
-  request.context.identifier_profile_uuid = "sbsql_v3";
+  request.context.language_context.default_language_tag = ask.default_language.empty() ? ask.language : ask.default_language;
+  request.context.identifier_profile_uuid = "sbsql_v3";  // S2: ignored by the native matcher (carried to prove it)
   request.target_schema.uuid = ToEngine(ask.scope ? *ask.scope : env.security_scope);
   request.sql_object_reference.expected_object_type = ask.object_class;
   auto& name = request.sql_object_reference.object_name;
@@ -846,7 +860,7 @@ std::string HexOf(const nr::Uuid16& id) {
 }
 
 // The names the engine's registry holds for the served database, as the module's source: nothing but the engine's current
-// projection (LoadNameRegistryState), filtered by the profile equality the engine's matcher applies today.
+// projection (LoadNameRegistryState). (The list test supplies the engine's ListNames as the source instead.)
 class RegistryNameSource final : public nr::NameSource {
  public:
   RegistryNameSource() {
@@ -857,7 +871,7 @@ class RegistryNameSource final : public nr::NameSource {
   std::vector<nr::NameEntry> List(const nr::Uuid16& scope, std::string_view language) override {
     std::vector<nr::NameEntry> out;
     for (const auto& entry : entries_) {
-      if (entry.identifier_profile_uuid != "sbsql_v3") continue;
+      // (S2: the profile-equality filter that stood here mirrored the old engine's profile match; the engine no longer has one.)
       if (Uuid16Of(entry.scope_uuid) != scope || entry.language_tag != language) continue;
       out.push_back({scope, Uuid16Of(entry.object_uuid), entry.language_tag, entry.object_class, entry.raw_name_text,
                      entry.requires_exact_match});
@@ -911,8 +925,44 @@ eng::EngineResolveNameResult AskEngine(const std::vector<EngineStep>& steps, con
 }
 
 struct DifferentialCounts {
-  std::size_t cases = 0, engine_calls = 0, found = 0, not_found = 0, invalid = 0, rewritten = 0, stored_sent = 0;
+  // module_differs: cases where the module's own answer (M) differs from the exact engine's answer to the raw typed spelling: the
+  // cases where the OLD engine folded and the new one does not (S2). exact_model_checks: engine answers compared with the model.
+  std::size_t cases = 0, engine_calls = 0, found = 0, not_found = 0, invalid = 0, rewritten = 0, stored_sent = 0, module_differs = 0,
+              exact_model_checks = 0;
 };
+
+// SB_NATIVE_EXACT_NAME (S2): the INDEPENDENT exact model of the engine's answer, computed from the offline read of the file alone
+// (the production visibility reader; no engine code): the steps are walked from the start scope, each by BYTE EQUALITY of the
+// stored text within (scope, language); no kind filter on a path step; the leaf is filtered by the requested class text; one
+// distinct object per step or CATALOG.NAME.AMBIGUOUS; none or an unknown language tag is CATALOG.NAME.NOT_FOUND.
+const Offline* model_offline = nullptr;
+std::string ExactModelVerdict(const std::vector<std::string>& steps, const std::string& language_tag, const p::Uuid& start,
+                              const std::string& object_class) {
+  Check(model_offline != nullptr, "the exact model has the offline read");
+  const auto language = cat::CatalogLanguageForTag(language_tag);
+  if (!language) return "refused:CATALOG.NAME.NOT_FOUND";
+  p::Uuid at = start;
+  for (std::size_t i = 0; i < steps.size(); ++i) {
+    const bool leaf = i + 1 == steps.size();
+    std::set<p::Uuid> objects;
+    for (const auto& n : model_offline->names) {
+      if (n.scope != at || n.language != *language || n.text != steps[i]) continue;
+      if (leaf && !object_class.empty() && ClassFor(n.kind) != object_class) continue;
+      objects.insert(n.object);
+    }
+    if (objects.empty()) return "refused:CATALOG.NAME.NOT_FOUND";
+    if (objects.size() > 1) return "refused:CATALOG.NAME.AMBIGUOUS";
+    at = *objects.begin();
+  }
+  return "found:" + Hex(at);
+}
+std::string ExactModelVerdict(const std::vector<EngineStep>& steps, const std::string& language_tag, const p::Uuid& start,
+                              const std::string& object_class) {
+  std::vector<std::string> texts;
+  for (const auto& step : steps) texts.push_back(step.text);
+  return ExactModelVerdict(texts, language_tag, start, object_class);
+}
+
 // SB_PARSER_NAME_LIST (Part B S4): a cache shared by every case of one run (the snapshot does not change during the run)
 // and the check that the engine is also asked the STORED spelling of what the module matched. Null: the S1 behaviour.
 nr::NameListCache* shared_name_cache = nullptr;
@@ -936,14 +986,23 @@ void DifferentialCase(nr::NameSource& source, DifferentialCounts* counts, const 
   const auto& rule = nr::SbsqlNameFoldRule();
   for (const auto& step : typed) exact.push_back({rule.Key(step.spelling, step.quoted), true, true});
 
+  // S2: the engine is EXACT. Each route is compared with the independent exact model: the raw typed spelling, the SBsql wire text
+  // (W) and the module's folded key sent exact (E) each find what their BYTES equal in the file, nothing else. (S1 compared all
+  // three with the old folding engine's answer to the raw spelling; where the module folded and the file stores another case,
+  // the answers now legitimately differ, owner 2026-11-20..26.)
   const auto verdict_raw = VerdictOf(AskEngine(raw, language, scope, object_class));
   const auto verdict_wire = VerdictOf(AskEngine(wire, language, scope, object_class));
   const auto verdict_exact = VerdictOf(AskEngine(exact, language, scope, object_class));
   counts->engine_calls += 3;
-  Check(verdict_wire == verdict_raw, "differential (W) the wire text the module prepares: " + what + ": " + verdict_wire + " vs raw " + verdict_raw);
-  Check(verdict_exact == verdict_raw, "differential (E) the module's keys sent exact: " + what + ": " + verdict_exact + " vs raw " + verdict_raw);
+  Check(verdict_raw == ExactModelVerdict(raw, language, scope, object_class),
+        "exact model: the raw typed spelling finds what its bytes equal: " + what + ": " + verdict_raw + " vs " + ExactModelVerdict(raw, language, scope, object_class));
+  Check(verdict_wire == ExactModelVerdict(wire, language, scope, object_class),
+        "exact model (W) the wire text the module prepares: " + what + ": " + verdict_wire + " vs " + ExactModelVerdict(wire, language, scope, object_class));
+  Check(verdict_exact == ExactModelVerdict(exact, language, scope, object_class),
+        "exact model (E) the module's key sent exact: " + what + ": " + verdict_exact + " vs " + ExactModelVerdict(exact, language, scope, object_class));
+  counts->exact_model_checks += 3;
 
-  // (M): the module's own walk over the engine's entries.
+  // (M): the module's own walk over the engine's entries: the SBsql rule (language fallback, scope walk, own lanes, ambiguity).
   nr::NameListCache local_cache(source);
   nr::NameListCache& cache = shared_name_cache != nullptr ? *shared_name_cache : local_cache;
   nr::ResolutionContext context;
@@ -954,9 +1013,10 @@ void DifferentialCase(nr::NameSource& source, DifferentialCounts* counts, const 
   if (!object_class.empty()) request.accepts_class = [object_class](const std::string& c) { return c == object_class; };
   const auto walked = nr::Resolve(rule, cache, context, request);
   const auto verdict_walk = VerdictOf(walked);
-  Check(verdict_walk == verdict_raw, "differential (M) the module's own walk: " + what + ": " + verdict_walk + " vs raw " + verdict_raw);
-  // (S): the engine asked the STORED spelling of each matched entry (each step with the quoted datum it was stored with):
-  // the answer is the object the module chose, which is what an exact matcher (S2) will answer too.
+  if (verdict_walk != verdict_raw) ++counts->module_differs;
+  // (S): the engine asked the STORED spelling of each matched entry (each step as stored): the engine answers the object the
+  // module chose. After S2 this is the ONLY route equivalent to the module: the module resolves with ITS rules, then sends
+  // the engine the bytes that are stored. (Run by the list test: the module's source there is the engine's ListNames.)
   if (send_stored_spelling) {
     if (const auto stored = nr::StoredPresentedName(walked)) {
       const auto parts = nr::SplitPresentedName(*stored, false);
@@ -966,14 +1026,14 @@ void DifferentialCase(nr::NameSource& source, DifferentialCounts* counts, const 
       const auto verdict_stored = VerdictOf(AskEngine(sent, language, scope, object_class));
       ++counts->engine_calls;
       ++counts->stored_sent;
-      Check(verdict_stored == verdict_raw, "differential (S) the stored spelling of the matched entries: " + what + ": " + verdict_stored + " vs raw " + verdict_raw);
+      Check(verdict_stored == verdict_walk, "differential (S) the stored spelling of the matched entries finds the module's object: " + what + ": " + verdict_stored + " vs module " + verdict_walk);
     }
   }
 
   ++counts->cases;
   if (verdict_raw.rfind("found:", 0) == 0) ++counts->found;
   else if (verdict_raw == "refused:CATALOG.NAME.NOT_FOUND") ++counts->not_found;
-  else ++counts->invalid;
+  if (verdict_walk != "refused:CATALOG.NAME.NOT_FOUND" && verdict_walk.rfind("found:", 0) != 0) ++counts->invalid;  // a refusal the module itself makes
 }
 
 std::string AsciiCase(std::string text, int mode) {  // 0 upper, 1 lower, 2 alternating
@@ -989,6 +1049,7 @@ std::string AsciiCase(std::string text, int mode) {  // 0 upper, 1 lower, 2 alte
 DifferentialCounts DifferentialAgainstModule(const Offline& offline, const p::Uuid& bootstrap, const p::Uuid& service,
                                              nr::NameSource* external_source = nullptr) {
   DifferentialCounts counts;
+  model_offline = &offline;
   std::optional<RegistryNameSource> registry_source;
   if (external_source == nullptr) registry_source.emplace();
   nr::NameSource& source = external_source != nullptr ? *external_source : *registry_source;
@@ -1012,7 +1073,7 @@ DifferentialCounts DifferentialAgainstModule(const Offline& offline, const p::Uu
         DifferentialCase(source, &counts, {{text, quoted}}, language, security_scope, "",
                          std::string(quoted ? "quoted " : "unquoted ") + "name in " + language);
   }
-  // Names that are not names, and the empty name (a plain refusal today: name_required).
+  // Names that are not names, and the empty name (S2: was a refusal, name_required; now a lookup of zero bytes: NOT_FOUND).
   for (const char* text : {"", "fixture_owne", "fixture_ownerx", " fixture_owner", "no_such_principal_anywhere", "f"})
     DifferentialCase(source, &counts, {{text, false}}, "en", security_scope, "", std::string("a non-name: ") + text);
   DifferentialCase(source, &counts, {{"", true}}, "en", security_scope, "", "the quoted empty name");
@@ -1056,6 +1117,8 @@ DifferentialCounts DifferentialAgainstModule(const Offline& offline, const p::Uu
   }
   Check(counts.cases >= 40 && counts.found >= 10 && counts.not_found >= 10 && counts.invalid >= 1 && counts.rewritten >= 10,
         "the differential table covers found, not-found and refused cases, and the module rewrote names");
+  Check(counts.module_differs >= 10 && counts.exact_model_checks == 3 * counts.cases,
+        "S2: the exact engine and the folding module disagree on many typed spellings (the old engine's fold is gone), and every engine answer was checked against the exact model");
   return counts;
 }
 
@@ -1208,25 +1271,45 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
       Check(material.ok() && material.material->principal_uuid == bootstrap && material.material->database_uuid == database,
             "the S4a login-material read of the resolved UUID reports the same principal");
     }
-    // 2. Unquoted names fold ASCII upper-case and match case-insensitively (created case is kept).
-    //    CHANGES WITH PART B (the engine's fold).
-    for (const char* spelling : {"FIXTURE_OWNER", "Fixture_Owner", "fIxTuRe_oWnEr"})
-      ExpectObject(ResolveText(spelling), bootstrap, std::string("unquoted ") + spelling);
-    // 3. Quoted names match exactly: the unquoted-created name's own lane is its upper-case fold (Q181), so a quoted
-    //    "FIXTURE_OWNER" finds it and any other spelling inside quotes does not. CHANGES WITH PART B.
-    ExpectObject(ResolveText("FIXTURE_OWNER", true), bootstrap, "quoted exact fold spelling");
-    ExpectRefusal(ResolveText("fixture_owner", true), kNotFound, "quoted created spelling");
+    // 2. EXACT bytes (S2). S2: was "unquoted names fold ASCII upper-case and match case-insensitively": 'FIXTURE_OWNER',
+    //    'Fixture_Owner' and 'fIxTuRe_oWnEr' found the bootstrap principal. Owner 2026-11-20..26 ("The engine stores the name
+    //    as given. No manipulation."; "Engine should stop folding"): only the stored bytes find it, whatever the quoted flag.
+    //    (The parser folds and sends the engine the spelling it matched.)
+    for (const char* spelling : {"FIXTURE_OWNER", "Fixture_Owner", "fIxTuRe_oWnEr", "fixture_Owner", "fixture_owneR"})
+      ExpectRefusal(ResolveText(spelling), kNotFound, std::string("unquoted, another case: ") + spelling);
+    // 3. The quoted flag is the parser's opaque datum: it never takes part in matching, in either direction. S2: was "the
+    //    unquoted-created name's own lane is its upper-case fold (Q181), so a quoted 'FIXTURE_OWNER' finds it and the created
+    //    spelling quoted does not". Now the created bytes find it quoted or not, and the fold spelling finds nothing.
+    ExpectObject(ResolveText("fixture_owner", true), bootstrap, "quoted, the stored bytes");
+    ExpectRefusal(ResolveText("FIXTURE_OWNER", true), kNotFound, "quoted fold spelling (S2: was found)");
     ExpectRefusal(ResolveText("Fixture_Owner", true), kNotFound, "quoted mixed spelling");
+    // The stored entry comes back AS STORED: kind, class, both defaults, language, scope, the opaque quoted datum.
+    {
+      const auto o = ResolveText(kBootstrapName);
+      const auto* fact = EntryOf(offline, bootstrap, std::string(kBootstrapName));
+      Check(fact != nullptr && o.ok() && o.result.matched_name.present, "the native resolution carries the matched entry");
+      const auto& m = o.result.matched_name;
+      Check(Same(m.name_entry_uuid, fact->entry_uuid) && Same(m.scope_uuid, security_scope) && Same(m.language_uuid, fact->language) &&
+                m.object_kind == kUserKind && m.name_class == static_cast<std::uint8_t>(cat::CatalogNameClass::primary) &&
+                m.default_for_object && m.default_for_language && m.was_quoted == fact->quoted &&
+                m.requires_exact_match == fact->entry->requires_exact_match &&
+                m.quote_style == static_cast<std::uint8_t>(fact->entry->quote_style),
+            "the matched entry is returned as stored: entry, scope, language, kind, class, defaults and the quoted datum");
+    }
     // 4. A name that is a prefix or an extension of a real one, an unknown name, and a name with surrounding blanks.
     for (const char* text : {"fixture_owne", "fixture_ownerx", "xfixture_owner", "fixture_owner ", " fixture_owner", "f", "fixture",
                              "no_such_principal_anywhere", "fixture_ownerfixture_owner"})
       ExpectRefusal(ResolveText(text), kNotFound, std::string("not a name of the file: ") + text);
-    // 5. Inputs S4b refused as "cannot be an identifier". The existing resolver has no such rules: the engine stores
-    //    names as given and the parser owns them (owner 2026-11-20). CHANGES WITH PART B for the empty name (a valid
-    //    name, refused today as a missing name); every other one is a plain not-found now (was name_invalid).
+    // 5. Inputs S4b refused as "cannot be an identifier". The engine has no such rules: it stores names as given and the parser
+    //    owns them (owner 2026-11-20); every one is a plain not-found (was name_invalid in S4b). S2: the EMPTY name was refused
+    //    as a missing name (SB_ENGINE_API_INVALID_REQUEST, name_required); "" is a valid name (owner), so it is looked up like
+    //    any bytes: not found here because the file holds no "" name. The production writer refuses "" (invalid_name) until S6
+    //    (admission), so no "" entry can be forged without hand-patching bytes: found-by-"" is S6's test, not hand-made here.
     {
       const auto empty = ResolveText("");
-      ExpectRefusal(empty, "SB_ENGINE_API_INVALID_REQUEST", "empty name (refused today as name_required; \"\" is a valid name)");
+      ExpectRefusal(empty, kNotFound, "empty name (S2: was SB_ENGINE_API_INVALID_REQUEST name_required; \"\" is a valid name, now a lookup)");
+      ExpectRefusal(ResolveText("", true), kNotFound, "the quoted empty name is the same lookup");
+      Check(empty.code != "SB_ENGINE_API_INVALID_REQUEST", "the empty name is NOT refused as invalid");
       ExpectRefusal(ResolveText(std::string_view("fixture\0owner", 13)), kNotFound, "a NUL in the name");
       ExpectRefusal(ResolveText(std::string_view("\xC3\x28", 2)), kNotFound, "invalid UTF-8 (a truncated sequence)");
       ExpectRefusal(ResolveText(std::string_view("\xFF\xFEname", 6)), kNotFound, "invalid UTF-8 (bytes never valid)");
@@ -1234,19 +1317,38 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
       ExpectRefusal(ResolveText(std::string(cat::kCatalogIdentifierTextMaximumBytes + 1, 'a')), kNotFound, "over the old text limit");
       ExpectRefusal(ResolveText(std::string(513, 'a')), kNotFound, "over the old profile length rule");
       ExpectRefusal(ResolveText(std::string(512, 'a')), kNotFound, "a 512-character name is simply absent");
-      // A quote style the profile did not admit (backtick): the quoted spelling is compared exactly, as given.
+      // The quote style and the quoted flag are the parser's datum and never take part in matching. S2: was "a quote style the
+      // profile did not admit (backtick): the quoted spelling is compared exactly, in its own lane" (not found).
       Ask backtick{std::string(kBootstrapName), true, "backtick"};
-      ExpectRefusal(Resolve(backtick), kNotFound, "a backtick-quoted created spelling (exact lane)");
-      // Malformed-request refusals of S4b with no counterpart in the existing request: a quoted name with no quote
-      // style is just a quoted name; an unquoted name with a quote style ignores the style; a nil scope is an unknown
-      // scope. (S4b's kind filter of zero and nil language filter have no field in the existing request: not testable.)
+      ExpectObject(Resolve(backtick), bootstrap, "a backtick-quoted spelling finds the stored bytes (S2: was not found: exact lane)");
       Ask quoted_without_style{std::string(kBootstrapName), true, "none"};
-      ExpectRefusal(Resolve(quoted_without_style), kNotFound, "quoted with no quote style (exact lane)");
+      ExpectObject(Resolve(quoted_without_style), bootstrap, "quoted with no quote style finds the stored bytes (S2: was not found)");
       Ask unquoted_with_style{std::string(kBootstrapName), false, "double_quote"};
-      ExpectObject(Resolve(unquoted_with_style), bootstrap, "unquoted with a quote style (the style is not used for an unquoted name)");
+      ExpectObject(Resolve(unquoted_with_style), bootstrap, "unquoted with a quote style (the style is not used)");
+      // A nil scope means the database's root scope (S2: was an unknown scope); the root scope does not hold a principal's name.
       Ask nil_scope{std::string(kBootstrapName)};
       nil_scope.scope = p::Uuid{};
-      ExpectRefusal(Resolve(nil_scope), kNotFound, "a nil scope");
+      ExpectRefusal(Resolve(nil_scope), kNotFound, "a nil scope = the root scope, which does not hold the principal's name");
+      // An empty language is refused with its own code (the parser must name the language); a tag naming no language UUID has
+      // no names.
+      Ask no_language{std::string(kBootstrapName)};
+      no_language.language = "";
+      no_language.default_language = "en";  // the default language is NOT a fallback
+      ExpectRefusal(Resolve(no_language), "CATALOG.NAME.LANGUAGE_REQUIRED", "an empty language");
+      Ask odd_language{std::string(kBootstrapName)};
+      odd_language.language = "xx-not-a-language";
+      ExpectRefusal(Resolve(odd_language), kNotFound, "a language tag that names no language UUID");
+      // A name supplied only through a legacy channel (localized_names) is refused, never read as "".
+      {
+        auto legacy = MakeRequest(Ask{std::string(kBootstrapName)});
+        legacy.sql_object_reference.object_name.raw_text.clear();
+        eng::EngineLocalizedName channel;
+        channel.name = std::string(kBootstrapName);
+        legacy.localized_names.push_back(channel);
+        const auto refused = eng::EngineResolveName(legacy);
+        Check(!refused.ok && !refused.diagnostics.empty() && refused.diagnostics.front().code == "CATALOG.NAME.NATIVE_NAME_SOURCE_UNSUPPORTED",
+              "a name supplied only in localized_names is refused on a native context");
+      }
     }
     // 6. Scope: an explicit scope equal to the file's security schema gives the answer; another scope does not hold the
     //    name; names under the database scope resolve under it.
@@ -1274,8 +1376,9 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
       Check(n >= 1, "the database scope holds names");
       database_scope_resolved = n;
     }
-    // 7. Language and kind. The existing resolver has no language FILTER: the session language (then the database
-    //    default, then "und") is tried in order. The entry's own language finds it; another language does not.
+    // 7. Language and kind. S2: the lookup asks in ONE explicit language and the engine never falls back (was: the session
+    //    language, then the context's default language, then "und", were tried in order). The entry's own language finds it;
+    //    another language does not, EVEN WHEN the context's default language is the entry's language: the parser calls again.
     {
       Ask by_language{std::string(kBootstrapName)};
       const auto* fact = EntryOf(offline, bootstrap, std::string(kBootstrapName));
@@ -1284,6 +1387,15 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
       ExpectObject(Resolve(by_language), bootstrap, "the entry's own language");
       by_language.language = cat::kCatalogLanguage_fr_CA == fact->language ? "de-DE" : "fr-CA";
       ExpectRefusal(Resolve(by_language), kNotFound, "another language");
+      // S2 no-fallback: the DEFAULT language is the entry's own, the REQUESTED one is not. The old resolver found it (session
+      // language, then default). Asked in the entry's own language it is found, whatever the default says.
+      by_language.default_language = TagFor(fact->language);
+      ExpectRefusal(Resolve(by_language), kNotFound, "another language, though the default language is the entry's (S2: was found by the default-language fallback)");
+      by_language.default_language = "und";
+      ExpectRefusal(Resolve(by_language), kNotFound, "another language, default und: no 'und' fallback either");
+      by_language.language = TagFor(fact->language);
+      by_language.default_language = by_language.language == "fr-CA" ? "de-DE" : "fr-CA";
+      ExpectObject(Resolve(by_language), bootstrap, "the entry's own language finds it whatever the default language says");
       Ask by_kind{std::string(kBootstrapName)};
       by_kind.object_class = "user";
       ExpectObject(Resolve(by_kind), bootstrap, "the user class");
@@ -1323,21 +1435,55 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
           "the offline committed read does not list the uncommitted name");
     Check(alias != nullptr && french != nullptr, "the offline read lists the forged names");
     const auto snapshot = Rows();
-    // A second name in the same language: the same UUID, an alias, not the default.
-    for (const char* spelling : {"Owner_Alias_Keep", "owner_alias_keep", "OWNER_ALIAS_KEEP"}) {
-      const auto o = ResolveText(spelling);
-      ExpectObject(o, bootstrap, std::string("the alias ") + spelling);
-      const auto entries = Entries(Ask{spelling});
+    // A second name in the same language: the same UUID, an alias, not the default. S2: was three spellings finding it
+    // ('owner_alias_keep' and 'OWNER_ALIAS_KEEP' folded onto it); now only the stored bytes do, quoted flag either way.
+    for (const bool quoted_flag : {false, true}) {
+      const auto o = ResolveText("Owner_Alias_Keep", quoted_flag);
+      ExpectObject(o, bootstrap, "the alias, by its stored bytes");
+      const auto entries = Entries(Ask{"Owner_Alias_Keep", quoted_flag});
       const auto* row = RowOf(snapshot, alias->entry_uuid);
       Check(entries.size() == 1 && entries.front().name_class == "alias" && Same(entries.front().name_entry_uuid, alias->entry_uuid) &&
                 row != nullptr && !row->default_for_object,
             "the alias is reported as an alias that is not the default name, with its own entry UUID");
+      Check(o.result.matched_name.present && o.result.matched_name.name_class == static_cast<std::uint8_t>(cat::CatalogNameClass::alias) &&
+                !o.result.matched_name.default_for_object,
+            "the typed result reports the alias class and that it is not the object's default");
     }
-    // A name in a second language. S4b found it with no language filter; the existing resolver tries the session
-    // language only (then the default, then "und"): CHANGES WITH PART B (the language fallback). In French and not in
-    // another language, as before.
+    for (const char* spelling : {"owner_alias_keep", "OWNER_ALIAS_KEEP", "Owner_alias_keep"})
+      ExpectRefusal(ResolveText(spelling), kNotFound, std::string("the alias in another case: ") + spelling + " (S2: was found by the fold)");
+    // A name in a second language. S4b found it with no language filter; the old resolver tried the session language, then
+    // the default, then "und". S2: ONE language, no fallback: found in French and in no other language, even when the
+    // context's default language IS French (was: found through the default-language fallback).
     {
       ExpectRefusal(ResolveText(kAliasFrench), kNotFound, "the French name, asked in the English session (no any-language search)");
+      {
+        Ask default_is_french{std::string(kAliasFrench)};
+        default_is_french.language = "en";
+        default_is_french.default_language = "fr-CA";
+        ExpectRefusal(Resolve(default_is_french), kNotFound, "the French name asked in English with French as the default language: NO fallback (S2: was found)");
+        default_is_french.language = "fr-CA";
+        default_is_french.default_language = "en";
+        ExpectObject(Resolve(default_is_french), bootstrap, "the French name asked in French, whatever the default language says");
+        // The same text in the other direction: a name that exists only in the default language is NOT_FOUND in another
+        // requested language and found when asked in its own language.
+        Ask shared_text{std::string(kAliasKeep)};
+        shared_text.language = "en-CA";
+        shared_text.default_language = "en";
+        const auto shared_in_ca = Resolve(shared_text);
+        Check(shared_in_ca.ok() && Same(shared_in_ca.result.primary_object.uuid, service),
+              "the text 'Owner_Alias_Keep' asked in en-CA finds the L5 principal's en-CA alias, not the bootstrap principal's English one");
+        shared_text.language = "en";
+        shared_text.default_language = "en-CA";
+        ExpectObject(Resolve(shared_text), bootstrap, "the same text asked in English finds the bootstrap principal's English alias: one text, two languages, two objects");
+        // en-CA's default fallback would be English: the name that exists ONLY in English is NOT_FOUND in en-CA.
+        Ask only_english{std::string(kQuotedMixed), true};
+        only_english.language = "en-CA";
+        only_english.default_language = "en";
+        ExpectRefusal(Resolve(only_english), kNotFound, "a name that exists only in the default language is NOT_FOUND in another requested language");
+        only_english.language = "en";
+        only_english.default_language = "en-CA";
+        ExpectObject(Resolve(only_english), bootstrap, "and found when asked in its own language, whatever the default language says");
+      }
       Ask in_french{std::string(kAliasFrench)};
       in_french.language = "fr-CA";
       const auto o = Resolve(in_french);
@@ -1350,22 +1496,41 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
       in_french.language = french->language == cat::kCatalogLanguage_fr_CA ? "en" : TagFor(french->language);
       ExpectRefusal(Resolve(in_french), kNotFound, "the French name asked in the other language");
     }
-    // A quoted name matches exactly; unquoted spellings fold to upper-case and do not find a quoted-only mixed-case name.
+    // S2: a stored name matches by its BYTES, whatever quoted flag it was stored with and whatever the lookup says. (Was: a
+    // quoted-only mixed-case name found only by its quoted spelling (Q180); the quoted name's fold found nothing.)
     {
-      ExpectObject(ResolveText(kQuotedMixed, true), bootstrap, "the quoted name, quoted");
+      const auto quoted_row = ResolveText(kQuotedMixed, true);
+      ExpectObject(quoted_row, bootstrap, "the quoted name, quoted");
+      Check(quoted_row.result.matched_name.was_quoted && quoted_row.result.matched_name.requires_exact_match &&
+                quoted_row.result.matched_name.quote_style == static_cast<std::uint8_t>(cat::CatalogNameQuoteStyle::double_quote),
+            "its stored quoted datum is returned as stored (quoted, exact, double quote)");
+      const auto unquoted_ask = ResolveText(kQuotedMixed, false);
+      ExpectObject(unquoted_ask, bootstrap, "the quoted-stored name asked UNquoted finds it by bytes (S2: was NOT found, Q180)");
+      Check(Same(unquoted_ask.result.matched_name.name_entry_uuid, quoted_row.result.matched_name.name_entry_uuid) &&
+                unquoted_ask.result.matched_name.was_quoted,
+            "the same entry, whichever flag was asked: the stored datum is returned and never used to match");
+      // The unquoted-stored alias asked quoted finds it too, and returns was_quoted=false.
+      const auto alias_quoted = ResolveText(kAliasKeep, true);
+      ExpectObject(alias_quoted, bootstrap, "an unquoted-stored name asked quoted finds it by bytes");
+      Check(!alias_quoted.result.matched_name.was_quoted && !alias_quoted.result.matched_name.requires_exact_match &&
+                alias_quoted.result.matched_name.quote_style == static_cast<std::uint8_t>(cat::CatalogNameQuoteStyle::none),
+            "and returns the stored (unquoted) datum");
       ExpectRefusal(ResolveText("mixed_q", true), kNotFound, "the quoted name in another case, quoted");
-      ExpectRefusal(ResolveText(kQuotedMixed), kNotFound, "a quoted-only mixed-case name asked unquoted (Q180)");
-      ExpectRefusal(ResolveText("MIXED_Q"), kNotFound, "the quoted name's fold asked unquoted (Q180)");
+      ExpectRefusal(ResolveText("mixed_q"), kNotFound, "the quoted name in another case, unquoted");
+      ExpectRefusal(ResolveText("MIXED_Q"), kNotFound, "the quoted name's fold asked unquoted");
       ExpectRefusal(ResolveText("MIXED_Q", true), kNotFound, "the quoted name's fold asked quoted");
     }
-    // A quoted case-only twin: both exist (each quoted), each finds its own object, quoted; unquoted finds only the
-    // upper-case twin (the quoted upper-case name's own lane is its exact upper-case text).
+    // Case variants are DISTINCT names: the forged case-only twins 'TwinName' (bootstrap) and 'TWINNAME' (L5) are each found
+    // only by their own bytes, quoted or not. (Was: unquoted 'twinname' and 'TwinName' both folded to the upper-case twin and
+    // found L5; the quoted-first/twin rules lived in the engine.)
     {
-      ExpectObject(ResolveText(kTwinBootstrap, true), bootstrap, "the quoted twin on the bootstrap principal");
-      ExpectObject(ResolveText(kTwinService, true), service, "the quoted twin on L5");
-      ExpectRefusal(ResolveText("twinname", true), kNotFound, "a third spelling, quoted");
-      ExpectObject(ResolveText("twinname"), service, "unquoted twin spelling folds to the upper-case twin");
-      ExpectObject(ResolveText("TwinName"), service, "unquoted twin spelling, mixed case");
+      for (const bool quoted_flag : {true, false}) {
+        ExpectObject(ResolveText(kTwinBootstrap, quoted_flag), bootstrap, "'TwinName' finds the bootstrap principal only (S2: unquoted was L5)");
+        ExpectObject(ResolveText(kTwinService, quoted_flag), service, "'TWINNAME' finds L5 only");
+        ExpectRefusal(ResolveText("twinname", quoted_flag), kNotFound, "a third spelling finds neither (S2: unquoted was L5)");
+        ExpectRefusal(ResolveText("tWINnAME", quoted_flag), kNotFound, "a fourth spelling finds neither");
+        ExpectRefusal(ResolveText("Twinname", quoted_flag), kNotFound, "a fifth spelling finds neither");
+      }
     }
     // Every live name of the bootstrap principal (the file's own list) resolves to the one UUID.
     {

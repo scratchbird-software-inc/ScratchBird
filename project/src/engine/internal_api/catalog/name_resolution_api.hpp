@@ -143,9 +143,35 @@ struct EngineResolvedSemanticProjection {
   std::vector<EngineRelationProjectionViewSemanticOutput> ordered_outputs;
 };
 
+// SEARCH_KEY: SB_NATIVE_EXACT_NAME (Part B S2). The request on a NATIVE context (one that carries native_served_facts) is:
+//   context.language_context.language_tag   the ONE explicit language (a known tag or 32 hex digits of a language UUID);
+//                                           empty is refused CATALOG.NAME.LANGUAGE_REQUIRED; default_language_tag is ignored
+//   target_schema.uuid                      the start scope; nil means the database's root scope
+//   sql_object_reference.path_components    ordered exact steps from the start scope (raw_text, as stored)
+//   sql_object_reference.object_name.raw_text   the leaf name, as stored; "" is looked up like any bytes
+//   sql_object_reference.expected_object_type   the leaf's class filter (as before)
+// Every other field (was_quoted, requires_exact_match, quote_style, identifier_profile_uuid, no_search_path,
+// current_schema_uuid, search_path_schema_uuids, default_root_uuid, localized_names, name: options) is ignored by the lookup.
+// The result's matched_name carries the matched entry as STORED.
+struct EngineResolvedNameEntry {
+  bool present = false;
+  EngineUuid name_entry_uuid;
+  EngineUuid scope_uuid;
+  EngineUuid language_uuid;              // the entry's language (the requested one: there is no fallback)
+  std::uint16_t object_kind = 0;         // CatalogRecordKind
+  std::uint8_t name_class = 0;           // CatalogNameClass: 1 primary, 2 alias, 3 compatibility, 4 generated, 5 hidden
+  bool default_for_language = false;
+  bool default_for_object = false;
+  // The parser's opaque quoted datum, exactly as stored (never used to match).
+  bool was_quoted = false;
+  std::uint8_t quote_style = 0;
+  bool requires_exact_match = false;
+};
+
 struct EngineResolveNameRequest : EngineApiRequest {};
 struct EngineResolveNameResult : EngineApiResult {
   EngineBoundObjectIdentity bound_object_identity;
+  EngineResolvedNameEntry matched_name;  // native contexts only (present == false otherwise)
   EngineResolvedResourceDescriptor resource_descriptor;
   EngineResolvedSemanticProjection semantic_projection;
 };

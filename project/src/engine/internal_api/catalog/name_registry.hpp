@@ -54,6 +54,18 @@ struct NameRegistryEntry {
   std::string lifecycle_state = "active";
   bool deleted = false;
   bool derived_from_legacy_name = false;
+  // SEARCH_KEY: SB_NATIVE_EXACT_NAME (Part B S2, 2026-11-29). Set ONLY on an entry the NATIVE exact matcher produced
+  // (ResolveNativeExactName in name_registry.cpp): the row's own values, as stored, never derived. language_uuid is the
+  // entry's language; object_kind the u16 CatalogRecordKind; name_class_code CatalogNameClass; quote_style_code
+  // CatalogNameQuoteStyle. was_quoted / quote_style_code / requires_exact_match are the parser's OPAQUE datum: returned,
+  // never interpreted. On such an entry the three lookup keys above and the profile labels are EMPTY (nothing folded).
+  bool native_exact = false;
+  EngineUuid language_uuid;
+  std::uint16_t object_kind = 0;
+  std::uint8_t name_class_code = 0;
+  std::uint8_t quote_style_code = 0;
+  bool default_for_language = false;
+  bool default_for_object = false;
 };
 
 struct NameRegistryState {
@@ -80,6 +92,11 @@ struct NameRegistryNameResult {
 
 NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context,
                                              std::uint64_t observer_tx);
+
+// SB_NATIVE_EXACT_NAME: the language tag text of a language UUID: a known language constant's tag, else the UUID's own 32
+// lower-case hex digits (the token the native projection has always given an unknown language). The inverse mapping the
+// native exact matcher applies to a request's language tag.
+std::string NameRegistryLanguageTagOfUuid(const EngineUuid& language);
 
 std::string NameRegistryDefaultLanguage(const EngineRequestContext& context);
 std::string NameRegistrySessionLanguage(const EngineRequestContext& context);
