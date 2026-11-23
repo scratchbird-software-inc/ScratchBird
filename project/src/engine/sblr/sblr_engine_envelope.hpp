@@ -291,7 +291,7 @@ bool DecodeSblrLifecycleCreateDatabaseDescriptorV1(
 //   320 language_uuid[16]  the catalog_language constant (16 binary bytes,
 //                          never a text tag); nonzero here, a known language
 //                          at the engine
-//   336 u32 name_length    1..kCatalogIdentifierTextMaximumBytes (the
+//   336 u32 name_length    0..kCatalogNameCapacityBytes (4096; 0 = the name "", Part B S6; the
 //                          catalog text rule's bound; the name's own maximum
 //                          is the server pack's identifier profile's, checked
 //                          by the engine, Q129)
@@ -311,7 +311,7 @@ enum class SblrLifecycleCreateDatabaseFormat : std::uint8_t {
 // identifier profile decides the name's maximum length, and native CREATE
 // DATABASE applies it before the file is opened. The codec's only bound is
 // the catalog text maximum (core::catalog::kCatalogIdentifierTextMaximumBytes,
-// 131040), which AdmitCatalogIdentifierText enforces at encode and decode.
+// 131040 until Part B S6, now 4096 = kCatalogNameCapacityBytes), which AdmitCatalogIdentifierText enforces at encode and decode.
 // (Was: `inline constexpr std::uint32_t kSblrCreateDatabaseNameMaximumBytes =
 // 1024;`, a hand-written cap applied at encode and decode.)
 struct SblrLifecycleCreateDatabaseDescriptorV2 : SblrLifecycleCreateDatabaseDescriptorV1 {

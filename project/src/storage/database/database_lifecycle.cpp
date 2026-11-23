@@ -9157,11 +9157,12 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         // invalid_names); the result now also says which kind of name it was,
         // by the same two rule functions key derivation applies, so native
         // CREATE DATABASE can refuse it before its file is opened.
+        // Part B S6 (owner 2026-11-23): the profile's maximum is no longer enforced; the one engine name capacity is
+        // kCatalogNameCapacityBytes (4096 bytes), refused as text_too_long by the same text rule. The result field keeps its
+        // name (name_over_profile_maximum) and now means "over the engine name capacity". (Was: text admitted but over the
+        // profile's maximum_identifier_length.)
         {
-          u64 scalars=0;
-          if(c::AdmitCatalogIdentifierText(input.name_text,&scalars)==c::CatalogIdentifierKeyError::none&&
-              c::AdmitCatalogIdentifierProfileLength(input.name_text,scalars,identifier_profile->maximum_identifier_length,
-                  identifier_profile->length_unit)!=c::CatalogIdentifierKeyError::none) {
+          if(c::AdmitCatalogIdentifierText(input.name_text)==c::CatalogIdentifierKeyError::text_too_long) {
             using N=NativeInitialNameOverProfileMaximum;
             auto refused=fail(E::invalid_names);
             refused.name_over_profile_maximum=bootstrap&&identity==bootstrap->principal_uuid?N::bootstrap_principal_name:
@@ -9422,7 +9423,9 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
     // into the constant, CatalogLanguageForTag.)
     if(!c::IsKnownCatalogLanguage(request.database_default_language))return fail(E::invalid_request);
     const std::optional<Uuid> language=request.database_default_language;
-    if(request.policy_seed_pack_root.empty()||request.database_name.empty()||
+    // Part B S6 (owner 2026-11-22/23): "" is a valid database name (data), so the empty-name test that stood here is gone;
+    // the name text rule (AdmitCatalogIdentifierText) is applied by the name row's key derivation. (Was: ||request.database_name.empty().)
+    if(request.policy_seed_pack_root.empty()||
         !request.page_size_bytes||!request.total_pages||!request.creation_utc_millis||
         !IsEngineIdentityUuid(request.engine_uuid)||!request.maximum_retained_image_bytes)return fail(E::invalid_request);
     // The L5 service credential is required (owner 2026-11-04), as is the
@@ -9626,13 +9629,9 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
       if(!identities_ok){units_ok=false;return nullptr;}
       // Q130 (SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE): the builder refuses
       // a name longer than the profile's maximum (unchanged); say which kind.
-      {
-        u64 scalars=0;
-        if(c::AdmitCatalogIdentifierText(input.name_text,&scalars)==c::CatalogIdentifierKeyError::none&&
-            c::AdmitCatalogIdentifierProfileLength(input.name_text,scalars,profile->maximum_identifier_length,
-                profile->length_unit)!=c::CatalogIdentifierKeyError::none)
-          result.name_over_profile_maximum=naming;
-      }
+      // Part B S6: over the ENGINE name capacity (4096 bytes), not the profile's maximum (no longer enforced).
+      if(c::AdmitCatalogIdentifierText(input.name_text)==c::CatalogIdentifierKeyError::text_too_long)
+        result.name_over_profile_maximum=naming;
       auto built=BuildBootstrapNamedCreationUnit(input);
       if(!built.ok()){units_ok=false;return nullptr;}
       units.push_back(std::move(built.unit));return &units.back();

@@ -286,15 +286,26 @@ void LookupKeys(){
     const auto result=c::DeriveCatalogIdentifierLookupKeysInto(request,output);heap_denied=false;
     Check(result.error==expected_error&&result.normalized.empty()&&result.exact.empty()&&
         std::all_of(output.begin(),output.end(),[](auto b){return b==0x5a;}),"invalid key request refuses unchanged without allocating");};
-  for(const std::string malformed:{std::string{},std::string("bad\0name",8),std::string("\xc0\xaf",2),
-      std::string("\xed\xa0\x80",3),std::string("\xf4\x90\x80\x80",4),std::string("\xe2\x82",2)}){
-    request.text=malformed;refuse(E::invalid_text);}
+  // Part B S6 (owner 2026-11-22/23): the text rule has one code per cause. Was: every malformed text, and the EMPTY text,
+  // refused as E::invalid_text; now NUL is text_contains_nul, ill-formed UTF-8 is text_invalid_utf8, a name over the 4096-byte
+  // engine capacity is text_too_long, a NULL name (null pointer, size 1) stays invalid_text, and the empty name "" is a name.
+  request.text="";{const auto empty=c::DeriveCatalogIdentifierLookupKeysInto(request,output);
+    Check(empty.ok()&&empty.normalized.empty()&&empty.exact.empty(),"S6: the empty name is admitted and derives two empty lanes");}
+  request.text=std::string("bad\0name",8);refuse(E::text_contains_nul);
+  for(const std::string malformed:{std::string("\xc0\xaf",2),std::string("\xed\xa0\x80",3),
+      std::string("\xf4\x90\x80\x80",4),std::string("\xe2\x82",2)}){
+    request.text=malformed;refuse(E::text_invalid_utf8);}
   request.text={static_cast<const char*>(nullptr),1};refuse(E::invalid_text);
+  {const std::string over(c::kCatalogNameCapacityBytes+1,'a');request.text=over;refuse(E::text_too_long);}
   request.text="\xc3\xa9\xf0\x9f\x90\xa6";profile.maximum_identifier_length=2;
   Check(c::DeriveCatalogIdentifierLookupKeysInto(request,output).ok(),"two Unicode scalars have six encoded octets");
-  profile.length_unit=c::IdentifierLengthUnit::encoded_octets;refuse(E::identifier_too_long);
+  // S6: was refuse(E::identifier_too_long): the profile's maximum_identifier_length is stored data and is NOT enforced by the
+  // engine's key derivation any more (the engine's one capacity is 4096 bytes); a value that was too small now admits.
+  profile.length_unit=c::IdentifierLengthUnit::encoded_octets;
+  Check(c::DeriveCatalogIdentifierLookupKeysInto(request,output).ok(),"S6: a profile maximum below the name length is no longer enforced (was identifier_too_long)");
   profile.maximum_identifier_length=6;Check(c::DeriveCatalogIdentifierLookupKeysInto(request,output).ok(),"explicit octet limit admits exact encoded length");
-  profile.length_unit=c::IdentifierLengthUnit::unicode_scalar_values;profile.maximum_identifier_length=1;refuse(E::identifier_too_long);
+  profile.length_unit=c::IdentifierLengthUnit::unicode_scalar_values;profile.maximum_identifier_length=1;
+  Check(c::DeriveCatalogIdentifierLookupKeysInto(request,output).ok(),"S6: likewise in scalar values (was identifier_too_long)");
   profile=Profile();request={&profile,raw,true,c::CatalogNameQuoteStyle::double_quote,false};refuse(E::invalid_quote_mode);
   request.requires_exact_match=true;request.quote_style=c::CatalogNameQuoteStyle::backtick;refuse(E::invalid_quote_mode);
   request.was_quoted=false;refuse(E::invalid_quote_mode);

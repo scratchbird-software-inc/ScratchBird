@@ -12630,6 +12630,36 @@ foreach(sb_list_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_list;database_ownership;binary_uuid"
     TIMEOUT 1800)
 endforeach()
+# SB_NATIVE_NAME_ADMISSION_TEST (Part B S6): name admission on the production create and write path: the empty name, NUL and
+# invalid UTF-8, the 4096-byte capacity, duplicates, languages, today's case-variant lanes (S7 changes them), restart round trip.
+# native_name_admission_test.cpp includes native_name_resolve_test.cpp as its harness, as native_name_list does.
+add_executable(sbsql_sblr_alignment_native_name_admission native_name_admission_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_name_admission sbsql_sblr_alignment_native_serving)
+target_compile_definitions(sbsql_sblr_alignment_native_name_admission PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_name_admission PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_name_admission PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api
+  ${PROJECT_SOURCE_DIR}/tests/sbsql_sblr_alignment)
+target_link_libraries(sbsql_sblr_alignment_native_name_admission PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto sb_parser_name_resolution)
+target_compile_definitions(sbsql_sblr_alignment_native_name_admission PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+foreach(sb_adm_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_adm_parts "${sb_adm_size}")
+  list(GET sb_adm_parts 0 sb_adm_bytes)
+  list(GET sb_adm_parts 1 sb_adm_label)
+  add_test(NAME sbsql_sblr_alignment_native_name_admission_${sb_adm_label}
+    COMMAND sbsql_sblr_alignment_native_name_admission size ${sb_adm_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_name_admission_${sb_adm_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_admission;database_ownership;binary_uuid"
+    TIMEOUT 600)
+endforeach()
+# Page sizes whose name-tree cell (a quarter page) carries a 4096-byte name: the exact-4096 admission is asserted there.
+set_tests_properties(sbsql_sblr_alignment_native_name_admission_32k sbsql_sblr_alignment_native_name_admission_64k
+    sbsql_sblr_alignment_native_name_admission_128k PROPERTIES ENVIRONMENT "SB_ADMISSION_EXPECT_4096_ADMITTED=1")
 if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   foreach(sb_name_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     string(REPLACE ":" ";" sb_name_parts "${sb_name_size}")

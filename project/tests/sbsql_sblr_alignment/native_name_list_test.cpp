@@ -413,6 +413,12 @@ int NameListServe(const std::string& state, const Offline& offline, srv::NativeD
       }
       Check(bulk == static_cast<std::size_t>(kBulkNames), "every bulk alias is listed");
       Check(hidden == 1, "the hidden-class name is listed");
+      // S6: was an INFO count only (the production writer refused ""); now "" is listed exactly once, as the stored alias.
+      Check(empty == 1, "S6: the empty name is listed once (written by the production writer, as stored)");
+      for (const auto& e : in_en.entries)
+        if (e.name.empty())
+          Check(e.name_class == 2 && !e.default_for_object && !e.is_fallback && Same(e.object_uuid, bootstrap) && Same(e.language_uuid, en),
+                "S6: the listed empty name is the bootstrap principal's English alias, not a fallback");
       std::cout << "INFO many_names listed=" << in_en.entries.size() << " pages_at_1024=" << in_en.pages << " empty_name_listed=" << empty
                 << " snapshot_rows=" << in_en.count << std::endl;
       Check(in_en.pages == (in_en.entries.size() + 1023) / 1024, "a scope of thousands pages by the maximum page size");
@@ -624,6 +630,8 @@ int NameListServe(const std::string& state, const Offline& offline, srv::NativeD
 // ---- forge: production writers --------------------------------------------------------------------------------------
 // kinds: many (a hidden-class name and kBulkNames aliases on the bootstrap principal, in one transaction; the empty
 // name "" is refused by the production writer today, invalid_name: Part B S6 admits it, then this forge adds it), drop (the alias Drop_Alias of the "names" forge, a committed drop), add (one new alias).
+// PART B S6 (2026-11-23): the writer admits "" now, so the "many" forge adds the empty English alias of the bootstrap principal
+// (old: the comment above said it was refused; new: it is written and the "many" serve asserts it is listed once).
 int ListForgeMode(const fs::path& path, const std::string& kind, const p::Uuid& bootstrap, const p::Uuid& service) {
   (void)service;
   ProcessMemory();
@@ -648,6 +656,7 @@ int ListForgeMode(const fs::path& path, const std::string& kind, const p::Uuid& 
     } else if (kind == "many") {
       std::vector<db::CatalogInsertRow> rows;
       rows.push_back(EntryRow(*w, *base_boot, {std::string(kHiddenList), false, std::nullopt, cat::CatalogNameClass::hidden, false}));
+      rows.push_back(EntryRow(*w, *base_boot, {std::string(kEmptyName), false, std::nullopt, cat::CatalogNameClass::alias, false}));  // S6
       Insert(*w, std::move(rows));
       for (int i = 0; i < kBulkNames; i += 10) {
         rows.clear();

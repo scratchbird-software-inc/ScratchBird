@@ -588,9 +588,9 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   // profile's, checked below once the pack is read (still before the open).
   // (Was: `request.database_name.size() > 1024u` here, a hand-written cap
   // refused with the detail database_name_required_as_data.)
-  if (request.database_name.empty()) {
-    return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_required_as_data");
-  }
+  // Part B S6 (owner 2026-11-22/23): "" is a valid name (data), so the empty database name is no longer refused here (was:
+  // refused with database_name_required_as_data). std::string cannot carry NULL as distinct from "": the descriptor codec
+  // (SCDD v2) always carries a name length, so a present name is always admitted by the text rule below.
   // SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q122 = 1, 2026-11-14).
   // The catalog's own name rule (the one the name entry builder applies at
   // database assembly, AdmitCatalogIdentifierText) is applied here, before the
@@ -610,9 +610,17 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   // same rule again after the open.
   // Update 2026-11-14 (Q134 = 1): there is no assembly after the open any
   // more; the plan is the one assembly, and it runs before the open.
-  if (scratchbird::core::catalog::AdmitCatalogIdentifierText(request.database_name) !=
-      scratchbird::core::catalog::CatalogIdentifierKeyError::none) {
-    return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_refused_by_catalog_name_rule");
+  // Part B S6: each refusal of the text rule has its own detail (the code stays DATABASE.CREATE_NAME_INVALID).
+  switch (scratchbird::core::catalog::AdmitCatalogIdentifierText(request.database_name)) {
+    case scratchbird::core::catalog::CatalogIdentifierKeyError::none: break;
+    case scratchbird::core::catalog::CatalogIdentifierKeyError::text_too_long:
+      return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_longer_than_engine_name_capacity");
+    case scratchbird::core::catalog::CatalogIdentifierKeyError::text_contains_nul:
+      return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_contains_nul");
+    case scratchbird::core::catalog::CatalogIdentifierKeyError::text_invalid_utf8:
+      return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_is_not_utf8");
+    default:
+      return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_refused_by_catalog_name_rule");
   }
   if (!scratchbird::core::catalog::IsKnownCatalogLanguage(request.database_language)) {
     return refuse("DATABASE.CREATE_LANGUAGE_UNKNOWN", "language_must_be_a_catalog_language_constant");
@@ -661,15 +669,10 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
       return refuse("DATABASE.CREATE_POLICY_PACK_INVALID",
                     "native_server_policy_pack_refused_before_open:" + families.diagnostic.diagnostic_code);
     }
-    const auto& naming = families.seeds->identifier_profiles.front();
-    scratchbird::core::platform::u64 scalars = 0;
-    if (scratchbird::core::catalog::AdmitCatalogIdentifierText(request.database_name, &scalars) !=
-            scratchbird::core::catalog::CatalogIdentifierKeyError::none ||
-        scratchbird::core::catalog::AdmitCatalogIdentifierProfileLength(
-            request.database_name, scalars, naming.maximum_identifier_length, naming.length_unit) !=
-            scratchbird::core::catalog::CatalogIdentifierKeyError::none) {
-      return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_longer_than_policy_identifier_profile_maximum");
-    }
+    // Part B S6 (owner 2026-11-23): the pack identifier profile's maximum_identifier_length is NOT applied to the database
+    // name any more (it stays stored data until S7); the one engine capacity is checked by the text rule above.
+    // (Was: AdmitCatalogIdentifierProfileLength(name, scalars, profiles.front().maximum_identifier_length, ...), refused
+    // as database_name_longer_than_policy_identifier_profile_maximum.)
   }
   const auto bootstrap_name = OptionValue(request, "bootstrap_principal_name:");
   const auto bootstrap_fingerprint = OptionValue(request, "bootstrap_credential_fingerprint:");
@@ -718,21 +721,17 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
       return refuse("DATABASE.CREATE_POLICY_PACK_INVALID",
                     "native_server_policy_pack_has_no_dialect_identifier_profile");
     }
-    const auto over_profile = [&](std::string_view name) {
-      scratchbird::core::platform::u64 scalars = 0;
-      return scratchbird::core::catalog::AdmitCatalogIdentifierText(name, &scalars) ==
-                 scratchbird::core::catalog::CatalogIdentifierKeyError::none &&
-             scratchbird::core::catalog::AdmitCatalogIdentifierProfileLength(
-                 name, scalars, principal_naming->maximum_identifier_length, principal_naming->length_unit) !=
-                 scratchbird::core::catalog::CatalogIdentifierKeyError::none;
+    // Part B S6 (owner 2026-11-23): over the ONE engine name capacity (4096 bytes), not the profile's maximum (stored
+    // data until S7, no longer enforced). (Was: AdmitCatalogIdentifierProfileLength under principal_naming.)
+    const auto over_capacity = [&](std::string_view name) {
+      return scratchbird::core::catalog::AdmitCatalogIdentifierText(name) ==
+             scratchbird::core::catalog::CatalogIdentifierKeyError::text_too_long;
     };
-    if (over_profile(bootstrap_name)) {
-      return refuse("DATABASE.CREATE_NAME_INVALID",
-                    "bootstrap_principal_name_longer_than_policy_identifier_profile_maximum");
+    if (over_capacity(bootstrap_name)) {
+      return refuse("DATABASE.CREATE_NAME_INVALID", "bootstrap_principal_name_longer_than_engine_name_capacity");
     }
-    if (over_profile(service_name)) {
-      return refuse("DATABASE.CREATE_NAME_INVALID",
-                    "internal_service_principal_name_longer_than_policy_identifier_profile_maximum");
+    if (over_capacity(service_name)) {
+      return refuse("DATABASE.CREATE_NAME_INVALID", "internal_service_principal_name_longer_than_engine_name_capacity");
     }
   }
   // SEARCH_KEY: SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION (owner Q152 = 1,
@@ -876,13 +875,13 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
       // checks these first; this is the plan's second check.)
       return refuse("DATABASE.CREATE_NAME_INVALID",
                     std::string(db::NativeCreateNameClassName(plan.name_over_profile_maximum)) +
-                        "_longer_than_policy_identifier_profile_maximum");
+                        "_longer_than_engine_name_capacity");
     }
     if (plan.name_over_profile_maximum != N::none) {
       // A name the pack or the engine supplies: the pack's profile cannot
       // name this database's own objects.
       return refuse("DATABASE.CREATE_POLICY_PACK_INVALID",
-                    std::string("native_create_name_longer_than_policy_identifier_profile_maximum:") +
+                    std::string("native_create_name_longer_than_engine_name_capacity:") +
                         db::NativeCreateNameClassName(plan.name_over_profile_maximum));
     }
     // SEARCH_KEY: SB_NATIVE_CREATE_NAME_COLLISION (owner Q178 = 1,

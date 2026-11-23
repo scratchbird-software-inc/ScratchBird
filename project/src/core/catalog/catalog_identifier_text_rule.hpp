@@ -23,22 +23,38 @@ namespace scratchbird::core::catalog {
 enum class CatalogIdentifierKeyError {
   none,invalid_profile,invalid_text,invalid_quote_mode,identifier_too_long,
   resource_admission_required,dialect_admission_required,invalid_backing,
-  size_limit
+  size_limit,
+  // Part B S6 (owner 2026-11-23): the text rule's own refusals, one code each (appended, not persisted or sent).
+  // invalid_text is now only the NULL name (a null pointer with a nonzero size).
+  text_too_long,text_invalid_utf8,text_contains_nul
 };
-// Non-empty, at most kCatalogIdentifierTextMaximumBytes, canonical UTF-8
-// (ValidateCanonicalUtf8) and no U+0000. Pure, allocation-free. invalid_text
-// on violation; on success *scalar_count (if given) is the scalar count the
-// profile's length rule uses. DeriveCatalogIdentifierLookupKeysInto and
-// CheckCatalogIdentifierLookupKeys apply exactly this, after their profile
-// checks; the profile's own rules (maximum length, quoting) need the profile.
-inline constexpr std::size_t kCatalogIdentifierTextMaximumBytes=131040;
+// SB_PART_B_S6_NAME_ADMISSION (owner 2026-11-22/23, Part B S6; was: non-empty, at most 131040 bytes). The ENGINE's
+// whole admission rule for a catalog name, which is DATA: stored as given, no normalization, no fold. The empty name ""
+// IS a name (owner: "empty '' allowed but not null"). Refused, each with its own code, in this order:
+//   invalid_text        the NULL name (a null pointer with a nonzero size; std::string and string_view cannot carry
+//                       NULL as distinct from "", so the wire/ABI layers that can say "absent" refuse it themselves)
+//   text_too_long       more than kCatalogNameCapacityBytes bytes
+//   text_invalid_utf8   not canonical UTF-8 (ValidateCanonicalUtf8: shortest form, no surrogates, <= U+10FFFF)
+//   text_contains_nul   a U+0000 byte
+// Pure, allocation-free. On success *scalar_count (if given) is the scalar count (kept for the retained profile-length
+// helper; the engine itself no longer applies a profile length). DeriveCatalogIdentifierLookupKeysInto and
+// CheckCatalogIdentifierLookupKeys apply exactly this, after their profile checks.
+// ONE capacity constant: the engine's name capacity is 4096 BYTES of UTF-8 (owner 2026-11-23: "yes" to "the ENGINE's
+// name capacity is 4096 BYTES (UTF-8) and SBsql advertises 128 characters (parser-side)"). It supersedes the earlier
+// 131040-byte text maximum and the pack's 512-scalar maximum_identifier_length as ENGINE limits; the profile row's value
+// is stored data (S7 removes profile rows) and is no longer enforced on a native write. A page size can still bound
+// what a name TREE CELL carries (a quarter page; name_key_exceeds_page_capacity): that is a storage bound, a different code.
+inline constexpr std::size_t kCatalogNameCapacityBytes=4096;
+inline constexpr std::size_t kCatalogIdentifierTextMaximumBytes=kCatalogNameCapacityBytes;  // the old spelling, derived
 inline CatalogIdentifierKeyError AdmitCatalogIdentifierText(std::string_view text,
                                                             std::uint64_t* scalar_count=nullptr) noexcept {
   std::uint64_t scalars=0;
   if(scalar_count)*scalar_count=0;
-  if(text.empty()||text.size()>kCatalogIdentifierTextMaximumBytes||!datatypes::ValidateCanonicalUtf8(
-      reinterpret_cast<const std::uint8_t*>(text.data()),text.size(),&scalars)||text.find('\0')!=text.npos)
-    return CatalogIdentifierKeyError::invalid_text;
+  if(text.data()==nullptr&&!text.empty())return CatalogIdentifierKeyError::invalid_text;
+  if(text.size()>kCatalogNameCapacityBytes)return CatalogIdentifierKeyError::text_too_long;
+  if(!datatypes::ValidateCanonicalUtf8(reinterpret_cast<const std::uint8_t*>(text.data()),text.size(),&scalars))
+    return CatalogIdentifierKeyError::text_invalid_utf8;
+  if(text.find('\0')!=text.npos)return CatalogIdentifierKeyError::text_contains_nul;
   if(scalar_count)*scalar_count=scalars;
   return CatalogIdentifierKeyError::none;
 }

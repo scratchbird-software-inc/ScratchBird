@@ -54,6 +54,23 @@ using scratchbird::core::platform::u32;
 using scratchbird::core::platform::u64;
 using disk::CarefulWriteError;
 
+// SB_PART_B_S6_NAME_ADMISSION: the engine's one text rule for a name ENTRY's raw_name_text, as a writer refusal with its own
+// code. Applied BEFORE the record codec's own validity check (CatalogNamePayloadMatchesMetadata) so that ill-formed UTF-8 and an
+// over-long text get their specific codes rather than invalid_insert / invalid_successor. "" passes. A name vector carries no
+// text. Used on inserts and on successors that are not drops (a drop re-states a name already stored).
+std::optional<E> NameTextRefusal(const catalog::CatalogNamePayload& payload) {
+  const auto* entry = std::get_if<catalog::CatalogNameEntry>(&payload);
+  if (!entry) return std::nullopt;
+  switch (catalog::AdmitCatalogIdentifierText(entry->raw_name_text)) {
+    case catalog::CatalogIdentifierKeyError::none: return std::nullopt;
+    case catalog::CatalogIdentifierKeyError::text_too_long: return E::name_too_long;
+    case catalog::CatalogIdentifierKeyError::text_contains_nul: return E::name_contains_nul;
+    case catalog::CatalogIdentifierKeyError::text_invalid_utf8: return E::name_invalid_utf8;
+    case catalog::CatalogIdentifierKeyError::invalid_text: return E::name_null;
+    default: return E::invalid_name;
+  }
+}
+
 bool V7(const Uuid& id) { return scratchbird::core::uuid::IsEngineIdentityUuid(id); }
 
 // The relations the startup verifiers place records in: the names relation
@@ -764,6 +781,9 @@ class NameState {
   // is still pending).
   Verdict CheckEntry(const catalog::CatalogNamePayload& payload) const {
     const auto& x = std::get<catalog::CatalogNameEntry>(payload);
+    // SB_PART_B_S6_NAME_ADMISSION: the engine's one text rule first, so each refusal has its own code (the key
+    // derivation below applies the same rule and would only say invalid_name). "" passes: it is a name.
+    if (const auto text = NameTextRefusal(payload)) return {*text};  // one helper (also applied before the record codec, below)
     const auto gx = GroupOf(x);
     if (!gx) return {E::invalid_name};
     const auto profile = IdentifierProfileOf(x);
@@ -1577,6 +1597,10 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::duplicate_default_name: return "duplicate_default_name";
     case E::name_language_read_only: return "name_language_read_only";
     case E::definition_not_locked: return "definition_not_locked";
+    case E::name_too_long: return "name_too_long";
+    case E::name_contains_nul: return "name_contains_nul";
+    case E::name_invalid_utf8: return "name_invalid_utf8";
+    case E::name_null: return "name_null";
   }
   return "unknown";
 }
@@ -2831,6 +2855,8 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // SB_NATIVE_NAME_TREES (N4a): a name row carries its name and an empty
     // payload (the envelope is encoded once placed), and agrees with it.
     const bool named = request.metadata.record.header.kind == catalog::CatalogRecordKind::localized_name;
+    if (named && request.name.has_value() && !request.metadata.record.header.deleted)
+      if (const auto text = NameTextRefusal(*request.name)) return Refuse(*text);  // S6: the specific text code first
     if (named != request.name.has_value() || (named && !request.metadata.record.payload.empty()) ||
         (named && !catalog::CatalogNamePayloadMatchesMetadata(*request.name, request.metadata)))
       return Refuse(E::invalid_successor);
@@ -3516,6 +3542,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           m.record.header.kind == catalog::CatalogRecordKind::database)
         return refuse_row(E::invalid_insert, i);
       if (!RoleAdmits(row.role, m)) return refuse_row(E::invalid_role, i);
+      if (name && !m.record.header.deleted)
+        if (const auto text = NameTextRefusal(*row.name)) return refuse_row(*text, i);
       if (name && !catalog::CatalogNamePayloadMatchesMetadata(*row.name, m)) return refuse_row(E::invalid_insert, i);
       any_entry = any_entry || (name && std::holds_alternative<catalog::CatalogNameEntry>(*row.name));
       needs_audit = needs_audit || (!name && !comment && m.record.header.kind != catalog::CatalogRecordKind::audit_evidence);

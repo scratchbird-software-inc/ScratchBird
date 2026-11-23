@@ -3505,8 +3505,13 @@ void NameRefusals(const Db& b, const NameTemplate& t, u16 role) {
   // to forge; what the profile refuses is the text or its quoting. (Was: "a
   // normalized key the profile does not derive" and "a display name the
   // profile does not derive", both invalid_name.)
-  entry([](auto& e, auto&) { e.raw_name_text = std::string(513, 'n'); }, CE::invalid_name,
-        "a raw text the profile does not admit (513 scalars, past the profile's 512)");
+  // Part B S6 (owner 2026-11-22/23): the profile's maximum_identifier_length is not enforced; the refusals are the engine's text
+  // rule, one code each. Was: entry(513 x 'n', CE::invalid_name, "a raw text the profile does not admit (513 scalars, past the
+  // profile's 512)"): a 513-character name now WRITES (checked in the S6 admission test, native_name_admission).
+  entry([](auto& e, auto&) { e.raw_name_text = std::string(c::kCatalogNameCapacityBytes + 1, 'n'); }, CE::name_too_long,
+        "S6: a raw text over the engine capacity (4097 bytes)");
+  entry([](auto& e, auto&) { e.raw_name_text = std::string("n\0n", 3); }, CE::name_contains_nul, "S6: a raw text with a NUL byte");
+  entry([](auto& e, auto&) { e.raw_name_text = std::string("\xC3\x28", 2); }, CE::name_invalid_utf8, "S6: a raw text that is not UTF-8");
   entry([](auto& e, auto&) { e.was_quoted = e.requires_exact_match = true; e.quote_style = c::CatalogNameQuoteStyle::backtick; },
         CE::invalid_name, "a quote style the profile does not admit");
   entry([](auto& e, auto&) { e.dialect_profile_uuid.value = V7(1, 2); }, CE::invalid_name, "an unknown dialect profile");

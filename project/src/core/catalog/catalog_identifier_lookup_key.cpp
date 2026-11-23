@@ -33,9 +33,10 @@ E Admit(const CatalogIdentifierKeyRequest& r) noexcept {
     return E::resource_admission_required;
   u64 scalars=0;
   if(const auto text=AdmitCatalogIdentifierText(r.text,&scalars);text!=E::none)return text;
-  // Q127: the same rule, now one function (was written inline here).
-  if(const auto length=AdmitCatalogIdentifierProfileLength(r.text,scalars,p.maximum_identifier_length,p.length_unit);
-      length!=E::none)return length;
+  // Part B S6 (owner 2026-11-23): the profile's maximum_identifier_length is NOT enforced here any more. The engine's one
+  // name capacity is kCatalogNameCapacityBytes (4096 bytes), applied by AdmitCatalogIdentifierText above; a smaller
+  // advertised limit (SBsql: 128 characters) is the parser's. The profile row's value stays as stored data until S7.
+  // (Was: Q127, AdmitCatalogIdentifierProfileLength(r.text,scalars,p.maximum_identifier_length,p.length_unit) here.)
   if(!r.was_quoted)return r.quote_style==CatalogNameQuoteStyle::none?E::none:E::invalid_quote_mode;
   if(!r.requires_exact_match)return E::invalid_quote_mode;
   u64 mask=0;

@@ -488,7 +488,7 @@ struct NewName {
   cat::CatalogNameClass name_class = cat::CatalogNameClass::alias;
   bool default_for_language = false;
 };
-db::CatalogInsertRow EntryRow(Writing& w, const NameFact& base, const NewName& n) {
+db::CatalogInsertRow EntryRow(Writing& w, const NameFact& base, const NewName& n, bool check_valid = true) {
   db::CatalogInsertRow row;
   row.role = 2;
   row.row_uuid = NewId();
@@ -517,7 +517,9 @@ db::CatalogInsertRow EntryRow(Writing& w, const NameFact& base, const NewName& n
   e.lifecycle_state = cat::CatalogNameLifecycle::active;
   e.dropped_transaction_uuid.reset();
   row.name = cat::CatalogNamePayload{e};
-  Check(cat::CatalogNamePayloadMatchesMetadata(*row.name, row.metadata), "the new entry agrees with its metadata");
+  // check_valid false (S6 admission test only): a name the record codec itself refuses (ill-formed UTF-8, over the 131040-byte field
+  // bound) is built on purpose, to see which refusal the WRITER gives it.
+  if (check_valid) Check(cat::CatalogNamePayloadMatchesMetadata(*row.name, row.metadata), "the new entry agrees with its metadata");
   return row;
 }
 void Insert(Writing& w, std::vector<db::CatalogInsertRow> rows) {
@@ -570,6 +572,10 @@ constexpr std::string_view kAliasDrop = "Drop_Alias";
 // exists) share this forge.
 constexpr std::string_view kSharedAcrossLanguages = "Owner_Alias_Keep";
 constexpr std::string_view kNeverCommitted = "Never_Committed";
+// Part B S6 (owner 2026-11-22/23, "" is a valid name): the EMPTY name, written by the production writer (it admits "" now; was
+// invalid_name), as an English alias of the bootstrap principal and as a Canadian English (en-CA) alias of the L5 principal (one
+// text, two languages, two objects, one scope: allowed). The "names" forge adds both; they ride the dead/uncommitted states too.
+constexpr std::string_view kEmptyName = "";
 // S4c (native login) forge kind "login": names the login test needs, written by the same production writers.
 constexpr std::string_view kLoginAlias = "owner_login_alias";        // an alias-class name on the bootstrap principal
 constexpr std::string_view kLoginHidden = "owner_hidden_login";      // a hidden-class name on the bootstrap principal
@@ -620,6 +626,9 @@ int ForgeMode(const fs::path& path, const std::string& kind, const p::Uuid& boot
     rows.push_back(EntryRow(*w, *base_svc, {std::string(kTwinService), true, std::nullopt, cat::CatalogNameClass::alias, false}));
     rows.push_back(EntryRow(*w, *base_boot, {std::string(kAliasDrop), false, std::nullopt, cat::CatalogNameClass::alias, false}));
     rows.push_back(EntryRow(*w, *base_svc, {std::string(kSharedAcrossLanguages), false, cat::kCatalogLanguage_en_CA, cat::CatalogNameClass::alias, false}));
+    // S6: the empty name (was impossible: the production writer refused it, invalid_name).
+    rows.push_back(EntryRow(*w, *base_boot, {std::string(kEmptyName), false, std::nullopt, cat::CatalogNameClass::alias, false}));
+    rows.push_back(EntryRow(*w, *base_svc, {std::string(kEmptyName), false, cat::kCatalogLanguage_en_CA, cat::CatalogNameClass::alias, false}));
     Insert(*w, std::move(rows));
     Commit(*w);
     Check(w->device.Close().ok(), "close");
@@ -1137,6 +1146,14 @@ int NameListServe(const std::string& state, const Offline& offline, srv::NativeD
                   const p::Uuid& service);
 #endif
 
+#ifdef SB_NAME_ADMISSION_TEST
+// SB_NATIVE_NAME_ADMISSION_TEST (Part B S6): native_name_admission_test.cpp includes this file as its harness and supplies the
+// served checks through this hook, defined in its own translation unit's anonymous namespace.
+int AdmissionServe(const std::string& state, const Offline& offline, srv::NativeDatabaseLoop& loop, const fs::path& directory,
+                   const std::map<std::string, std::string>& before, const p::Uuid& database, const p::Uuid& bootstrap,
+                   const p::Uuid& service);
+#endif
+
 int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& database, const p::Uuid& bootstrap,
               const p::Uuid& service) {
   const auto directory = path.parent_path();
@@ -1154,7 +1171,7 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
   // The offline read happens BEFORE the server owns the file: the ground truth the served read is compared with.
   const auto offline = ReadOffline(path);
   Check(offline.database == database, "the file's database UUID is the create's");
-  const bool forged = state == "names" || state == "dead" || state == "uncommitted" || state == "many" || state == "flow";
+  const bool forged = state == "names" || state == "dead" || state == "uncommitted" || state == "many" || state == "flow" || state == "adm";
   Check(std::set<p::Uuid>(offline.principals.begin(), offline.principals.end()).size() == offline.principals.size() &&
             std::count(offline.principals.begin(), offline.principals.end(), bootstrap) == 1 &&
             std::count(offline.principals.begin(), offline.principals.end(), service) == 1,
@@ -1204,6 +1221,9 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
 #endif
 #ifdef SB_NAME_LIST_TEST
   return NameListServe(state, offline, loop, directory, before, database, bootstrap, service);
+#endif
+#ifdef SB_NAME_ADMISSION_TEST
+  return AdmissionServe(state, offline, loop, directory, before, database, bootstrap, service);
 #endif
   const auto security_scope = offline.security_schema;
   std::size_t agents_resolved = 0, names_resolved = 0, database_scope_resolved = 0;
@@ -1305,10 +1325,28 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
     //    as a missing name (SB_ENGINE_API_INVALID_REQUEST, name_required); "" is a valid name (owner), so it is looked up like
     //    any bytes: not found here because the file holds no "" name. The production writer refuses "" (invalid_name) until S6
     //    (admission), so no "" entry can be forged without hand-patching bytes: found-by-"" is S6's test, not hand-made here.
+    //    PART B S6 (2026-11-23): the writer admits "" now; the forged states hold a real "" (the English alias of the bootstrap
+    //    principal, and an en-CA alias of the L5 principal), so there the lookup FINDS it; the base states (no "" name) still say
+    //    not found. Old: "empty name: not found (the file holds no \"\" name)" in every state. New: found in the forged states.
     {
       const auto empty = ResolveText("");
-      ExpectRefusal(empty, kNotFound, "empty name (S2: was SB_ENGINE_API_INVALID_REQUEST name_required; \"\" is a valid name, now a lookup)");
-      ExpectRefusal(ResolveText("", true), kNotFound, "the quoted empty name is the same lookup");
+      if (forged) {
+        ExpectObject(empty, bootstrap, "S6: the empty name (the forged English alias of the bootstrap principal; was not found: no \"\" could be written)");
+        ExpectObject(ResolveText("", true), bootstrap, "S6: the quoted empty name is the same lookup, found");
+        const auto& m = empty.result.matched_name;
+        Check(m.present && m.object_kind == kUserKind && m.name_class == static_cast<std::uint8_t>(cat::CatalogNameClass::alias) &&
+                  !m.default_for_object && !m.default_for_language,
+              "S6: the matched entry of \"\" is an alias entry, as stored");
+        Ask ca{""};
+        ca.language = TagFor(cat::kCatalogLanguage_en_CA);
+        ExpectObject(Resolve(ca), service, "S6: the empty name in en-CA is the L5 principal's (same text, other language, other object)");
+        Ask fr{""};
+        fr.language = TagFor(cat::kCatalogLanguage_fr_CA);
+        ExpectRefusal(Resolve(fr), kNotFound, "S6: nobody holds the empty name in fr-CA");
+      } else {
+        ExpectRefusal(empty, kNotFound, "empty name (S2: was SB_ENGINE_API_INVALID_REQUEST name_required; \"\" is a valid name, now a lookup)");
+        ExpectRefusal(ResolveText("", true), kNotFound, "the quoted empty name is the same lookup");
+      }
       Check(empty.code != "SB_ENGINE_API_INVALID_REQUEST", "the empty name is NOT refused as invalid");
       ExpectRefusal(ResolveText(std::string_view("fixture\0owner", 13)), kNotFound, "a NUL in the name");
       ExpectRefusal(ResolveText(std::string_view("\xC3\x28", 2)), kNotFound, "invalid UTF-8 (a truncated sequence)");
@@ -1542,7 +1580,8 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
         ExpectObject(Resolve(a), bootstrap, "every name the bootstrap principal has");
         ++count;
       }
-      Check(count == (state == "dead" ? 5u : 6u), "the bootstrap principal carries the create's name and the forged live ones");
+      // S6: was 5 / 6; the forge adds the empty English alias to the bootstrap principal (6 / 7).
+      Check(count == (state == "dead" ? 6u : 7u), "the bootstrap principal carries the create's name and the forged live ones");
     }
     // The alias the dead state drops is a live name until then; once dropped (a committed delete-marker successor) it
     // does not resolve, whatever its case.

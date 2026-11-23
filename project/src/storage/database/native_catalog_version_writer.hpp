@@ -198,6 +198,13 @@ enum class CatalogVersionWriteError : std::uint8_t {
   // while this transaction has written no version of the object's definition
   // row; nothing written. (A rename does not need it: owner Q226.)
   definition_not_locked,
+  // SEARCH_KEY: SB_PART_B_S6_NAME_ADMISSION (owner 2026-11-22/23): insert or successor: a name entry's raw_name_text is
+  // refused by the engine's one text rule (core/catalog/catalog_identifier_text_rule.hpp), one code per cause; nothing is
+  // written. "" is a valid name and is not refused. (Was: every such text, and "", invalid_name.)
+  name_too_long,         // more than kCatalogNameCapacityBytes (4096) bytes
+  name_contains_nul,     // a U+0000 byte
+  name_invalid_utf8,     // not canonical UTF-8
+  name_null,             // the NULL name (a null pointer with a nonzero size)
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 

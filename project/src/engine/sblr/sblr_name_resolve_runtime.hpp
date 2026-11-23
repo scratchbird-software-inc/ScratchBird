@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/catalog/catalog_identifier_text_rule.hpp"
 #include "core/hash/hash_digest.hpp"
 
 #include <algorithm>
@@ -17,7 +18,10 @@ inline constexpr std::uint16_t kSblrNameResolveOpcodeCode = 4865;
 inline constexpr std::size_t kSblrNameResolveRequestBytes = 64;
 inline constexpr std::size_t kSblrNameResolveDescriptorPrefixBytes = 256;
 inline constexpr std::size_t kSblrNameResolveResultBytes = 192;
-inline constexpr std::size_t kSblrNameResolveMaximumCanonicalNameBytes = 4096;
+// Part B S6 (owner 2026-11-23): the descriptor's name bound IS the engine's one name capacity (4096 bytes of UTF-8), derived rather
+// than a second literal that happens to be equal. (Was: = 4096.) The empty-name and NUL refusals of Utf8() below are S3's (SBLR layout).
+inline constexpr std::size_t kSblrNameResolveMaximumCanonicalNameBytes =
+    scratchbird::core::catalog::kCatalogNameCapacityBytes;
 
 using SblrNameResolveUuidV1 = std::array<std::uint8_t, 16>;
 using SblrNameResolveSha256V1 = std::array<std::uint8_t, 32>;

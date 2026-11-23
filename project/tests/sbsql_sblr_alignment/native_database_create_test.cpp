@@ -76,7 +76,9 @@ int main() {
       auto r=Request(profile);E expected=E::invalid_request;
       std::string bad_fingerprint=std::string(kFingerprint)+"x";
       switch(n){
-        case 0:r.database_name={};break;
+        // Part B S6 (owner 2026-11-22/23): "" is a valid database name, so case 0 (was: database_name={}, invalid_request)
+        // is now a name over the engine capacity (4097 bytes), refused as database_assembly; the empty name creates (below).
+        case 0:{static const std::string over(c::kCatalogNameCapacityBytes+1,'a');r.database_name=over;expected=E::database_assembly;break;}
         case 1:r.service_principal_name={};expected=E::invalid_principal;break;
         case 2:r.service_credential_fingerprint=bad_fingerprint;expected=E::invalid_principal;break;
         case 3:r.bootstrap_credential_fingerprint={};expected=E::invalid_principal;break;
@@ -96,6 +98,17 @@ int main() {
     }
   }
 
+  // S6: the EMPTY database name creates on every canonical page size, and the name row carries it (zero bytes).
+  for(const auto& profile:d::kCanonicalFilespacePageProfiles) {
+    const auto path=(artifacts.path()/("native-empty-name-"+std::to_string(file++))).string();d::FileDevice device;
+    Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"owned empty primary device (empty name)");
+    auto issue=issuer();auto request=Request(profile);request.database_name=std::string_view{};
+    const auto made=db::CreateNativeDatabaseOnOpenDevice(device,request,issue);
+    if(!made.ok())std::fprintf(stderr,"empty name profile %u error=%d name=%d\n",profile.page_size_bytes,static_cast<int>(made.error),static_cast<int>(made.name_error));
+    Check(made.ok()&&made.receipt,"S6: the production producer creates a database named \"\" (was invalid_request)");
+    Check(device.Close().ok(),"empty-name device closes");
+    std::error_code ignored;std::filesystem::remove(path,ignored);
+  }
   for(const auto& profile:d::kCanonicalFilespacePageProfiles) {
     const auto path=(artifacts.path()/("native-"+std::to_string(file++))).string();d::FileDevice device;
     Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"owned empty primary device");

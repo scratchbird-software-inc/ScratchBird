@@ -462,10 +462,9 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
     out.error = E::language_unknown;
     return out;
   }
-  if (input.name_text.empty()) {
-    out.error = E::name_text_empty;
-    return out;
-  }
+  // Part B S6 (owner 2026-11-22/23): "" IS a valid name (data; the engine stores it as given), so an empty name_text is no
+  // longer refused here (was: E::name_text_empty). The name rule is AdmitCatalogIdentifierText, applied by the key
+  // derivation below (lookup_key_derivation_refused). E::name_text_empty stays in the enum, never produced.
   if (!IsEngineIdentityUuid(input.name_collision_policy_uuid)) {
     out.error = E::collision_policy_identity_invalid;
     return out;

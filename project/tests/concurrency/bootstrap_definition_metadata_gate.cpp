@@ -321,9 +321,13 @@ int main() {
     auto repeated_entry_row = GoodUnit();
     repeated_entry_row.name_entry_row_uuid = repeated_entry_row.name_vector_row_uuid;
     auto no_language = GoodUnit(); no_language.language_uuid = Id(0xe1);  // an engine UUID that is no language constant
-    auto no_text = GoodUnit(); no_text.name_text.clear();
+    // Part B S6 (owner 2026-11-22/23): "" is a valid name, so the empty name_text is no longer a refusal (see below). The
+    // refused texts are the engine's text rule: over the capacity, NUL, invalid UTF-8; the profile's maximum (128 here)
+    // is not enforced by the engine.
+    auto over_capacity = GoodUnit(); over_capacity.name_text = std::string(c::kCatalogNameCapacityBytes + 1, 'a');
+    auto with_nul = GoodUnit(); with_nul.name_text = std::string("a\0b", 3);
+    auto bad_utf8 = GoodUnit(); bad_utf8.name_text = std::string("\xC3\x28", 2);
     auto no_profile = GoodUnit(); no_profile.identifier_profile = nullptr;
-    auto long_label = GoodUnit(); long_label.name_text = std::string(200, 'a');
     static const auto dialect_bound = [] {
       auto profile = Profile(); profile.dialect_mode_flags = 1; return profile;
     }();
@@ -344,11 +348,15 @@ int main() {
       // (The "empty object class" refusal is gone with the input field: the
       // class is the definition's kind, so there is nothing to leave empty.)
       {"a language that is not a language constant refuses", no_language, U::language_unknown},
-      {"an empty name text refuses", no_text, U::name_text_empty},
+      // S6: was {"an empty name text refuses", no_text, U::name_text_empty}: "" is a valid name now (checked below).
+      {"a name over the engine capacity (4096 bytes) is refused by the engine's derivation", over_capacity,
+       U::lookup_key_derivation_refused},
+      {"a name with a NUL byte is refused by the engine's derivation", with_nul, U::lookup_key_derivation_refused},
+      {"a name that is not UTF-8 is refused by the engine's derivation", bad_utf8, U::lookup_key_derivation_refused},
       {"an absent identifier profile refuses: the keys cannot be derived without it",
        no_profile, U::identifier_profile_missing},
-      {"a label longer than the profile admits is refused by the engine's derivation",
-       long_label, U::lookup_key_derivation_refused},
+      // S6: was {"a label longer than the profile admits is refused by the engine's derivation", 200 bytes, refused}: the
+      // profile's maximum_identifier_length (128 here) is no longer enforced by the engine (checked below).
       {"a profile needing a dialect admission this path cannot give is refused",
        needs_dialect, U::lookup_key_derivation_refused},
       {"a nil name collision policy refuses", nil_collision, U::collision_policy_identity_invalid},
@@ -363,6 +371,17 @@ int main() {
       Check(!out.ok(), "a refused unit never reports as usable");
       Check(db::BootstrapNamedCreationUnitDiagnosticCode(out.error)[0] != '\0',
             "a refused unit carries a diagnostic code");
+    }
+    // S6: the empty name, a name past the profile's own maximum (200 > 128) and a name of exactly the capacity all build.
+    {
+      auto empty_name = GoodUnit(); empty_name.name_text.clear();
+      auto past_profile = GoodUnit(); past_profile.name_text = std::string(200, 'a');
+      auto at_capacity = GoodUnit(); at_capacity.name_text = std::string(c::kCatalogNameCapacityBytes, 'a');
+      for (const auto* in : {&empty_name, &past_profile, &at_capacity}) {
+        const auto out = db::BuildBootstrapNamedCreationUnit(*in);
+        Check(out.ok(), "S6: an empty name, a name past the profile maximum, and a name of exactly 4096 bytes all build");
+        Check(out.unit.entry.raw_name_text == in->name_text, "S6: the entry carries the name exactly as given");
+      }
     }
     const auto definition_cause = db::BuildBootstrapNamedCreationUnit(bad_definition);
     Check(definition_cause.definition_error == E::owner_identity_invalid,

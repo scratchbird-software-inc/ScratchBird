@@ -1329,8 +1329,8 @@ namespace {
 constexpr std::size_t kScddV2Fixed = 352;
 // SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q128 = 1, 2026-11-14).
 // The v2 descriptor's database name obeys the catalog's own name rule
-// (core::catalog::AdmitCatalogIdentifierText: non-empty, canonical UTF-8, no
-// U+0000), applied at encode and at decode, so the codec, and the server's
+// (core::catalog::AdmitCatalogIdentifierText: canonical UTF-8, no U+0000, at
+// most 4096 bytes; "" admitted since Part B S6), applied at encode and at decode, so the codec, and the server's
 // gateway that decodes it, refuse a name the catalog would refuse. Native
 // CREATE DATABASE keeps its own check (defence in depth).
 // (Was: ScddWellFormedUtf8, a second, codec-local UTF-8 check that admitted
@@ -1377,14 +1377,16 @@ std::vector<std::uint8_t> EncodeSblrLifecycleCreateDatabaseDescriptorV2(
       descriptor.executor_availability_generation == 0 ||
       (descriptor.database_format != SblrLifecycleCreateDatabaseFormat::legacy &&
        descriptor.database_format != SblrLifecycleCreateDatabaseFormat::native) ||
-      descriptor.database_name.empty() ||
+      // Part B S6 (owner 2026-11-22/23): "" is a valid name; the empty-name test (descriptor.database_name.empty()) that
+      // stood here is gone. The name always has a length in this descriptor (name_length 0 = ""), so NULL is not
+      // representable here.
       // Q129 = 3: no codec-local name cap (was `size() >
       // kSblrCreateDatabaseNameMaximumBytes`, 1024). The catalog rule below
-      // bounds the name at kCatalogIdentifierTextMaximumBytes (131040).
+      // bounds the name at kCatalogIdentifierTextMaximumBytes (131040 until Part B S6; now 4096, the one engine capacity).
       !ScddCatalogNameAdmitted(descriptor.database_name) ||  // Q128
       (descriptor.option_count == 0) != descriptor.option_vector.empty() ||
       // The whole descriptor's size is a u32 (offset 8). The name is at most
-      // 131040 bytes here, so this cannot underflow. (Was: the bound used the
+      // 4096 bytes here (131040 before S6), so this cannot underflow. (Was: the bound used the
       // 1024 cap in place of the actual name size.)
       descriptor.option_vector.size() >
           UINT32_MAX - kScddV2Fixed - descriptor.database_name.size()) {
@@ -1464,8 +1466,9 @@ bool DecodeSblrLifecycleCreateDatabaseDescriptorV2(
   // Q129 = 3: the name is bounded here only by the catalog text maximum
   // (checked before the copy below; the catalog rule then applies in full).
   // (Was: `name_size > kSblrCreateDatabaseNameMaximumBytes`, 1024.)
-  if (name_size == 0 ||
-      name_size > scratchbird::core::catalog::kCatalogIdentifierTextMaximumBytes ||
+  // Part B S6: name_size 0 is the empty name "" (was refused); the bound is the one engine name capacity (4096 bytes;
+  // kCatalogIdentifierTextMaximumBytes is derived from kCatalogNameCapacityBytes).
+  if (name_size > scratchbird::core::catalog::kCatalogNameCapacityBytes ||
       kScddV2Fixed + name_size + option_size != size ||
       std::any_of(data + 341, data + kScddV2Fixed,
                   [](std::uint8_t byte) { return byte != 0; })) {
