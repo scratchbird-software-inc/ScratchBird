@@ -21,6 +21,10 @@ struct NativeCatalogNamespaceVerification {
 struct NativeCatalogNamespaceWorkspace {
   std::span<std::size_t> order,parents;
   std::span<core::platform::byte> colors;
+  // SB_OPEN_VERIFY_SORTED (2026-11-27): an optional fourth scratch array (one entry per captured row). When it is present the
+  // name verifiers replace their per-definition and per-cell linear scans with sorted passes (O(n log n)); when it is empty
+  // they keep the linear scans (same results, quadratic time).
+  std::span<std::size_t> extra;
 };
 // Local namespace reference closure over the complete captured selected rows.
 // This checks the database identity, typed schema definitions, namespace

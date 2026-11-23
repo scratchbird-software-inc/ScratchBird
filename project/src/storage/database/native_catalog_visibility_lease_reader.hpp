@@ -14,6 +14,8 @@ struct NativeCatalogVisibleRow {
   bool provisional=false;
   core::catalog::CatalogObjectLifecycle effective_lifecycle=core::catalog::CatalogObjectLifecycle::creating;
   core::catalog::CatalogObjectStatus effective_status=core::catalog::CatalogObjectStatus::proposed;
+  // SB_OPEN_COHORT_STREAM: the stored row's UUID (the order the collect-everything reader emits rows in is by it).
+  Uuid storage_row_uuid;
 };
 inline usize NativeCatalogVisibilityWorkspaceBytes(const NativeCatalogRelationMemoryLimits& l) noexcept {
   usize bytes=NativeCatalogRelationWorkspaceBytes(l);if(!bytes)return 0;
@@ -280,6 +282,7 @@ class NativeCatalogVisibilityLeaseReader {
           if(m.record.header.kind==catalog::CatalogRecordKind::localized_name){const auto decoded=name(i);if(!decoded.ok()){fail(E::invalid_chain);return out;}value.name_payload=decoded.record->payload;}
           if(value.provisional){value.effective_status=catalog::CatalogObjectStatus::proposed;value.effective_lifecycle=m.record.header.deleted?
             catalog::CatalogObjectLifecycle::dropping:m.definition_version==1?catalog::CatalogObjectLifecycle::creating:catalog::CatalogObjectLifecycle::altering;}
+          value.storage_row_uuid=row(i).row_uuid.value;
           w.rows_[selected++]=value;break;
         }begin=end;}
       if(pin){const auto final=pin->Observe();if(!final.ok()){out.snapshot_diagnostic=final;fail(E::snapshot_failure);return out;}

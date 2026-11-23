@@ -210,6 +210,31 @@ class NativeCatalogCapture {
     if(physical_pages_.empty())return Bound::none;
     return AppendPhysicalTo(physical_pages_,physical_page_count_,h,owner,Bound::physical_pages);
   }
+  // SB_OPEN_COHORT_STREAM: append without the search for a prior entry of the same page (that search is O(pages) per append and
+  // O(pages^2) over a relation). The caller appends each page once (the cohort reader keeps a hashed page registry); the
+  // repeats a corrupt file can still produce are removed or refused once, after the final sort (DedupePhysicalSorted).
+  Bound AppendPhysicalUnchecked(const disk::NativeCommonPageHeader& h,const Uuid& owner) noexcept {
+    if(physical_pages_.empty())return Bound::none;
+    if(physical_page_count_==physical_pages_.size())return Bound::physical_pages;
+    physical_pages_[physical_page_count_++]={h,owner};return Bound::none;
+  }
+  // After the pages are sorted by (filespace, page number): the same page twice with the same identity is kept once; with
+  // different identities it is physical_page_conflict (the result AppendPhysicalTo gave one append at a time).
+  Bound DedupePhysicalSorted() noexcept {
+    usize out=0;
+    for(usize i=0;i<physical_page_count_;++i){
+      if(out){const auto& p=physical_pages_[out-1];const auto& h=physical_pages_[i].header;
+        if(p.header.filespace_uuid==h.filespace_uuid&&p.header.page_number==h.page_number){
+          const auto& q=physical_pages_[i];
+          if(p.owner_uuid==q.owner_uuid&&p.header.database_uuid==h.database_uuid&&p.header.page_size_profile_uuid==h.page_size_profile_uuid&&
+              p.header.page_size_bytes==h.page_size_bytes&&p.header.page_type==h.page_type&&p.header.page_uuid==h.page_uuid&&
+              p.header.page_generation==h.page_generation&&p.header.flags==h.flags)continue;
+          return Bound::physical_page_conflict;
+        }}
+      physical_pages_[out++]=physical_pages_[i];
+    }
+    physical_page_count_=out;return Bound::none;
+  }
   // `full`: the bound a full `pages` is (physical or initial control pages).
   static Bound AppendPhysicalTo(std::span<NativeCapturedCatalogPage> pages,usize& count,
       const disk::NativeCommonPageHeader& h,const Uuid& owner,Bound full) noexcept {

@@ -111,6 +111,22 @@ class NativeCatalogLeafLeaseReader {
  private:
   friend class NativeCatalogRelationLeaseReader;
   friend class NativeCatalogVisibilityStreamReader;  // SB_NATIVE_CATALOG_STREAM (2026-11-25)
+  // SB_STREAM_PASS_ANCHOR (2026-11-27): what one stream pass verified about a filespace's page zero ONCE, at its start. A leaf
+  // read inside that pass keeps its own checks (the file's size unchanged from the anchor's after the read, the page's own
+  // header: database, filespace, profile, page number, generation, type, flags; the page number inside the anchored extent; the
+  // relation) and skips the per-leaf bootstrap-prefix read, the first size query and the page-zero read and decode (two of
+  // three preads and about 18 percent of the CPU of a leaf read). The stream compares page zero with its pass-start image once
+  // more after the last leaf, so a page zero changed under the pass is still refused (page_zero_failure).
+  struct PassAnchor {
+    u64 total_pages=0;
+    std::size_t page_bytes=0;
+    u32 flags=0,role=0;
+  };
+  static NativeCatalogLeafLeaseReadResult ReadAnchored(
+      const detail::NativeLeaseReadSource& source,const page::NativeCatalogRootReference& ref,
+      NativeCatalogLeafPreparedMemory& backing,const PassAnchor& anchor,bool discover_relation) noexcept {
+    return ReadImpl(source,ref,backing,discover_relation,&anchor);
+  }
   // A selected index may locate the first base leaf before its relation UUID
   // is known. Only its enclosing selected-root traversal may discover it.
   static NativeCatalogLeafLeaseReadResult ReadSelected(
@@ -128,7 +144,7 @@ class NativeCatalogLeafLeaseReader {
   static NativeCatalogLeafLeaseReadResult ReadImpl(
       const detail::NativeLeaseReadSource& source,
       const page::NativeCatalogRootReference& ref,
-      NativeCatalogLeafPreparedMemory& backing,bool discover_relation) noexcept {
+      NativeCatalogLeafPreparedMemory& backing,bool discover_relation,const PassAnchor* anchor=nullptr) noexcept {
     using E=NativeCatalogLeafMemoryError;
     NativeCatalogLeafLeaseReadResult out;
     try {
@@ -160,6 +176,17 @@ class NativeCatalogLeafLeaseReader {
         return io.ok()&&io.bytes_transferred==bytes;
       };
       const disk::FilespaceBootstrapBinding expected{database,target.filespace_uuid,target.page_size_profile_uuid};
+      u64 before_size=0;
+      if(anchor){
+        // The pass verified page zero at its start (see PassAnchor): this read checks the anchored facts only.
+        if(anchor->page_bytes!=size||target.page_number>=anchor->total_pages||anchor->role>5){
+          out.error=E::page_zero_failure;out.page_zero_error=disk::FilespacePageZeroError::invalid_capacity;return out;}
+        if(anchor->flags&disk::FilespaceBootstrapFlag::payload_encrypted){out.error=E::encrypted_requires_authority;return out;}
+        if(anchor->flags&disk::FilespaceBootstrapFlag::cluster_authority_required){out.error=E::cluster_requires_authority;return out;}
+        if(anchor->total_pages>std::numeric_limits<u64>::max()/size){
+          out.error=E::page_zero_failure;out.page_zero_error=disk::FilespacePageZeroError::invalid_capacity;return out;}
+        before_size=anchor->total_pages*size;
+      }else{
       disk::SerializedFilespaceBootstrap prefix{};
       if(!read(0,prefix.data(),prefix.size())){out.error=E::io_failure;return out;}
       const auto bootstrap=disk::DecodeFilespaceBootstrap(prefix.data(),prefix.size(),&expected);
@@ -179,10 +206,12 @@ class NativeCatalogLeafLeaseReader {
       }
       if(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted){out.error=E::encrypted_requires_authority;return out;}
       if(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::cluster_authority_required){out.error=E::cluster_requires_authority;return out;}
+      before_size=before.size_bytes;
+      }
       if(!read(offset,image.data(),size)){out.error=E::io_failure;return out;}
       auto after=observations.SizeBounded();out.io=after;out.io_status=disk::BoundedIoStatus(after);
       if(!after.ok()){out.error=E::io_failure;return out;}
-      if(before.size_bytes!=after.size_bytes){out.error=E::page_zero_failure;out.page_zero_error=disk::FilespacePageZeroError::invalid_capacity;return out;}
+      if(before_size!=after.size_bytes){out.error=E::page_zero_failure;out.page_zero_error=disk::FilespacePageZeroError::invalid_capacity;return out;}
       const disk::NativeCommonPageHeaderBinding expected_page{expected,target.page_number,target.page_generation,6,{}};
       const auto header=disk::DecodeNativeCommonPageHeader(image.data(),128,&expected_page);
       if(!header.ok()){out.error=E::binding_mismatch;out.header_error=header.error;return out;}

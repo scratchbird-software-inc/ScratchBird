@@ -72,9 +72,23 @@ inline NativeCatalogNameTreeVerification VerifyNativeCatalogNameTrees(
     if(at==entries.end()||at->identity.local_id.value!=local)return std::nullopt;
     return transaction::mga::InventoryVisibilityState(*at);
   };
+  // SB_OPEN_VERIFY_SORTED: the rows by version UUID (then capture order, so the first match is the one the scan found), for a
+  // binary search per cell; without the optional fourth scratch array the scan per cell remains.
+  const bool indexed=workspace.extra.size()>=rows.size()&&capture.DisjointWorkspace(std::as_bytes(workspace.extra))&&
+      ranges::DisjointNativeDecodeRegions(workspace.order,workspace.parents,workspace.extra);
+  auto by_version=indexed?workspace.extra.first(rows.size()):std::span<std::size_t>{};
+  if(indexed){
+    std::iota(by_version.begin(),by_version.end(),std::size_t{0});
+    std::sort(by_version.begin(),by_version.end(),[&](auto a,auto b){
+      return rows[a].row.version_uuid==rows[b].row.version_uuid?a<b:rows[a].row.version_uuid<rows[b].row.version_uuid;});
+  }
   for(const auto& cell:capture.name_tree_cells()){
     ++out.cells;
     std::size_t found=rows.size();
+    if(indexed){
+      const auto at=std::lower_bound(by_version.begin(),by_version.end(),cell.version_uuid,[&](auto i,const core::platform::Uuid& id){return rows[i].row.version_uuid<id;});
+      if(at!=by_version.end()&&rows[*at].row.version_uuid==cell.version_uuid)found=*at;
+    }else
     for(std::size_t i=0;i<rows.size()&&found==rows.size();++i)if(rows[i].row.version_uuid==cell.version_uuid)found=i;
     if(found==rows.size()){
       // Not a version this snapshot sees: its creator did not commit, or a

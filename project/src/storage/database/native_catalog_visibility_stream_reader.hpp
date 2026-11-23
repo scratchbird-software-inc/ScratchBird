@@ -50,7 +50,8 @@ enum class NativeCatalogStreamError {
   invalid_locator, creator_mismatch, cluster_requires_authority, navigation_not_committed, invalid_chain, missing_version,
   visibility_failure, requires_recovery, name_payload_invalid, io_failure, resource_exhausted,
   history_exhausted,  // the governed history registry filled: rows with more than one version exceed history_versions
-  snapshot_failure
+  snapshot_failure,
+  hook_refused  // SB_OPEN_COHORT_STREAM: a hook (the open's cohort verifier) refused; the hook holds its own detail
 };
 inline const char* NativeCatalogStreamErrorName(NativeCatalogStreamError e) noexcept {
   using E=NativeCatalogStreamError;
@@ -65,6 +66,7 @@ inline const char* NativeCatalogStreamErrorName(NativeCatalogStreamError e) noex
     case E::requires_recovery:return "requires_recovery";case E::name_payload_invalid:return "name_payload_invalid";
     case E::io_failure:return "io_failure";case E::resource_exhausted:return "resource_exhausted";
     case E::history_exhausted:return "history_exhausted";case E::snapshot_failure:return "snapshot_failure";
+    case E::hook_refused:return "hook_refused";
   }
   return "unknown";
 }
@@ -125,7 +127,8 @@ inline usize NativeCatalogStreamArenaBytes(const NativeCatalogStreamLimits& l) n
       !add(slots * req.cells, sizeof(page::NativeBtreeCellView), alignof(page::NativeBtreeCellView)) ||
       !add(kNativeCatalogStreamTreeDepth * (req.cells + 2), sizeof(stream_detail::StreamPending), alignof(stream_detail::StreamPending)) ||
       !add(req.reference_slots, sizeof(page::NativeBtreeReferenceSlot), alignof(page::NativeBtreeReferenceSlot)) ||
-      !add(32, sizeof(disk::FilespaceRootReference), alignof(disk::FilespaceRootReference)) || !add(largest, 1, largest) ||
+      !add(32, sizeof(disk::FilespaceRootReference), alignof(disk::FilespaceRootReference)) || !add(l.maximum_devices * largest, 1, largest) ||
+      !add(largest, 1, largest) ||
       !add(l.window_pages, sizeof(stream_detail::WindowSlot), alignof(stream_detail::WindowSlot)) ||
       !add(l.window_pages, sizeof(NativeCatalogLeafPreparedMemory), alignof(NativeCatalogLeafPreparedMemory)) ||
       !add(l.history_versions, sizeof(stream_detail::HistoryVersion), alignof(stream_detail::HistoryVersion)) ||
@@ -171,7 +174,7 @@ class NativeCatalogStreamPreparedMemory {
     swap(arena_, o.arena_); swap(roots_, o.roots_); swap(leaves_, o.leaves_); swap(window_, o.window_);
     swap(limits_, o.limits_); swap(workspace_bytes_, o.workspace_bytes_); swap(largest_, o.largest_);
     swap(devices_, o.devices_); swap(files_, o.files_); swap(slots_, o.slots_); swap(pending_, o.pending_);
-    swap(references_, o.references_); swap(root_refs_, o.root_refs_); swap(zero_, o.zero_);
+    swap(references_, o.references_); swap(root_refs_, o.root_refs_); swap(zero_, o.zero_); swap(zero_check_, o.zero_check_);
     swap(history_, o.history_); swap(hash_, o.hash_);
   }
   NativeStorageArena arena_;
@@ -186,7 +189,8 @@ class NativeCatalogStreamPreparedMemory {
   std::span<stream_detail::StreamPending> pending_;
   std::span<page::NativeBtreeReferenceSlot> references_;
   std::span<disk::FilespaceRootReference> root_refs_;
-  std::span<byte> zero_;
+  std::span<byte> zero_;        // one page-zero image per file, as read at the pass start (SB_STREAM_PASS_ANCHOR)
+  std::span<byte> zero_check_;  // the end-of-pass re-read
   std::span<stream_detail::HistoryVersion> history_;
   std::span<u32> hash_;
   friend class NativeCatalogVisibilityStreamReader;
@@ -237,7 +241,8 @@ inline NativeCatalogStreamPreparedResult PrepareNativeCatalogStreamRead(
     w.pending_ = array.template operator()<stream_detail::StreamPending>(kNativeCatalogStreamTreeDepth * (req.cells + 2));
     w.references_ = array.template operator()<page::NativeBtreeReferenceSlot>(req.reference_slots);
     w.root_refs_ = array.template operator()<disk::FilespaceRootReference>(32);
-    w.zero_ = array.template operator()<byte>(largest, largest);
+    w.zero_ = array.template operator()<byte>(l.maximum_devices * largest, largest);
+    w.zero_check_ = array.template operator()<byte>(largest, largest);
     w.window_ = array.template operator()<stream_detail::WindowSlot>(l.window_pages);
     w.history_ = array.template operator()<stream_detail::HistoryVersion>(l.history_versions);
     w.hash_ = array.template operator()<u32>(2 * l.history_versions + 1);
@@ -262,6 +267,28 @@ inline NativeCatalogStreamPreparedResult PrepareNativeCatalogStreamRead(
   return out;
 }
 
+// SB_OPEN_COHORT_STREAM (2026-11-27): hooks for a caller that must verify more than the visible rows (the open's cohort
+// scan). on_leaf runs once per physical base-leaf read (a leaf the window evicted and read again runs it again, so a hook
+// keeps its own per-page registry), with EVERY stored row of the page in view; on_tree_page runs once per index page after
+// its topology is validated; kAllHistoryGroups makes the end-of-pass chain checks run for every row group that has history,
+// not only the groups a cell reached (visibility is still judged for reached groups only). A hook returns false to refuse
+// (hook_refused); it keeps its own detail. The default hooks do nothing and cost nothing.
+struct NativeCatalogStreamNoHooks {
+  static constexpr bool kActive = false;
+  static constexpr bool kAllHistoryGroups = false;
+  bool on_leaf(const disk::NativePageReference&, const NativeCatalogLeafPageView&) noexcept { return true; }
+  bool on_tree_page(const disk::NativePageReference&, const page::NativeBtreePageView&, bool) noexcept { return true; }
+};
+// SB_STREAM_PASS_ANCHOR (2026-11-27) TEST SEAM: called after every base-leaf read of a pass with the number of leaf reads so far.
+// Null in production. It is a plain function pointer (not macro-guarded) because this header is instantiated in libraries and in
+// test executables alike and one definition must serve all of them. A test uses it to change page zero between two leaf reads.
+inline void (*g_native_stream_leaf_read_test_seam)(u64 leaf_reads) noexcept = nullptr;
+// A tree walked on its own (a page-zero tree: the name trees and the comment tree): the root, the index it must belong
+// to, and the callback for every leaf cell. No base leaf is read, no visibility is judged.
+struct NativeCatalogStreamTreeOnly {
+  disk::NativePageReference root;
+  Uuid index_uuid;
+};
 struct NativeCatalogStreamResult {
   NativeCatalogStreamError error = NativeCatalogStreamError::invalid_request;
   NativeCatalogRootsLeaseError roots_error = NativeCatalogRootsLeaseError::none;
@@ -269,14 +296,17 @@ struct NativeCatalogStreamResult {
   NativeCatalogLeafMemoryError leaf_error = NativeCatalogLeafMemoryError::none;
   disk::BoundedIoResult io;
   transaction::mga::MgaObservationStatus visibility_diagnostic;
-  Uuid relation_uuid;
+  Uuid relation_uuid;  // the relation's identity as the first base leaf (or an unindexed head) gave it; nil for an empty indexed relation
+  bool indexed = false;  // the relation's head is an index (page type 0x200), not one leaf
+  Uuid head_object_uuid;  // the head's object: the index UUID, or for an unindexed relation the relation's own
   bool stopped = false;  // the visitor returned false
   // Counters of the pass (for the report and the tests, not a limit).
   u64 rows_visited = 0,       // visible rows handed to the visitor
       versions_examined = 0,  // versions judged
       cells = 0,              // index cells walked
       leaf_reads = 0,         // base-leaf reads (a leaf evicted from the window and needed again is read again)
-      tree_page_reads = 0, physical_bytes_read = 0, history_versions = 0, history_rows = 0;
+      tree_page_reads = 0, physical_bytes_read = 0, history_versions = 0, history_rows = 0,
+      roots_retained_image_bytes = 0;  // the roots read's retained page-image bytes (a relation's share of the verified-image account)
   usize workspace_bytes = 0;
   bool ok() const noexcept { return error == NativeCatalogStreamError::none; }
 };
@@ -289,30 +319,49 @@ class NativeCatalogVisibilityStreamReader {
   template <class Lease, class Visitor>
   static NativeCatalogStreamResult StreamCommittedSelected(const Lease& source, u16 selector, u16 role, u64 image_budget,
                                                           NativeCatalogStreamPreparedMemory& w, Visitor&& visitor) noexcept {
-    return Run(detail::NativeLeaseSourceAccess::From(source), selector, role, nullptr, image_budget, w, visitor);
+    NativeCatalogStreamNoHooks none;
+    return Run(detail::NativeLeaseSourceAccess::From(source), selector, role, nullptr, image_budget, w, visitor, none, nullptr);
+  }
+  // SB_OPEN_COHORT_STREAM: the same pass with hooks (see NativeCatalogStreamNoHooks).
+  template <class Lease, class Visitor, class Hooks>
+  static NativeCatalogStreamResult StreamCommittedSelectedHooked(const Lease& source, u16 selector, u16 role, u64 image_budget,
+                                                                NativeCatalogStreamPreparedMemory& w, Visitor&& visitor, Hooks& hooks) noexcept {
+    return Run(detail::NativeLeaseSourceAccess::From(source), selector, role, nullptr, image_budget, w, visitor, hooks, nullptr);
+  }
+  // A page-zero tree on its own: `on_cell` is `bool(const page::NativeBtreeCellView&)` for every leaf cell, in key order (false
+  // stops the pass: `stopped`). The tree is read as a relation's head is (topology, fences, siblings, dependency tuple adopted
+  // from the root, which must carry `index_uuid`); navigation-page creators are not judged (a name tree's pages are not rows).
+  template <class Lease, class CellFn, class Hooks>
+  static NativeCatalogStreamResult StreamTree(const Lease& source, const NativeCatalogStreamTreeOnly& tree, u64 image_budget,
+                                              NativeCatalogStreamPreparedMemory& w, CellFn&& on_cell, Hooks& hooks) noexcept {
+    return Run(detail::NativeLeaseSourceAccess::From(source), 0, 0, nullptr, image_budget, w, on_cell, hooks, &tree);
   }
   template <class Lease, class Visitor>
   static NativeCatalogStreamResult StreamCommittedSelectedAt(const Lease& source, const transaction::mga::VisibilitySnapshot& view,
                                                             u16 selector, u16 role, u64 image_budget,
                                                             NativeCatalogStreamPreparedMemory& w, Visitor&& visitor) noexcept {
     const auto borrowed = transaction::mga::BorrowVisibilitySnapshot(view);
-    return Run(detail::NativeLeaseSourceAccess::From(source), selector, role, &borrowed, image_budget, w, visitor);
+    NativeCatalogStreamNoHooks none;
+    return Run(detail::NativeLeaseSourceAccess::From(source), selector, role, &borrowed, image_budget, w, visitor, none, nullptr);
   }
 
  private:
   using Slot = stream_detail::WindowSlot;
-  template <class Visitor>
+  template <class Visitor, class Hooks>
   static NativeCatalogStreamResult Run(const detail::NativeLeaseReadSource& source, u16 selector, u16 role,
                                        const transaction::mga::VisibilitySnapshotView* point, u64 image_budget,
-                                       NativeCatalogStreamPreparedMemory& w, Visitor& visitor) noexcept {
+                                       NativeCatalogStreamPreparedMemory& w, Visitor& visitor, Hooks& hooks,
+                                       const NativeCatalogStreamTreeOnly* tree_only) noexcept {
     namespace mga = transaction::mga;
     namespace catalog = core::catalog;
     using E = NativeCatalogStreamError;
     using TE = page::NativeBtreeError;
     NativeCatalogStreamResult out;
     out.workspace_bytes = w.workspace_bytes_;
+    constexpr bool kCellVisitor = std::is_invocable_r_v<bool, Visitor&, const page::NativeBtreeCellView&>;
     try {
-      if (!w || (selector != 2 && selector != 8) || role < 1 || role > page::kNativeCatalogRelationRoles) return out;
+      if (!w || (!tree_only && ((selector != 2 && selector != 8) || role < 1 || role > page::kNativeCatalogRelationRoles))) return out;
+      if (kCellVisitor != (tree_only != nullptr)) return out;
       if (source.database_uuid.is_nil() || w.arena_.binding().database_uuid != source.database_uuid || !source.inventory) return out;
       if (source.cluster_authority_required) { out.error = E::cluster_requires_authority; return out; }
       const auto& inventory = *source.inventory;
@@ -325,15 +374,31 @@ class NativeCatalogVisibilityStreamReader {
       // ---- roots and the relation's head ----
       u64 retained = source.retained_image_bytes;
       if (retained >= image_budget) return fail(E::resource_exhausted);
-      const auto roots = NativeCatalogRootsLeaseReader::ReadWith(source, image_budget - retained, w.roots_);
-      out.physical_bytes_read += roots.physical_bytes_read;
-      out.roots_error = roots.error;
-      if (!roots.ok()) return fail(E::root_failure);
-      const auto& catalog_root = roots.catalogs[selector == 2 ? 0 : roots.feature_root_index].root;
-      const auto head = std::find_if(catalog_root.roots.begin(), catalog_root.roots.end(), [&](const auto& r) { return r.role == role; });
-      if (head == catalog_root.roots.end()) return fail(E::missing_relation);
-      const bool indexed = head->page_type == 0x200;
-      if (!indexed && head->page_type != 6) return fail(E::binding_mismatch);
+      disk::NativePageReference head_page;
+      Uuid selected_index;
+      bool indexed = true;
+      if (tree_only) {
+        head_page = tree_only->root;
+        selected_index = tree_only->index_uuid;
+        if (!head_page.page_number || !head_page.page_generation || !core::uuid::IsEngineIdentityUuid(head_page.filespace_uuid) ||
+            !disk::FindCanonicalFilespacePageProfile(head_page.page_size_profile_uuid) || !core::uuid::IsEngineIdentityUuid(selected_index))
+          return out;
+      } else {
+        const auto roots = NativeCatalogRootsLeaseReader::ReadWith(source, image_budget - retained, w.roots_);
+        out.physical_bytes_read += roots.physical_bytes_read;
+        out.roots_retained_image_bytes = roots.retained_image_bytes;
+        out.roots_error = roots.error;
+        if (!roots.ok()) return fail(E::root_failure);
+        const auto& catalog_root = roots.catalogs[selector == 2 ? 0 : roots.feature_root_index].root;
+        const auto head = std::find_if(catalog_root.roots.begin(), catalog_root.roots.end(), [&](const auto& r) { return r.role == role; });
+        if (head == catalog_root.roots.end()) return fail(E::missing_relation);
+        indexed = head->page_type == 0x200;
+        if (!indexed && head->page_type != 6) return fail(E::binding_mismatch);
+        head_page = head->page;
+        selected_index = head->object_uuid;
+        out.indexed = indexed;
+        out.head_object_uuid = head->object_uuid;
+      }
 
       // ---- creators (as the collect-everything reader resolves them) ----
       const auto creator = [&](u64 number, const Uuid& uuid) -> usize {
@@ -347,7 +412,31 @@ class NativeCatalogVisibilityStreamReader {
       };
 
       // ---- the window of base leaves ----
+      bool anchored = false;  // set once every file's page zero is verified at the pass start (a cursor over an index)
+      // SB_STREAM_PASS_ANCHOR: once per pass, after the last leaf: page zero of every file is read again and must equal the image
+      // the pass verified at its start byte for byte, and the file's size must be what it was. (Per leaf the pass keeps the
+      // size check and the page's own header checks; the bootstrap, page-zero decode and page-zero compare run per pass.)
+      const auto verify_zero = [&]() -> bool {
+        if (!anchored) return true;
+        for (usize i = 0; i < source.devices.size(); ++i) {
+          const auto& f = w.files_[i];
+          auto io = source.batches[i].ReadAtBounded(0, w.zero_check_.data(), f.size);
+          out.physical_bytes_read += io.bytes_transferred;
+          out.io = io;
+          if (!io.ok() || io.bytes_transferred != f.size) { out.error = E::io_failure; return false; }
+          if (!std::equal(w.zero_check_.begin(), w.zero_check_.begin() + f.size, w.zero_.begin() + i * w.largest_)) {
+            out.leaf_error = NativeCatalogLeafMemoryError::page_zero_failure; out.error = E::leaf_failure; return false;
+          }
+          const auto size = source.batches[i].SizeBounded();
+          out.io = size;
+          if (!size.ok()) { out.error = E::io_failure; return false; }
+          if (size.size_bytes != f.total_pages * f.size) { out.leaf_error = NativeCatalogLeafMemoryError::page_zero_failure; out.error = E::leaf_failure; return false; }
+        }
+        return true;
+      };
       Uuid relation = {};
+      // An unindexed relation's head IS its one leaf, and its object is the relation (as the collect-everything reader binds it).
+      if (!tree_only && !indexed) relation = out.head_object_uuid;
       u64 tick = 0;
       for (auto& s : w.window_) { s = {}; }
       const auto window_acquire = [&](const disk::NativePageReference& ref) -> Slot* {
@@ -364,13 +453,28 @@ class NativeCatalogVisibilityStreamReader {
         auto& s = w.window_[victim];
         s.valid = false; s.scanned = false;
         const page::NativeCatalogRootReference target{role, 6, ref, relation};
-        auto leaf = relation.is_nil() ? NativeCatalogLeafLeaseReader::ReadSelected(source, target, w.leaves_[victim])
-                                      : NativeCatalogLeafLeaseReader::Read(source, target, w.leaves_[victim]);
+        NativeCatalogLeafLeaseReadResult leaf;
+        if (anchored) {
+          // Page zero was verified at the pass start and is compared again after the last leaf (see PassAnchor).
+          const auto f = std::find_if(w.files_.begin(), w.files_.begin() + static_cast<std::ptrdiff_t>(source.devices.size()),
+                                      [&](const auto& x) { return x.source.filespace_uuid == ref.filespace_uuid; });
+          if (f == w.files_.begin() + static_cast<std::ptrdiff_t>(source.devices.size())) { out.leaf_error = NativeCatalogLeafMemoryError::binding_mismatch; out.error = E::leaf_failure; return nullptr; }
+          const NativeCatalogLeafLeaseReader::PassAnchor anchor{f->total_pages, f->size, f->flags, f->role};
+          leaf = NativeCatalogLeafLeaseReader::ReadAnchored(source, target, w.leaves_[victim], anchor, relation.is_nil());
+        } else {
+          leaf = relation.is_nil() ? NativeCatalogLeafLeaseReader::ReadSelected(source, target, w.leaves_[victim])
+                                   : NativeCatalogLeafLeaseReader::Read(source, target, w.leaves_[victim]);
+        }
         out.physical_bytes_read += leaf.bytes_read;
         ++out.leaf_reads;
+        if (g_native_stream_leaf_read_test_seam) g_native_stream_leaf_read_test_seam(out.leaf_reads);
         if (!leaf.ok()) { out.leaf_error = leaf.error; out.io = leaf.io; out.error = E::leaf_failure; return nullptr; }
         if (relation.is_nil()) relation = leaf.leaf.page->body.relation_uuid.value;
+        out.relation_uuid = relation;
         s.page = *leaf.leaf.page; s.ref = ref; s.valid = true; s.tick = ++tick;
+        if constexpr (Hooks::kActive) {
+          if (!hooks.on_leaf(ref, s.page)) { s.valid = false; out.error = E::hook_refused; return nullptr; }
+        }
         return &s;
       };
       struct Pin {
@@ -442,7 +546,8 @@ class NativeCatalogVisibilityStreamReader {
         const auto at = creator(r.local_transaction_id, r.transaction_uuid.value);
         if (at == absent) return false;
         NativeCatalogVisibleRow value{m.metadata, r.version_uuid, r.previous_version_uuid, {},
-                                      !mga::HasCommittedInventoryOutcome(inventory_entries[at]), m.metadata.lifecycle, m.metadata.status};
+                                      !mga::HasCommittedInventoryOutcome(inventory_entries[at]), m.metadata.lifecycle, m.metadata.status,
+                                      r.row_uuid.value};
         if (m.metadata.record.header.kind == catalog::CatalogRecordKind::localized_name) {
           const auto decoded = NativeCatalogVisibilityLeaseReader::NameOf(s.page, r, m.metadata);
           if (!decoded.ok()) { out.error = E::name_payload_invalid; return false; }
@@ -455,8 +560,12 @@ class NativeCatalogVisibilityStreamReader {
                                                                            : catalog::CatalogObjectLifecycle::altering;
         }
         ++out.rows_visited;
-        if (!visitor(static_cast<const NativeCatalogVisibleRow&>(value))) { out.stopped = true; return false; }
-        return true;
+        if constexpr (kCellVisitor) {
+          return false;  // (a cell visitor never reaches emit: tree-only passes read no base leaf)
+        } else {
+          if (!visitor(static_cast<const NativeCatalogVisibleRow&>(value))) { out.stopped = true; return false; }
+          return true;
+        }
       };
       // A version that is the only one of its row: judged and handed over at once.
       const auto handle_single = [&](Slot& s, const NativeCatalogLeafRecordView& m) -> bool {
@@ -505,8 +614,10 @@ class NativeCatalogVisibilityStreamReader {
           const auto bootstrap = disk::DecodeFilespaceBootstrap(prefix.data(), prefix.size(), &expected);
           if (!bootstrap.ok()) { out.tree_error = TE::invalid_filespace; return fail(E::tree_failure); }
           files[i].size = bootstrap.preamble->page_size_bytes;
-          if (!read(i, 0, w.zero_.data(), files[i].size)) { out.tree_error = TE::io_failure; return fail(E::io_failure); }
-          const std::span<const byte> image{w.zero_.data(), files[i].size};
+          if (i >= w.zero_.size() / w.largest_) { out.tree_error = TE::resource_exhausted; return fail(E::tree_failure); }
+          byte* zero_image = w.zero_.data() + i * w.largest_;
+          if (!read(i, 0, zero_image, files[i].size)) { out.tree_error = TE::io_failure; return fail(E::io_failure); }
+          const std::span<const byte> image{zero_image, files[i].size};
           if (!std::equal(prefix.begin(), prefix.end(), image.begin())) { out.tree_error = TE::invalid_filespace; return fail(E::tree_failure); }
           const auto zero = disk::DecodeFilespacePageZeroInto(image, w.root_refs_, &expected);
           if (!zero.ok()) { out.tree_error = TE::invalid_filespace; return fail(E::tree_failure); }
@@ -520,6 +631,7 @@ class NativeCatalogVisibilityStreamReader {
             out.tree_error = TE::invalid_filespace; return fail(E::tree_failure);
           }
         }
+        anchored = true;
         const auto filespace = [&](const disk::NativePageReference& ref) {
           const auto f = std::lower_bound(files.begin(), files.end(), ref.filespace_uuid, [](const auto& a, const Uuid& id) { return a.source.filespace_uuid < id; });
           return f == files.end() || f->source.filespace_uuid != ref.filespace_uuid || f->source.page_size_profile_uuid != ref.page_size_profile_uuid ||
@@ -532,9 +644,8 @@ class NativeCatalogVisibilityStreamReader {
         auto pending = w.pending_;
         usize pending_count = 1;
         pending[0] = {};
-        pending[0].ref = head->page;
+        pending[0].ref = head_page;
         pending[0].root = true;
-        Uuid selected_index = head->object_uuid;
         page::NativeBtreeDependencies dependencies;
         while (pending_count) {
           const auto next = pending[--pending_count];
@@ -579,7 +690,7 @@ class NativeCatalogVisibilityStreamReader {
           const auto level = p.tree_level;
           if (!next.root && level != next.level) { out.tree_error = TE::tree_level_mismatch; return fail(E::tree_failure); }
           // Navigation pages must have a committed creator (structure, not data), judged as the collect-everything reader does.
-          if (!(p.creator_transaction_uuid.is_nil() && !p.creator_local_transaction_id)) {
+          if (!tree_only && !(p.creator_transaction_uuid.is_nil() && !p.creator_local_transaction_id)) {
             const auto at = creator(p.creator_local_transaction_id, p.creator_transaction_uuid);
             if (at == absent) return out;
             if (!mga::HasCommittedInventoryOutcome(inventory_entries[at])) return fail(E::navigation_not_committed);
@@ -594,6 +705,9 @@ class NativeCatalogVisibilityStreamReader {
           if (topology != TE::none) { out.tree_error = next.unlisted ? TE::tree_fence_mismatch : topology; return fail(E::tree_failure); }
           for (const auto& cell : p.cells)
             if (cell.base_page && filespace(*cell.base_page) == files.size()) { out.tree_error = TE::invalid_filespace; return fail(E::tree_failure); }
+          if constexpr (Hooks::kActive) {
+            if (!hooks.on_tree_page(next.ref, p, next.root)) { out.error = E::hook_refused; return out; }
+          }
           current[level] = slot;
           unlisted_at[level] = next.unlisted;
           if (lags) {
@@ -604,6 +718,14 @@ class NativeCatalogVisibilityStreamReader {
           }
           if (!level) {
             // A leaf: its cells, each bound to a row version on a base leaf.
+            if constexpr (kCellVisitor) {
+              for (const auto& cell : p.cells) {
+                ++out.cells;
+                if (!visitor(cell)) { out.stopped = true; go = false; break; }
+              }
+              if (!go) break;
+              continue;
+            }
             for (const auto& cell : p.cells) {
               ++out.cells;
               if (!cell.base_page) return fail(E::invalid_locator);
@@ -639,14 +761,18 @@ class NativeCatalogVisibilityStreamReader {
         }
       } else {
         // An unindexed relation is one leaf; every row on it is a candidate.
-        Slot* s = window_acquire(head->page);
+        Slot* s = window_acquire(head_page);
         if (!s) return out;
         Pin pin(s);
         if (!scan(*s)) return out;
         for (const auto& m : s->page.metadata)
           if (!handle_version(*s, m, nullptr)) { go = false; break; }
       }
-      if (!go) { if (out.stopped) out.error = E::none; return out; }
+      if (!go) {
+        if (out.stopped) { out.error = E::none; if (!verify_zero()) return out; }
+        return out;
+      }
+      if (tree_only) { out.error = E::none; if (!verify_zero()) return out; return out; }
 
       // ---- rows with history: judged now that every page has passed ----
       auto history = w.history_.first(history_count);
@@ -659,8 +785,8 @@ class NativeCatalogVisibilityStreamReader {
         while (end < history.size() && history[end].row_uuid == history[begin].row_uuid) candidate |= history[end++].candidate;
         const auto group_begin = begin;
         begin = end;
-        if (!candidate) continue;
-        ++out.history_rows;
+        if (!candidate && !Hooks::kAllHistoryGroups) continue;
+        if (candidate) ++out.history_rows;
         // The chain among a group's versions: each version's previous (when it names one) is in the group and agrees.
         for (usize n = group_begin; n < end; ++n) {
           Slot* s = window_acquire(history[n].page);
@@ -694,6 +820,7 @@ class NativeCatalogVisibilityStreamReader {
               after.invalidation_generation < before.invalidation_generation)
             return fail(E::invalid_chain);
         }
+        if (!candidate) continue;  // (kAllHistoryGroups: the chain above is checked for every group; visibility only for reached ones)
         // Newest first: the first version the snapshot sees is the row's.
         for (usize n = group_begin; n < end; ++n) {
           Slot* s = window_acquire(history[n].page);
@@ -712,11 +839,12 @@ class NativeCatalogVisibilityStreamReader {
             }
             continue;
           }
-          if (!emit(*s, *m)) { if (out.stopped) out.error = E::none; return out; }
+          if (!emit(*s, *m)) { if (out.stopped) { out.error = E::none; verify_zero(); } return out; }
           break;
         }
       }
       out.error = E::none;
+      verify_zero();
       return out;
     } catch (const std::bad_alloc&) { out.error = E::resource_exhausted; }
       catch (const std::length_error&) { out.error = E::resource_exhausted; }

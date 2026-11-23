@@ -517,8 +517,14 @@ class NativeHostedDatabaseRuntime final {
   // built-in one, so a normal file is unchanged. Call after OpenAdmission and before the first credential read. A refusal
   // for size is memory_failure (the governed budget would not admit the larger workspace) or resource_exhausted (the
   // history registry of the pass filled); nothing is half-grown.
+  static NativeHostedRuntimeError SizeCredentialTierLocked(
+      NativeHostedDatabaseRuntime& self, storage::database::NativeFixedRootMemoryLimits limits) noexcept;
   static NativeHostedRuntimeError SizeCredentialTierFromFile(std::shared_ptr<NativeHostedDatabaseRuntime>,
       storage::database::NativeFixedRootMemoryLimits) noexcept;
+  // SB_CREDENTIAL_TIER_GROWTH TEST SEAM: set the credential tier's row bound to `rows` (as if the file had grown past the tier
+  // after the open), changing nothing else; the next credential read that runs out grows it from the file. Null owner or a
+  // busy runtime: no effect. Production code never calls it.
+  static void ShrinkCredentialTierForTest(const std::shared_ptr<NativeHostedDatabaseRuntime>& owner, std::size_t rows) noexcept;
   // The credential tier as it stands (after SizeCredentialTierFromFile): rows, leaf pages and workspace bytes.
   const storage::database::NativeCatalogRelationMemoryLimits& credential_catalog_limits() const noexcept { return limits_.catalog; }
   std::size_t credential_workspace_bytes() const noexcept;

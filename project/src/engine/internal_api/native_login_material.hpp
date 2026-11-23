@@ -60,7 +60,9 @@ enum class NativeLoginMaterialError : std::uint8_t {
   credential_unsupported,     // a scheme or parameters this build does not verify
   password_mismatch,
   principal_generation_invalid,
-  external_binding_refused    // an agent / service principal: refused on every external path (Q274)
+  external_binding_refused,   // an agent / service principal: refused on every external path (Q274)
+  // SB_CREDENTIAL_TIER_GROWTH: the credential read ran out of tier, and the governed budget will not admit the grown one.
+  credential_budget_exceeded
 };
 // The stable refusal code (SECURITY.AUTHENTICATION.NATIVE_LOGIN_*; the external-binding refusal carries Q274's own
 // SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED, the code CheckExternalAuthenticationBinding returns).
@@ -159,6 +161,7 @@ inline const char* NativeLoginMaterialErrorName(NativeLoginMaterialError e) noex
     case E::password_mismatch: return "password_mismatch";
     case E::principal_generation_invalid: return "principal_generation_invalid";
     case E::external_binding_refused: return "external_binding_refused";
+    case E::credential_budget_exceeded: return "credential_budget_exceeded";
   }
   return "unknown";
 }
@@ -191,6 +194,7 @@ inline const char* NativeLoginMaterialErrorCode(NativeLoginMaterialError e) noex
     case E::principal_generation_invalid: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_GENERATION_INVALID";
     // Q274: the SAME code CheckExternalAuthenticationBinding returns for a service principal.
     case E::external_binding_refused: return "SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED";
+    case E::credential_budget_exceeded: return "DATABASE.OPEN_NATIVE_CREDENTIAL_BUDGET_EXCEEDED";
   }
   return "";
 }

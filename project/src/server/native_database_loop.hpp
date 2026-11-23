@@ -186,7 +186,7 @@ struct NativeLoopServingFacts {
   // scan and capture bounds ran at (1 = the first sizing); catalog_workspace_bytes: the governed bytes the cohort scan,
   // the capture and the source backing asked for at that scale; credential_rows / credential_base_pages /
   // credential_workspace_bytes: the hosted credential tier after the probe (the built-in tier or the file's).
-  std::uint64_t open_catalog_scale = 1, open_catalog_workspace_bytes = 0, open_credential_rows = 0, open_credential_base_pages = 0,
+  std::uint64_t open_catalog_scale = 1, open_catalog_workspace_bytes = 0, open_catalog_scan_bytes = 0, open_capture_bytes = 0, open_credential_rows = 0, open_credential_base_pages = 0,
                 open_credential_workspace_bytes = 0;
   // True until Restart has completed: false for serving; true for restricted (not run) and failed
   // (did not complete). (Was, S3b/S3c: always true, Restart did not exist.)
@@ -453,6 +453,9 @@ class NativeDatabaseLoop final {
   // between a scope's capture and its read. False (body not run) off the loop thread, when not serving, or when failed.
   // Compiled only when a test target defines SB_NATIVE_LOOP_TEST_SEAMS; sb_server_core has no such symbol.
   bool RunWithTransactionSinkOnLoopThreadForTest(const std::function<void(storage::disk::CarefulWriteSink&)>& body);
+  // SB_CREDENTIAL_TIER_GROWTH: from the loop thread only, shrink the credential tier's row bound to `rows` (standing in for
+  // principals added after the open), so the next login's credential read must grow the tier from the file.
+  bool ShrinkCredentialTierOnLoopThreadForTest(std::size_t rows);
 #endif
 
   // SEARCH_KEY: SB_NATIVE_LOOP_TRANSACTIONS (S4d). The direct in-loop login read: the S4a credential read (the same

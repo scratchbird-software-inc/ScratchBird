@@ -41,7 +41,7 @@ struct NativeCatalogMetadataVerification {
 inline NativeCatalogMetadataVerification VerifyNativeCatalogMetadata(
     const storage::database::NativeCatalogCapture& capture,NativeCatalogNamespaceWorkspace workspace) noexcept {
   NativeCatalogMetadataVerification out;
-  out.names=VerifyNativeCatalogNameBindings(capture,workspace.order);
+  out.names=VerifyNativeCatalogNameBindings(capture,workspace.order,workspace.extra);
   if(!out.names.ok())return out;
   out.comments=VerifyNativeCatalogComments(capture,workspace.order);
   if(!out.comments.ok())return out;

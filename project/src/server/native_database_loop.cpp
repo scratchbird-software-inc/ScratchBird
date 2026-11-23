@@ -845,6 +845,14 @@ engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotN
 }
 
 
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+bool NativeDatabaseLoop::ShrinkCredentialTierOnLoopThreadForTest(std::size_t rows) {
+  if (!on_loop_thread() || !serving_ || !serving_->runtime) return false;
+  Host::ShrinkCredentialTierForTest(serving_->runtime, rows);
+  return true;
+}
+#endif
+
 bool NativeDatabaseLoop::RunOnLoopThreadForTest(std::function<void()> work) {
   if (on_loop_thread() || !work) return false;
   TestWork item{std::move(work), {}};
@@ -2354,12 +2362,28 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
              ((c.error == CE::name_tree_failure || c.error == CE::comment_tree_failure) &&
               c.name_tree_error == storage::database::NativeBtreeTreeMemoryError::resource_exhausted);
     };
+    // SB_OPEN_CAPTURE_EXACT: the capture's row, text, name-tree-cell and physical-page bounds come from what the scan step counted
+    // for this very file (read.catalogs().needed_*), not from the doubled first guess (which reserved up to twice the need, and
+    // 8 MiB of text per scale step); the first attempt with those bounds is the only one, and a bound that still fills (it cannot
+    // for an unchanged file) falls back to the doubling below.
+    bool exact_failed = false;
+    std::uint64_t captured_bytes = 0;  // the capture workspace the open actually reserved
     const auto sized_catalog_step = [&](const char* name, bool with_capture) -> bool {
-      for (;; scale *= 2) {
+      for (bool grow = false;;) {
+        if (grow) scale *= 2;
+        grow = true;
         OpenLimits sized;
         if (!BuildLimits(request.page_size_bytes, request.total_pages, sized, scale)) {
           fail(Refusal(StepCode(name), name, {{"error", "limits_overflow"}, {"scale", Num(scale)}}));
           return false;
+        }
+        const bool use_exact = with_capture && !exact_failed && read.catalogs().ok();
+        if (use_exact) {
+          const auto& m = read.catalogs();
+          sized.capture.maximum_rows = static_cast<std::size_t>(m.needed_rows) + 16;
+          sized.capture.maximum_text_bytes = static_cast<std::size_t>(m.needed_text_bytes) + 4096;
+          sized.capture.maximum_name_tree_cells = static_cast<std::size_t>(m.needed_name_tree_cells) + 16;
+          sized.capture.maximum_physical_pages = static_cast<std::size_t>(m.needed_physical_pages) + 16;
         }
         const auto bytes = db::NativeCatalogCohortWorkspaceBytes(sized.scan) +
                            (with_capture ? db::NativeCatalogCaptureWorkspaceBytes(sized.capture) : 0) + sized.catalog.maximum_backing_bytes;
@@ -2375,12 +2399,18 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
                                         : Host::ReadStartupCatalogs(read, limits.catalog, sized.scan);
         if (error == NativeHostedRuntimeError::none) {
           serving.name_scan_limits = sized.scan;
+          if (with_capture) captured_bytes = db::NativeCatalogCaptureWorkspaceBytes(sized.capture);
           return true;
         }
-        if (error == NativeHostedRuntimeError::memory_failure && scale > 1) {
+        if (error == NativeHostedRuntimeError::memory_failure && (scale > 1 || use_exact)) {
           fail(Refusal("DATABASE.OPEN_NATIVE_CATALOG_BUDGET_EXCEEDED", name,
                        {{"scale", Num(scale)}, {"bytes_required", Num(bytes)}, {"budget", "governed_memory"}}));
           return false;
+        }
+        if (use_exact && error == NativeHostedRuntimeError::catalog_failure && cohort_filled()) {
+          exact_failed = true;
+          grow = false;  // the same scale, now with the doubled first-guess bounds
+          continue;
         }
         const bool covers_file = static_cast<std::uint64_t>(sized.scan.maximum_base_pages) >= 2 * request.total_pages;
         if (error != NativeHostedRuntimeError::catalog_failure || !cohort_filled() || covers_file || scale >= (1u << 20)) {
@@ -2395,8 +2425,11 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
       OpenLimits final_limits;
       if (BuildLimits(request.page_size_bytes, request.total_pages, final_limits, scale)) {
         serving.facts.open_catalog_scale = scale;
+        // SB_OPEN_COHORT_STREAM: the scan's own workspace (the stream's window and the verifier keys) and the capture's, apart.
+        serving.facts.open_catalog_scan_bytes = db::NativeCatalogCohortWorkspaceBytes(final_limits.scan);
+        serving.facts.open_capture_bytes = captured_bytes;
         serving.facts.open_catalog_workspace_bytes = db::NativeCatalogCohortWorkspaceBytes(final_limits.scan) +
-                                                     db::NativeCatalogCaptureWorkspaceBytes(final_limits.capture) +
+                                                     captured_bytes +
                                                      final_limits.catalog.maximum_backing_bytes;
       }
     }

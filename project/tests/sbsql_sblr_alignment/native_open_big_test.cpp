@@ -19,6 +19,8 @@
 
 #define SB_OPEN_BIG_TEST 1
 #include "native_name_stream_test.cpp"
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "engine/internal_api/catalog/name_list_api.hpp"
 
@@ -148,12 +150,34 @@ int OpenBigServeImpl(const std::string& state, const Offline& offline, srv::Nati
     Check(material.ok() && material.material->principal_uuid == FromHex(last), "the login-material read of the LAST principal works");
     std::printf("LASTLOGIN ok principals_in_file=%zu security_definitions=%zu\n", offline.principals.size(), offline.security.size());
   }
+  // 6. SB_CREDENTIAL_TIER_GROWTH: the credential tier shrunk to 600 rows (the security relation holds more) after the open (standing in for principals added past
+  //    its headroom); the next login's credential read runs out, grows the tier from the file and reads once more.
+  if (std::getenv("SB_OPEN_BIG_SHRINK")) {
+    bool shrunk = false;
+    Check(loop.RunOnLoopThreadForTest([&] { shrunk = loop.ShrinkCredentialTierOnLoopThreadForTest(600); }) && shrunk, "the credential tier shrunk on the loop thread");
+    PasswordFactory passwords(database);
+    srv::NativeLoopLoginRequest login;
+    login.principal_uuid = bootstrap;
+    login.password = passwords.Make(kBootstrapPassword);
+    login.password_length = kBootstrapPassword.size();
+    const auto material = loop.SubmitReadLoginMaterial(std::move(login)).get();
+    std::printf("GROWTH login_error=%s\n", eng::NativeLoginMaterialErrorName(material.error));
+    Check(material.ok() && material.material->principal_uuid == bootstrap, "after the tier ran out, the login grew it from the file and succeeded");
+    PasswordFactory again(database);
+    srv::NativeLoopLoginRequest second;
+    second.principal_uuid = bootstrap;
+    second.password = again.Make(kBootstrapPassword);
+    second.password_length = kBootstrapPassword.size();
+    const auto next = loop.SubmitReadLoginMaterial(std::move(second)).get();
+    Check(next.ok(), "the grown tier serves the next login without growing again");
+    std::printf("GROWTH ok\n");
+  }
   std::optional<srv::NativeLoopServingFacts> facts;
   Check(loop.RunOnLoopThreadForTest([&] { facts = loop.FactsOnLoopThread(); }) && facts.has_value(), "the loop's open facts");
   std::printf("OPENBIG state=%s rows=%zu bulk=%zu open_ms=%.1f snapshot_ms=%.1f list_ms=%.1f hwm_after_open_kb=%llu hwm_end_kb=%llu scale=%llu "
-              "catalog_ws=%llu cred_rows=%llu cred_pages=%llu cred_ws=%llu\n",
+              "catalog_ws=%llu scan_ws=%llu capture_ws=%llu cred_rows=%llu cred_pages=%llu cred_ws=%llu\n",
               state.c_str(), snapshot.rows.size(), bulk.size(), start_ms, read_ms, list_ms, (unsigned long long)hwm_after_open,
-              (unsigned long long)HighWaterKbNow(), (unsigned long long)facts->open_catalog_scale, (unsigned long long)facts->open_catalog_workspace_bytes,
+              (unsigned long long)HighWaterKbNow(), (unsigned long long)facts->open_catalog_scale, (unsigned long long)facts->open_catalog_workspace_bytes, (unsigned long long)facts->open_catalog_scan_bytes, (unsigned long long)facts->open_capture_bytes,
               (unsigned long long)facts->open_credential_rows, (unsigned long long)facts->open_credential_base_pages,
               (unsigned long long)facts->open_credential_workspace_bytes);
   return 0;
@@ -233,8 +257,8 @@ void OpenBigOneSize(const std::string& self, const fs::path& root, std::uint32_t
       const auto seconds = Seconds(t0);
       std::printf("%s%s: forged %d name rows in %.1f s (%.1f rows/s)\n", tag.c_str(), state.c_str(), rows, seconds, rows / seconds);
     };
-    if (state == "names" || state == "names10k") {
-      forge_names(state == "names" ? 3200 : 9000, 0);
+    if (state == "names" || state == "names10k" || state == "names20k") {
+      forge_names(state == "names" ? 3200 : state == "names10k" ? 9000 : 19000, 0);
       const auto old_read = Capture("'" + self + "' oldread '" + path.string() + "'", &status);
       Check(status == 0 && old_read.find("OLDREAD ok=0") != std::string::npos, tag + state + ": the old collect-everything reader refuses the relation (past the old tier): " + old_read.substr(0, 300));
       const auto out = serve("");
@@ -252,13 +276,20 @@ void OpenBigOneSize(const std::string& self, const fs::path& root, std::uint32_t
     } else if (state == "curve") {
       // The same file opened at growing name counts: governed arena and process high water at each.
       int forged = 0;
+      std::uint64_t first_scan = 0;
       for (const int target : {0, 1500, 4900}) {  // + the created ~1100 names: ~1.1k, ~2.6k, ~6k rows
         if (target > forged) { forge_names(target - forged, forged); forged = target; }
         const auto out = serve("");
-        std::printf("%scurve: %llu name rows: open %.0f ms, governed catalog workspace %llu bytes at scale %llu, credential workspace %llu, "
+        std::printf("%scurve: %llu name rows: open %.0f ms, governed catalog workspace %llu bytes (scan %llu, capture %llu) at scale %llu, credential workspace %llu, "
                     "process high water after open %llu KB\n",
                     tag.c_str(), (unsigned long long)Num(out, "rows"), std::stod(Field2(out, "open_ms")), (unsigned long long)Num(out, "catalog_ws"),
+                    (unsigned long long)Num(out, "scan_ws"), (unsigned long long)Num(out, "capture_ws"),
                     (unsigned long long)Num(out, "scale"), (unsigned long long)Num(out, "cred_ws"), (unsigned long long)Num(out, "hwm_after_open_kb"));
+        if (!first_scan) first_scan = Num(out, "scan_ws");
+        // SB_OPEN_COHORT_STREAM: the scan's workspace is a window of leaves (a fixed size) plus per-version keys: it does NOT grow
+        // with the base pages (the old collect-everything scan held one decoded leaf workspace per page: 3x at scale 4).
+        Check(Num(out, "scan_ws") <= first_scan + first_scan * 6 / 10,
+              tag + "curve: the scan workspace stays flat as the file grows (" + std::to_string(Num(out, "scan_ws")) + " against " + std::to_string(first_scan) + " at the first size)");
       }
     } else if (state == "budget") {
       // The governed budget genuinely exceeded: the file needs the workspace the roomy open reported (catalog_ws); half of it is
@@ -271,6 +302,18 @@ void OpenBigOneSize(const std::string& self, const fs::path& root, std::uint32_t
       const auto out = Capture("SB_OPEN_BIG_BUDGET=" + std::to_string(needed / 2) + " '" + self + "' serve '" + path.string() + "' serving " + database + " " + boot + " " + service, &st);
       Check(st != 0 && out.find("DATABASE.OPEN_NATIVE_CATALOG_BUDGET_EXCEEDED") != std::string::npos, tag + state + ": a budget the file exceeds refuses with the specific code: " + out.substr(0, 600));
       std::printf("%sbudget: refused with DATABASE.OPEN_NATIVE_CATALOG_BUDGET_EXCEEDED\n", tag.c_str());
+    } else if (state == "growth") {
+      // The credential tier ran out after the open: the login grows it and reads again (see OpenBigServeImpl step 6).
+      const auto out = serve("SB_OPEN_BIG_SHRINK=1 ");
+      Check(out.find("GROWTH ok") != std::string::npos, tag + state + ": the login after the tier ran out: " + out.substr(0, 800));
+      std::printf("%sgrowth: %s\n", tag.c_str(), out.substr(out.find("GROWTH"), 120).c_str());
+    } else if (state == "pagezero") {
+      // SB_STREAM_PASS_ANCHOR: page zero verified once per pass; a page zero changed under the pass is refused at its end.
+      const auto out = Capture("'" + self + "' pagezero '" + path.string() + "'", &status);
+      Check(status == 0 && out.find("PAGEZERO unchanged ok=1") != std::string::npos && out.find("PAGEZERO changed_under_pass ok=0") != std::string::npos &&
+                out.find("PAGEZERO restored ok=1") != std::string::npos,
+            tag + state + ": the page-zero-under-pass checks: " + out.substr(0, 1500));
+      std::printf("%spagezero: %s\n", tag.c_str(), out.substr(0, 700).c_str());
     } else if (state == "small") {
       // The normal small file: the open's time (the suite has many opens).
       double best = 1e18;
@@ -286,7 +329,73 @@ void OpenBigOneSize(const std::string& self, const fs::path& root, std::uint32_t
   }
 }
 
+// SB_STREAM_PASS_ANCHOR: page zero is verified once at the start of a stream pass and compared again after the last leaf. Kept per
+// leaf: the file's size unchanged, the page's own header (database, filespace, profile, number, generation, type, flags), the page
+// inside the anchored extent. Moved to once per pass: the bootstrap-prefix read, the page-zero read and decode, the first size query.
+// This mode reads the names relation (indexed, many leaves) through the stream: once unchanged (must succeed, with fewer preads than
+// the three-per-leaf of the old rule), once with a byte of page zero flipped by the test seam after the 3rd leaf read (the pass must
+// refuse with page_zero_failure at its end), once more unchanged after the byte is restored.
+int PageZeroUnderPassMode(const fs::path& path) {
+  d::FileDevice device;
+  Check(device.Open(path.string(), d::FileOpenMode::open_existing_read_only, d::DatabaseFileOwnership::native_data_file).ok(), "open read-only");
+  const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
+  Check(zero.ok(), "page zero reads");
+  const auto size = zero.record->bootstrap.page_size_bytes;
+  const auto database = zero.record->bootstrap.database_uuid;
+  const auto filespace = zero.record->bootstrap.filespace_uuid;
+  const auto profile = zero.record->bootstrap.page_size_profile_uuid;
+  const auto budget = 8ull * zero.record->total_pages * size;
+  db::NativeCatalogStreamLimits limits;
+  limits.maximum_profile = profile;
+  limits.window_pages = 3;
+  limits.history_versions = 4096;
+  BoundMemory workspace_memory(database, db::NativeCatalogStreamWorkspaceBytes(limits)), source_memory(database, 32ull * 1024 * 1024);
+  auto prepared = db::PrepareNativeCatalogStreamRead(limits, workspace_memory.memory, workspace_memory.binding);
+  Check(prepared.ok(), "the stream workspace prepares");
+  const std::array<d::NativeFilespaceDevice, 1> devices{{{filespace, profile, &device}}};
+  auto source = db::AcquireNativeFixedRootMemoryLease(database, devices, filespace, {budget, 32ull * 1024 * 1024}, source_memory.memory, source_memory.binding);
+  Check(source.ok(), "a fixed-root lease over the file");
+  const auto run = [&](const char* label) {
+    std::uint64_t rows = 0;
+    const auto result = db::NativeCatalogVisibilityStreamReader::StreamCommittedSelected(
+        *source.lease, 2, 2, budget, prepared.workspace, [&](const db::NativeCatalogVisibleRow&) { ++rows; return true; });
+    std::printf("PAGEZERO %s ok=%d error=%s leaf_error=%d leaf_reads=%llu rows=%llu bytes=%llu\n", label, result.ok() ? 1 : 0,
+                db::NativeCatalogStreamErrorName(result.error), static_cast<int>(result.leaf_error), (unsigned long long)result.leaf_reads,
+                (unsigned long long)rows, (unsigned long long)result.physical_bytes_read);
+    return result;
+  };
+  const auto clean = run("unchanged");
+  Check(clean.ok() && clean.leaf_reads > 6, "an unchanged pass succeeds over many leaves (" + std::to_string(clean.leaf_reads) + " leaf reads)");
+  // One byte of page zero's unused tail, changed between two leaf reads through a second descriptor.
+  const int fd = ::open(path.c_str(), O_RDWR);
+  Check(fd >= 0, "a writable descriptor for the test seam");
+  unsigned char original = 0;
+  const off_t where = static_cast<off_t>(size) - 17;
+  Check(::pread(fd, &original, 1, where) == 1, "read the byte the seam will change");
+  static int seam_fd = -1;
+  static off_t seam_where = 0;
+  static unsigned char seam_value = 0;
+  seam_fd = fd; seam_where = where; seam_value = static_cast<unsigned char>(original ^ 0x5a);
+  db::g_native_stream_leaf_read_test_seam = [](std::uint64_t reads) noexcept {
+    if (reads == 3) { (void)::pwrite(seam_fd, &seam_value, 1, seam_where); }
+  };
+  const auto changed = run("changed_under_pass");
+  db::g_native_stream_leaf_read_test_seam = nullptr;
+  Check(!changed.ok() && changed.error == db::NativeCatalogStreamError::leaf_failure &&
+            changed.leaf_error == db::NativeCatalogLeafMemoryError::page_zero_failure,
+        "a page zero changed under the pass is refused with page_zero_failure at its end");
+  Check(changed.leaf_reads > 3, "the pass went on past the change (the change is caught at the end, not per leaf): " + std::to_string(changed.leaf_reads));
+  (void)::pwrite(fd, &original, 1, where);
+  ::close(fd);
+  const auto restored = run("restored");
+  Check(restored.ok(), "after the byte is restored the pass succeeds again");
+  source.lease.Reset();
+  Check(device.Close().ok(), "close");
+  return 0;
+}
+
 bool OpenBigDriver(int argc, char** argv, int* rc) {
+  if (argc == 3 && std::string(argv[1]) == "pagezero") { *rc = PageZeroUnderPassMode(argv[2]); return true; }
   if (argc >= 3 && std::string(argv[1]) == "size") {
     const std::string self = fs::read_symlink("/proc/self/exe").string();
     scratchbird::tests::OwnedTempDirectory artifacts;

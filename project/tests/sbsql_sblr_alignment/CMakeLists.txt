@@ -12562,7 +12562,7 @@ foreach(sb_open_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
   string(REPLACE ":" ";" sb_open_parts "${sb_open_size}")
   list(GET sb_open_parts 0 sb_open_bytes)
   list(GET sb_open_parts 1 sb_open_label)
-  foreach(sb_open_state IN ITEMS names principals budget)
+  foreach(sb_open_state IN ITEMS names principals budget pagezero growth)
     add_test(NAME sbsql_sblr_alignment_native_open_big_${sb_open_state}_${sb_open_label}
       COMMAND sbsql_sblr_alignment_native_open_big size ${sb_open_bytes} ${sb_open_state})
     set_tests_properties(sbsql_sblr_alignment_native_open_big_${sb_open_state}_${sb_open_label} PROPERTIES
@@ -12586,6 +12586,13 @@ foreach(sb_open_long IN ITEMS names10k curve)
     LABELS "sbsql_sblr_alignment;native_storage;native_open_big;database_ownership;binary_uuid"
     TIMEOUT 900)
 endforeach()
+# SB_OPEN_COHORT_STREAM: a SEPARATE long target (the forge of 19,000 names is the cost: about 60-190 rows/s, O(scope) per inserted name): one
+# file past 20,000 name rows at 8 KiB opened and served. Timeout 1800 s (measured forge plus open and the served checks; see the commit).
+add_test(NAME sbsql_sblr_alignment_native_open_big_names20k_8k_long
+  COMMAND sbsql_sblr_alignment_native_open_big size 8192 names20k)
+set_tests_properties(sbsql_sblr_alignment_native_open_big_names20k_8k_long PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_open_big;database_ownership;binary_uuid;long"
+  TIMEOUT 1800)
 # SB_NATIVE_NAME_LIST_TEST (Part B S4): ListNames / UuidToName on production-created native databases. The file
 # native_name_list_test.cpp includes native_name_resolve_test.cpp as its harness; the strace driver is the resolve one,
 # pointed at this binary (it runs create / forge / serve children, and the serve child is this test's checks).

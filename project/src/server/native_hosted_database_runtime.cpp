@@ -545,8 +545,8 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupCatalogMetada
   if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,config.memory,config.memory_version_uuid))return E::memory_failure;
   const auto count=read.catalog_capture_.rows().size();
   const auto capacity=std::max<std::size_t>(count,1);
-  constexpr std::size_t per_row=2*sizeof(std::size_t)+sizeof(core::platform::byte);
-  constexpr std::size_t padding=3*(alignof(std::max_align_t)-1);
+  constexpr std::size_t per_row=3*sizeof(std::size_t)+sizeof(core::platform::byte);  // order, parents, extra (SB_OPEN_VERIFY_SORTED), colors
+  constexpr std::size_t padding=4*(alignof(std::max_align_t)-1);
   if(capacity>(SIZE_MAX-padding)/per_row)return E::invalid_request;
   const auto bytes=capacity*per_row+padding;
   auto allocation=self.Acquire(bytes,NativeBootstrapMemoryKind::storage);
@@ -557,13 +557,14 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupCatalogMetada
   if(!workspace.ok())return E::memory_failure;
   const auto order=workspace.arena.Allocate(capacity*sizeof(std::size_t),alignof(std::size_t));
   const auto parents=workspace.arena.Allocate(capacity*sizeof(std::size_t),alignof(std::size_t));
+  const auto extra=workspace.arena.Allocate(capacity*sizeof(std::size_t),alignof(std::size_t));
   const auto colors=workspace.arena.Allocate(capacity,alignof(core::platform::byte));
-  if(!order.ok()||!parents.ok()||!colors.ok())return E::memory_failure;
+  if(!order.ok()||!parents.ok()||!extra.ok()||!colors.ok())return E::memory_failure;
   engine::internal_api::NativeCatalogMetadataVerification result;
   const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
     result=engine::internal_api::VerifyNativeCatalogMetadata(read.catalog_capture_,
         {{static_cast<std::size_t*>(order.pointer),count},{static_cast<std::size_t*>(parents.pointer),count},
-         {static_cast<core::platform::byte*>(colors.pointer),count}});
+         {static_cast<core::platform::byte*>(colors.pointer),count},{static_cast<std::size_t*>(extra.pointer),count}});
   });
   if(!crypto.ok())return E::crypto_failure;
   if(cancelled())return E::cancelled;
@@ -930,6 +931,11 @@ NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
     //      lease and the custody operation end BEFORE the (long) PBKDF2 below. ----
     NativeLoginSnapshot snapshot;
     E phase_a=E::none;
+    // SB_CREDENTIAL_TIER_GROWTH: a security read that runs out of the credential tier (principals added after the open) grows the
+    // tier from the file (the open's own sizing, bounded by the governed budget) and reads once more; the password is
+    // consumed only on exit, so the second attempt still has it. Still in this one entering_ scope, on the caller's thread.
+    for(int attempt=0;;++attempt) {
+    bool grow_and_retry=false,tier_exhausted=false;
     {
       if(!self.reading_.Matches(self.reading_.binding())) {
         auto allocation=self.Acquire(self.limits_.writer.source.maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
@@ -958,6 +964,10 @@ NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
         using R=api::NativeRuntimeSecurityReadError;
         if(!observed.ok()) {
           out.security_error=observed.error;out.source_error=observed.source_error;
+          // Out of tier: the row, page or index bound of the credential workspace filled (whichever layer says so).
+          tier_exhausted=observed.error==R::resource_exhausted||
+              observed.source_error==storage::database::NativePinnedCatalogReadError::resource_exhausted||
+              observed.relation_error==storage::database::NativeCatalogRelationLeaseError::resource_exhausted;
           // The reader judges the BINDING's principal (L5) as well; those verdicts are about L5, never about the
           // principal being logged in, so they are reported as a binding failure, not as principal_absent etc.
           switch(observed.error) {
@@ -1088,7 +1098,21 @@ NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
         source.lease.Reset();
       });
       if(!crypto.ok()) {out.error=E::crypto_failure;return out;}
-      if(phase_a!=E::none) {out.error=phase_a;return out;}
+      if(phase_a!=E::none&&tier_exhausted&&attempt==0)
+        grow_and_retry=true;
+      else if(phase_a!=E::none) {out.error=phase_a;return out;}
+    }
+    if(!grow_and_retry) break;
+    {
+      // (The attempt's workspaces ended with its block, so the tier's governed memory can be released and asked for anew.)
+      const auto grown=SizeCredentialTierLocked(self,request.limits);
+      if(grown!=NativeHostedRuntimeError::none) {
+        out.error=(grown==NativeHostedRuntimeError::memory_failure||grown==NativeHostedRuntimeError::resource_exhausted)?
+            E::credential_budget_exceeded:E::security_source_failure;
+        return out;
+      }
+      snapshot=NativeLoginSnapshot{};phase_a=E::none;out.security_error=api::NativeRuntimeSecurityReadError::none;out.source_error=storage::database::NativePinnedCatalogReadError::none;
+    }
     }
 
     // ---- phase B: exactly ONE PBKDF2 on every path from here. The real verifier when the principal has a
@@ -1323,6 +1347,25 @@ std::size_t NativeHostedDatabaseRuntime::credential_workspace_bytes() const noex
   return NativeRuntimePrincipalCredentialWorkspaceBytes(limits_.catalog);
 }
 
+void NativeHostedDatabaseRuntime::ShrinkCredentialTierForTest(const std::shared_ptr<NativeHostedDatabaseRuntime>& owner, std::size_t rows) noexcept {
+  namespace db=storage::database;
+  try {
+    if(!owner||owner->entering_||owner->read_active_||!rows) return;
+    auto& self=*owner;
+    auto shrunk=self.limits_.catalog;
+    shrunk.maximum_rows=shrunk.maximum_bindings=rows;
+    const auto bytes=NativeRuntimePrincipalCredentialWorkspaceBytes(shrunk);
+    if(!bytes) return;
+    self.catalog_={};
+    auto got=self.Acquire(bytes,NativeBootstrapMemoryKind::storage);
+    if(!got.ok()) return;
+    auto adopted=db::AdoptNativeStorageMemory(StorageBinding(*got.admission.resource),got.admission.resource);
+    if(!adopted.ok()) return;
+    self.catalog_=std::move(adopted.memory);
+    self.limits_.catalog=shrunk;
+  } catch(...) {}
+}
+
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::SizeCredentialTierFromFile(
     std::shared_ptr<NativeHostedDatabaseRuntime> owner, storage::database::NativeFixedRootMemoryLimits limits) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
@@ -1339,7 +1382,19 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::SizeCredentialTierFromFile
     if(!profile) return E::invalid_request;
     self.entering_=true;
     struct Leave {bool& flag;~Leave(){flag=false;}} leave{self.entering_};
+    return SizeCredentialTierLocked(self,limits);
+  } catch(const std::bad_alloc&) {return E::resource_exhausted;}
+    catch(...) {return E::catalog_failure;}
+}
 
+// SB_CREDENTIAL_TIER_GROWTH (2026-11-27): the sizing body, for a caller that already holds `entering_` (the open, through the
+// wrapper above, and a login whose credential read ran out of tier: see ReadNativeLoginMaterial).
+NativeHostedRuntimeError NativeHostedDatabaseRuntime::SizeCredentialTierLocked(
+    NativeHostedDatabaseRuntime& self, storage::database::NativeFixedRootMemoryLimits limits) noexcept {
+  namespace db=storage::database;using E=NativeHostedRuntimeError;
+  try {
+    const auto* profile=storage::disk::FindCanonicalFilespacePageProfile(self.limits_.catalog.maximum_profile);
+    if(!profile) return E::invalid_request;
     // The measuring pass: the stream's fixed workspace, no row retained.
     db::NativeCatalogStreamLimits stream_limits;
     stream_limits.maximum_profile=self.limits_.catalog.maximum_profile;stream_limits.maximum_devices=self.limits_.catalog.maximum_devices;
@@ -1390,7 +1445,10 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::SizeCredentialTierFromFile
     // The measure plus a quarter of headroom (writes after the open add rows), never below the built-in tier.
     const auto with_headroom=[](std::uint64_t n,std::uint64_t floor) {return std::max<std::uint64_t>(floor,n+n/4+8);};
     auto grown=self.limits_.catalog;
-    const std::size_t rows=static_cast<std::size_t>(with_headroom(versions,grown.maximum_rows));
+    // The row count is rounded up to a multiple of 16: the governed arenas round every array up to the maximum alignment (16
+    // bytes) while the workspace byte estimates add only the element alignment, so a row count that is not a multiple of 16 can
+    // leave the prepared memory a few bytes short (found 2026-11-27 at 915 rows: the security read's workspace did not prepare).
+    const std::size_t rows=(static_cast<std::size_t>(with_headroom(versions,grown.maximum_rows))+15)/16*16;
     const std::size_t base_pages=static_cast<std::size_t>(with_headroom(leaves,grown.maximum_base_pages));
     const auto shape=db::NativeCatalogNavigationLimitsFor(profile->page_size_bytes,rows);
     if(!shape.maximum_pages) return E::invalid_request;
