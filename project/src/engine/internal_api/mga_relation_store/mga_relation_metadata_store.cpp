@@ -14,6 +14,7 @@
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
 #include "mga_relation_store/mga_descriptor_record_codec.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/catalog_read_admission.hpp"
@@ -447,6 +448,7 @@ std::shared_ptr<const DescriptorFieldsByRelation>
 LoadDescriptorFieldsSnapshot(
     const EngineRequestContext& context,
     const EngineUuid& required_relation_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::shared_ptr<const DescriptorFieldsByRelation>>("mga_relation_descriptors", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   if (ValidateCatalogReadCommitExclusion(context, context.local_transaction_id,
           "mga.relation_descriptor").error) return nullptr;
@@ -457,6 +459,7 @@ LoadDescriptorFieldsSnapshot(
 DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
     const EngineRequestContext& context,
     const EngineUuid& required_relation_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<DescriptorFieldsByRelation>("mga_relation_descriptors", context);
   const auto snapshot =
       LoadDescriptorFieldsSnapshot(context, required_relation_uuid);
   return snapshot == nullptr ? DescriptorFieldsByRelation{} : *snapshot;
@@ -465,6 +468,7 @@ DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
 EngineApiDiagnostic PersistDescriptorFields(const EngineRequestContext& context,
                                             const EngineUuid& relation_uuid,
                                             const std::vector<std::pair<std::string, std::string>>& fields) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_relation_metadata", context);
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "database_path_required");
   }
@@ -491,6 +495,7 @@ EngineApiDiagnostic PersistDescriptorFields(const EngineRequestContext& context,
 
 EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
                                     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_relation_metadata", context);
   if (state == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "state_required");
   }
@@ -1767,6 +1772,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
 
 MgaMetadataSnapshotLoadResult LoadMgaMetadataSnapshot(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaMetadataSnapshotLoadResult>("mga_relation_metadata", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   MgaMetadataSnapshotLoadResult result;
   result.diagnostic = ValidateCatalogReadCommitExclusion(context, context.local_transaction_id,

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "nosql/document_path_physical_provider.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "crud_support/crud_store.hpp"
 #include "uuid.hpp"
@@ -970,13 +971,16 @@ void AddSuccessEvidence(DocumentPathProviderResult* result) {
 
 std::string DocumentPathPhysicalProviderPath(
     const EngineRequestContext& context) {
-  if (context.database_path.empty()) { return {}; }
+  // SB_NATIVE_FAMILY_GUARD (2026-12-04): a path BUILDER used across files (document_api.cpp). A native context has no side file:
+  // the empty path is the existing "no database path" answer every caller already handles.
+  if (context.database_path.empty() || NativeServedContext(context)) { return {}; }
   return context.database_path + ".sb.document_path_provider";
 }
 
 DocumentPathProviderIdentity DocumentPathProviderIdentityForContext(
     const EngineRequestContext& context, std::uint64_t provider_generation,
     const EngineUuid& index_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<DocumentPathProviderIdentity>("document_path_provider", context);
   if (!IsValidUuid(context.database_uuid) || provider_generation == 0 ||
       (!context.current_schema_uuid.is_nil() && !IsValidUuid(context.current_schema_uuid)) ||
       (!index_uuid.is_nil() && !IsValidUuid(index_uuid))) return {};

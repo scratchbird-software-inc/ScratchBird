@@ -11,6 +11,7 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include "native_legacy_registry_refusal.hpp"
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -259,6 +260,7 @@ class Journal {
 Result IssueSblrErrorVectorDescriptorV1(const EngineRequestContext& c,const Uuid& receipt,
     const Uuid& registry,std::uint64_t generation,const Uuid& diagnostics,std::uint64_t diagnostic_generation,
     std::vector<engine::sblr::SblrErrorVectorEntryV1> entries) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<Result>("sblr_error_vector_registry", c);
   return Run([&] {
     Receipt(c,receipt);
     if(!Valid(registry) || !Valid(diagnostics) || !generation || !diagnostic_generation || entries.empty())Invalid();
@@ -282,6 +284,7 @@ Result IssueSblrErrorVectorDescriptorV1(const EngineRequestContext& c,const Uuid
 }
 Result LookupSblrErrorVectorDescriptorV1(const EngineRequestContext& c,const Uuid& receipt,
     const Uuid& id,std::uint64_t generation) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<Result>("sblr_error_vector_registry", c);
   return Run([&] {
     Receipt(c,receipt);if(!Valid(id) || !generation)Invalid();
     Journal journal(c);const auto found=journal.states.find(id);
@@ -293,6 +296,7 @@ Result LookupSblrErrorVectorDescriptorV1(const EngineRequestContext& c,const Uui
   });
 }
 EngineApiDiagnostic RevokeSblrErrorVectorDescriptorsV1(const EngineRequestContext& c,const Uuid& receipt) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_error_vector_registry", c);
   return Run([&] {
     Receipt(c,receipt);Journal journal(c);
     // Verify every matching owner before the first durable mutation.
@@ -308,6 +312,7 @@ EngineApiDiagnostic RevokeSblrErrorVectorDescriptorsV1(const EngineRequestContex
   }).diagnostic;
 }
 EngineApiDiagnostic RecoverSblrErrorVectorDescriptorRegistryV1(const EngineRequestContext& c) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_error_vector_registry", c);
   return Run([&] {
     Journal journal(c);
     for(auto& [id,s]:journal.states) {

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <limits>
 #include <utility>
+#include "native_legacy_registry_refusal.hpp"
 namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: SB_ENGINE_MGA_SAVEPOINT_BOUNDED_READ_IMPLEMENTATION_AUTHORITY
 // Owns resource-accounted marker reads. Replay and transaction finality remain
@@ -20,6 +21,7 @@ bool ParseSavepointsBounded(const EngineRequestContext& context,
                             BoundedScopedRowReadControl* control,
                             const std::uint64_t retained_memory_bytes,
                             SavepointParsedState* output) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_savepoints", context);
   if (output == nullptr) return false;
   *output = {};
   output->diagnostic = MakeInvalidRequestDiagnostic("mga.savepoints", "savepoint_read_incomplete");

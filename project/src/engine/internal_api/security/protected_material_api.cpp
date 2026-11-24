@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "security/protected_material_api.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
@@ -1929,6 +1930,7 @@ EngineRequestProtectedMaterialResult EngineRequestProtectedMaterial(
 
 EngineCreateProtectedMaterialResult EngineCreateProtectedMaterial(
     const EngineCreateProtectedMaterialRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCreateProtectedMaterialResult>("protected_material_catalog", request.context);
   const std::string operation_id = "security.protected_material.create";
   auto status = RequireSpecificRight(request, operation_id, "KEY_RELEASE_APPROVE");
   if (status.error) {
@@ -2075,6 +2077,7 @@ EngineCreateProtectedMaterialResult EngineCreateProtectedMaterial(
 
 EngineAddProtectedMaterialVersionResult EngineAddProtectedMaterialVersion(
     const EngineAddProtectedMaterialVersionRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineAddProtectedMaterialVersionResult>("protected_material_catalog", request.context);
   const std::string operation_id = "security.protected_material.version.add";
   auto status = RequireSpecificRight(request, operation_id, "KEY_RELEASE_APPROVE");
   if (status.error) {
@@ -2221,6 +2224,7 @@ EngineAddProtectedMaterialVersionResult EngineAddProtectedMaterialVersion(
 
 EngineResolveProtectedMaterialResult EngineResolveProtectedMaterial(
     const EngineResolveProtectedMaterialRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineResolveProtectedMaterialResult>("protected_material_catalog", request.context);
   const std::string operation_id = "security.protected_material.resolve";
   auto status = RequireSpecificRight(request, operation_id, "PROTECTED_MATERIAL_RELEASE");
   if (status.error) {
@@ -2318,6 +2322,7 @@ EngineResolveProtectedMaterialResult EngineResolveProtectedMaterial(
 
 EngineReleaseProtectedMaterialResult EngineReleaseProtectedMaterial(
     const EngineReleaseProtectedMaterialRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineReleaseProtectedMaterialResult>("protected_material_catalog", request.context);
   const std::string operation_id = "security.protected_material.release";
   auto status = RequireSpecificRight(request, operation_id, "PROTECTED_MATERIAL_RELEASE");
   if (status.error) {
@@ -2442,6 +2447,7 @@ EngineReleaseProtectedMaterialResult EngineReleaseProtectedMaterial(
 
 EnginePurgeProtectedMaterialVersionResult EnginePurgeProtectedMaterialVersion(
     const EnginePurgeProtectedMaterialVersionRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EnginePurgeProtectedMaterialVersionResult>("protected_material_catalog", request.context);
   const std::string operation_id = "security.protected_material.version.purge";
   auto status = RequireSpecificRight(request, operation_id, "KEY_RELEASE_APPROVE");
   if (status.error) {
@@ -2666,6 +2672,7 @@ EnginePurgeProtectedMaterialVersionResult EnginePurgeProtectedMaterialVersion(
 
 EngineInspectProtectedMaterialCatalogResult EngineInspectProtectedMaterialCatalog(
     const EngineInspectProtectedMaterialCatalogRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineInspectProtectedMaterialCatalogResult>("protected_material_catalog", request.context);
   const std::string operation_id = "security.protected_material.catalog.inspect";
   auto status = RequireSpecificRight(request, operation_id, "PROTECTED_MATERIAL_RELEASE");
   if (status.error) {
@@ -2726,6 +2733,7 @@ EngineInspectProtectedMaterialCatalogResult EngineInspectProtectedMaterialCatalo
 
 EngineExportProtectedMaterialPackageResult EngineExportProtectedMaterialPackage(
     const EngineExportProtectedMaterialPackageRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineExportProtectedMaterialPackageResult>("protected_material_catalog", request.context);
   const std::string operation_id = "security.protected_material.package.export";
   auto status = RequireSpecificRight(request, operation_id, "PROTECTED_MATERIAL_RELEASE");
   if (status.error) {
@@ -2812,6 +2820,7 @@ EngineExportProtectedMaterialPackageResult EngineExportProtectedMaterialPackage(
 
 EngineImportProtectedMaterialPackageResult EngineImportProtectedMaterialPackage(
     const EngineImportProtectedMaterialPackageRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineImportProtectedMaterialPackageResult>("protected_material_catalog", request.context);
   const std::string operation_id = "security.protected_material.package.import";
   auto status = RequireSpecificRight(request, operation_id, "KEY_RELEASE_APPROVE");
   if (status.error) {

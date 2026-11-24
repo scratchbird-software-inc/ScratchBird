@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_catalog_epoch_check_journal.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
@@ -428,6 +429,7 @@ bool InputsValid(const EngineRequestContext& context,
 SblrCatalogEpochCheckJournalResultV1 LookupSblrCatalogEpochCheckJournalV1(
     const EngineRequestContext& context,
     const SblrCatalogEpochCheckJournalKeyV1& key) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrCatalogEpochCheckJournalResultV1>("sblr_catalog_epoch_check_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -439,6 +441,7 @@ SblrCatalogEpochCheckJournalResultV1 LookupSblrCatalogEpochCheckJournalV1(
 SblrCatalogEpochCheckJournalResultV1 EnsureSblrCatalogEpochCheckJournalV1(
     const EngineRequestContext& context,
     const SblrCatalogEpochCheckJournalKeyV1& key) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrCatalogEpochCheckJournalResultV1>("sblr_catalog_epoch_check_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -471,6 +474,7 @@ PublishSblrCatalogEpochCheckJournalResultV1(
     const EngineRequestContext& context,
     const SblrCatalogEpochCheckJournalKeyV1& key,
     const std::vector<std::uint8_t>& canonical_result_bytes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrCatalogEpochCheckJournalResultV1>("sblr_catalog_epoch_check_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",

@@ -8,6 +8,7 @@
 
 #include "backup_archive/backup_archive_api.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -1138,6 +1139,7 @@ const char* BackupArchiveLifecycleOperationName(BackupArchiveLifecycleOperation 
 BackupArchiveLifecycleAdmission EvaluateBackupArchiveLifecycleAdmission(
     const EngineApiRequest& request,
     BackupArchiveLifecycleOperation operation) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<BackupArchiveLifecycleAdmission>("backup_archive_lifecycle", request.context);
   if (!request.context.security_context_present) {
     return LifecycleRefusal(request, operation, "BACKUP_SECURITY_CONTEXT_REQUIRED");
   }
@@ -1442,6 +1444,7 @@ EngineArchiveRetainedHistoryBeforeReclaim(
 
 EngineStartBackupForwardSessionResult EngineStartBackupForwardSession(
     const EngineStartBackupForwardSessionRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineStartBackupForwardSessionResult>("backup_archive_lifecycle", request.context);
   constexpr const char* kOperation =
       "backup_archive.start_backup_forward_session";
   auto fail = [&](EngineApiDiagnostic diagnostic) {
@@ -1559,6 +1562,7 @@ EngineStartBackupForwardSessionResult EngineStartBackupForwardSession(
 
 EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
     const EngineFinishBackupForwardSessionRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineFinishBackupForwardSessionResult>("backup_archive_lifecycle", request.context);
   constexpr const char* kOperation =
       "backup_archive.finish_backup_forward_session";
   auto fail = [&](EngineApiDiagnostic diagnostic) {
@@ -2547,6 +2551,7 @@ EngineEvaluateClusterCatalogBackupRestoreIdentityPolicy(
 }
 
 EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogicalBackupRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineStartLogicalBackupResult>("backup_archive_lifecycle", request.context);
   constexpr const char* kOperation = "backup_archive.start_logical_backup";
   if (!HasBackupCreateRight(request.context)) {
     return MakeApiBehaviorDiagnostic<EngineStartLogicalBackupResult>(request.context,
@@ -2665,6 +2670,7 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
 }
 
 EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreLogicalBackupRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineRestoreLogicalBackupResult>("backup_archive_lifecycle", request.context);
   const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
   if (savepoint.error) return MakeApiBehaviorDiagnostic<EngineRestoreLogicalBackupResult>(
       request.context, "backup_archive.restore_logical_backup", savepoint);
@@ -2973,6 +2979,7 @@ struct VerifiedCoverageSegment {
 EngineUpdateBackupFromVerifiedCoverageResult
 EngineUpdateBackupFromVerifiedCoverage(
     const EngineUpdateBackupFromVerifiedCoverageRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineUpdateBackupFromVerifiedCoverageResult>("backup_archive_lifecycle", request.context);
   constexpr const char* kOperation =
       "backup_archive.update_backup_from_verified_coverage";
 
@@ -3209,6 +3216,7 @@ EngineUpdateBackupFromVerifiedCoverage(
 }
 
 EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDeltaStreamRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EnginePackageDeltaStreamResult>("backup_archive_lifecycle", request.context);
   constexpr const char* kOperation = "backup_archive.package_delta_stream";
   if (!HasBackupCreateRight(request.context)) {
     return MakeApiBehaviorDiagnostic<EnginePackageDeltaStreamResult>(request.context,
@@ -3353,6 +3361,7 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
 }
 
 EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStreamRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineApplyDeltaStreamResult>("backup_archive_lifecycle", request.context);
   const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
   if (savepoint.error) return MakeApiBehaviorDiagnostic<EngineApplyDeltaStreamResult>(
       request.context, "backup_archive.apply_delta_stream", savepoint);
@@ -3594,6 +3603,7 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
 
 
 EngineStartPhysicalBackupResult EngineStartPhysicalBackup(const EngineStartPhysicalBackupRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineStartPhysicalBackupResult>("backup_archive_lifecycle", request.context);
   constexpr const char* kOperation = "backup_archive.start_physical_backup";
   if (!HasBackupCreateRight(request.context)) {
     return MakeApiBehaviorDiagnostic<EngineStartPhysicalBackupResult>(request.context,
@@ -3677,6 +3687,7 @@ EngineStartPhysicalBackupResult EngineStartPhysicalBackup(const EngineStartPhysi
 }
 
 EngineRestorePhysicalBackupResult EngineRestorePhysicalBackup(const EngineRestorePhysicalBackupRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineRestorePhysicalBackupResult>("backup_archive_lifecycle", request.context);
   constexpr const char* kOperation = "backup_archive.restore_physical_backup";
   if (!HasBackupRestoreRight(request.context)) {
     return MakeApiBehaviorDiagnostic<EngineRestorePhysicalBackupResult>(request.context,

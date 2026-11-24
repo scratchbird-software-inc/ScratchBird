@@ -2038,6 +2038,7 @@ static EngineCatalogCreateObjectResult PrepareCatalogObjectCreateData(
 
 EngineApiDiagnostic CaptureCatalogTableCreationSources(
     const EngineRequestContext& context, CatalogTableCreationSources* output) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("catalog_object_events", context);
   const auto refused = [](std::string detail) {
     return MakeInvalidRequestDiagnostic("ddl.create_table", std::move(detail));
   };
@@ -2110,6 +2111,7 @@ EngineApiDiagnostic CaptureCatalogTableCreationSources(
 }
 
 EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCreateObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogCreateObjectResult>("catalog_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.create";
   std::vector<PreparedCatalogJournalRecord> prepared;
@@ -2195,6 +2197,7 @@ EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
     const CatalogViewSourceBinding& definition,
     std::optional<std::uint64_t>* expected_catalog_epoch,
     std::optional<std::vector<std::string>>* expected_schema_frames) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("catalog_object_events", request.context);
   constexpr const char* operation = "ddl.create_view";
   const bool inventory = definition.kind == CatalogViewSourceBinding::Kind::deferred_inventory;
   if (!definition.view_generation || !core::uuid::IsEngineIdentityUuid(definition.view_uuid) ||
@@ -2335,6 +2338,7 @@ EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
 
 EngineCatalogCreateObjectResult EngineCatalogCreateViewWithDefinition(
     const CatalogViewCreationCustody& custody, const EngineCatalogCreateObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogCreateObjectResult>("catalog_object_events", request.context);
   constexpr const char* operation = "ddl.create_view";
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const auto readmit = custody.Readmit();
@@ -2444,6 +2448,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateViewWithDefinition(
 }
 
 EngineCommentOnObjectResult EngineCatalogPublishComment(const EngineCommentOnObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCommentOnObjectResult>("catalog_object_events", request.context);
   constexpr const char* operation = "ddl.comment_on_object";
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const auto refuse = [&](EngineApiDiagnostic diagnostic) {
@@ -2631,6 +2636,7 @@ EngineCommentOnObjectResult EngineCatalogPublishComment(const EngineCommentOnObj
 EngineCatalogCreateObjectResult EngineCatalogCreateObjectWithTableStorage(
     const CatalogTableCreationCustody& custody,
     const EngineCatalogCreateObjectRequest& request, PreparedCatalogTableStorage* storage) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogCreateObjectResult>("catalog_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* operation = "ddl.create_table";
   const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::plain_table_creation);
@@ -2702,6 +2708,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObjectWithTableStorage(
 
 EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
     const EngineCatalogApplyConstraintsRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogApplyConstraintsResult>("catalog_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const std::string operation_id =
       request.operation_id.empty() ? "catalog.constraint.apply" : request.operation_id;
@@ -2777,6 +2784,7 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
 }
 
 EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlterObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogAlterObjectResult>("catalog_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.alter";
   const auto valid = ValidateMutatingContext(request.context);
@@ -2887,6 +2895,7 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
 }
 
 EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRenameObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogRenameObjectResult>("catalog_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.rename";
   const auto valid = ValidateMutatingContext(request.context);
@@ -2957,6 +2966,7 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
 }
 
 EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogDropObjectResult>("catalog_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "catalog.object.drop";
   const auto valid = ValidateMutatingContext(request.context);
@@ -3043,6 +3053,7 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
 }
 
 EngineCatalogLookupObjectResult EngineCatalogLookupObjectByUuid(const EngineCatalogLookupObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogLookupObjectResult>("catalog_object_events", request.context);
   constexpr const char* kOperation = "catalog.object.lookup_uuid";
   const EngineUuid object_uuid = ObjectUuid(request);
   if (object_uuid.is_nil()) {
@@ -3068,6 +3079,7 @@ EngineCatalogLookupObjectResult EngineCatalogLookupObjectByUuid(const EngineCata
 }
 
 EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const EngineCatalogResolveObjectNameRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogResolveObjectNameResult>("catalog_object_events", request.context);
   constexpr const char* kOperation = "catalog.object.resolve_name";
   const std::string object_kind = ObjectKind(request);
   const auto names = EffectiveNames(request);
@@ -3157,6 +3169,7 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
 
 EngineCatalogValidateMetadataCacheResult EngineCatalogValidateMetadataCache(
     const EngineCatalogValidateMetadataCacheRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCatalogValidateMetadataCacheResult>("catalog_object_events", request.context);
   constexpr const char* kOperation = "catalog.object.validate_metadata_cache";
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {

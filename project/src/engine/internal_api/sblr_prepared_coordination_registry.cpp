@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "sblr_prepared_coordination_registry.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "sblr_prepared_statement_registry.hpp"
 
@@ -358,6 +359,7 @@ SblrPreparedCoordinationResult Mutate(
 
 SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
     const EngineRequestContext& c,const EngineUuid& operation) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<SblrPreparedCoordinationResult>("sblr_prepared_coordination", c);
   std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
   if(!HasAuthority(c)) return Denied();
   if(c.database_path.empty() || !ValidUuid(c.database_uuid,scratchbird::core::platform::UuidKind::database) ||
@@ -388,6 +390,7 @@ SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
 SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
     const EngineRequestContext& c, const EngineUuid& operation,
     const EngineUuid& prepared) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<SblrPreparedCoordinationResult>("sblr_prepared_coordination", c);
   std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
   if(!HasAuthority(c)) return Denied();
   if(c.database_path.empty() ||
@@ -447,11 +450,13 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
 
 SblrPreparedCoordinationResult AcquireSblrPreparedCoordination(
     const EngineRequestContext& c,const EngineUuid& coordination,const EngineUuid& operation,std::uint64_t expected) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<SblrPreparedCoordinationResult>("sblr_prepared_coordination", c);
   std::lock_guard lock(g_mutex); return Mutate(c,coordination,operation,expected,SblrPreparedCoordinationState::begun,SblrPreparedCoordinationState::acquired,{},"prepared.acquire");
 }
 SblrPreparedCoordinationResult SealSblrPreparedCoordination(
     const EngineRequestContext& c,const EngineUuid& coordination,const EngineUuid& operation,std::uint64_t expected,
     const EngineUuid& prepared,std::uint64_t prepared_generation,const std::string& evidence) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<SblrPreparedCoordinationResult>("sblr_prepared_coordination", c);
   std::lock_guard lock(g_mutex); const auto it=g_live.find(coordination);
   if(!HasAuthority(c)||it==g_live.end()||it->second.database_uuid!=c.database_uuid||it->second.session_uuid!=c.session_uuid) return Denied();
   if(it->second.provisional_prepared_uuid!=prepared||it->second.provisional_prepared_generation!=prepared_generation||!HashValue(evidence)) {
@@ -460,6 +465,7 @@ SblrPreparedCoordinationResult SealSblrPreparedCoordination(
 }
 SblrPreparedCoordinationResult RevokeSblrPreparedCoordination(
     const EngineRequestContext& c,const EngineUuid& coordination,const EngineUuid& operation,std::uint64_t expected,const std::string& reason) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<SblrPreparedCoordinationResult>("sblr_prepared_coordination", c);
   std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
   if(!Reason(reason)||KindFromReason(reason)!=SblrPreparedCoordinationKind::unknown||reason=="prepared.acquire"||reason=="prepared.seal"){r.diagnostic=Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.reason_invalid","canonical reason required");return r;}
   const auto it=g_live.find(coordination); if(it==g_live.end()) return Denied();
@@ -467,6 +473,7 @@ SblrPreparedCoordinationResult RevokeSblrPreparedCoordination(
   return Mutate(c,coordination,operation,expected,from,SblrPreparedCoordinationState::revoked,{},reason);
 }
 EngineApiDiagnostic RecoverSblrPreparedCoordinationRegistry(const EngineRequestContext& c) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_prepared_coordination", c);
   std::lock_guard lock(g_mutex); if(!HasRecoveryAuthority(c)) return Diag("SECURITY.ACCESS_DENIED","sblr.prepared_coordination.recovery_denied","startup recovery authority required");
   if(c.database_path.empty()||!ValidUuid(c.database_uuid,scratchbird::core::platform::UuidKind::database)) return Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.recovery_invalid","database identity required");
   States states; std::uint64_t high=0;

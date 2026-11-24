@@ -1575,6 +1575,8 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
                            : engine_api::EngineTrustMode::server_isolated;
   context.request_id = IdentityBytes(request_uuid);
   context.database_path = session.database_path;
+  // SB_NATIVE_FAMILY_GUARD (2026-12-04): the session's native marker rides every engine context built from the session.
+  context.native_served_facts = session.native_served_facts;
   context.served_route_owner = session.served_route_owner;
   context.database_uuid = session.database_uuid;
   context.principal_uuid.bytes = session.effective_user_uuid;
@@ -4789,8 +4791,11 @@ engine_api::EngineRequestContext ReplacementTransactionContext(
   context.request_id = IdentityBytes(request_uuid);
   context.database_path = session.database_path.empty() ? database.database_path : session.database_path;
   // The session's owner holds only the session's own database path.
-  if (context.database_path == session.database_path)
+  if (context.database_path == session.database_path) {
     context.served_route_owner = session.served_route_owner;
+    // SB_NATIVE_FAMILY_GUARD (2026-12-04): the session's native marker belongs to the session's own database only.
+    context.native_served_facts = session.native_served_facts;
+  }
   context.database_uuid =
       session.database_uuid.is_nil() ? database.database_uuid : session.database_uuid;
   context.database_page_size_bytes = database.page_size_bytes;

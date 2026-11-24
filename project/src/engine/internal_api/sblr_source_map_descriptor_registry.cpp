@@ -5,6 +5,7 @@
 #include "hash_digest.hpp"
 #include "storage/disk/disk_device.hpp"
 #include "uuid.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -322,6 +323,7 @@ Result IssueSblrSourceMapDescriptorV1(
     const EngineRequestContext& c, const EngineUuid& receipt, const Sha& bound,
     const EngineUuid& registry, std::uint64_t generation,
     std::vector<engine::sblr::SblrSourceMapEntryV1> entries) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<Result>("sblr_source_map_registry", c);
   return Run([&] {
     Receipt(c, receipt);
     Registry store(c);
@@ -360,6 +362,7 @@ Result LookupSblrSourceMapDescriptorV1(
     const EngineRequestContext& c, const EngineUuid& receipt,
     const EngineUuid& descriptor, std::uint64_t descriptor_generation,
     const Sha& bound, const EngineUuid& registry, std::uint64_t generation) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<Result>("sblr_source_map_registry", c);
   return Run([&] {
     Receipt(c, receipt);
     if (!Valid(descriptor)) Invalid();
@@ -377,6 +380,7 @@ Result LookupSblrSourceMapDescriptorV1(
 }
 EngineApiDiagnostic RevokeSblrSourceMapDescriptorsV1(
     const EngineRequestContext& c, const EngineUuid& receipt) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_source_map_registry", c);
   return Run([&] {
     Receipt(c, receipt);
     Registry store(c);
@@ -403,6 +407,7 @@ EngineApiDiagnostic RevokeSblrSourceMapDescriptorsV1(
   }).diagnostic;
 }
 EngineApiDiagnostic RecoverSblrSourceMapDescriptorRegistryV1(const EngineRequestContext& c) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_source_map_registry", c);
   return Run([&] {
     Registry store(c);
     auto out = Success();

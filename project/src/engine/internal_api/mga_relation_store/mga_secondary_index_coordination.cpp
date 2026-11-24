@@ -13,6 +13,7 @@
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
 #include "mga_relation_store/mga_row_codec.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "transaction/transaction_api.hpp"
@@ -850,6 +851,7 @@ EngineApiDiagnostic WriteSecondaryIndexDeltaLedger(
 
 MgaSecondaryIndexDeltaLedgerResult LoadMgaSecondaryIndexDeltaLedger(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaSecondaryIndexDeltaLedgerResult>("mga_index_entries", context);
   return LoadSecondaryIndexDeltaLedgerFromPath(context);
 }
 
@@ -857,6 +859,7 @@ EngineApiDiagnostic AppendMgaSecondaryIndexDeltaLedgerEntries(
     const EngineRequestContext& context,
     const std::vector<MgaSecondaryIndexDeltaLedgerEntryInput>& entries,
     std::vector<EngineEvidenceReference>* evidence) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_index_entries", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   // DPC_DEFERRED_INDEX_WRITE_PATH
   if (entries.empty()) {
@@ -929,6 +932,7 @@ EngineApiDiagnostic AppendMgaSecondaryIndexDeltaLedgerEntries(
 EngineApiDiagnostic CommitMgaSecondaryIndexDeltaLedgerTransaction(
     const EngineRequestContext& context,
     std::uint64_t local_transaction_id) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_index_entries", context);
   if (local_transaction_id == 0) {
     return OkDiagnostic();
   }
@@ -973,6 +977,7 @@ EngineApiDiagnostic CommitMgaSecondaryIndexDeltaLedgerTransaction(
 EngineApiDiagnostic RollbackMgaSecondaryIndexDeltaLedgerTransaction(
     const EngineRequestContext& context,
     std::uint64_t local_transaction_id) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_index_entries", context);
   if (local_transaction_id == 0) {
     return OkDiagnostic();
   }
@@ -995,6 +1000,7 @@ EngineApiDiagnostic RollbackMgaSecondaryIndexDeltaLedgerTransaction(
 MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
     const EngineRequestContext& context,
     const MgaSecondaryIndexDeltaMergeAgentRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaSecondaryIndexDeltaMergeAgentResult>("mga_index_entries", context);
   // DPC_SECONDARY_INDEX_DELTA_MERGE_AGENT_GATE: supplied-horizon merge path.
   MgaSecondaryIndexDeltaMergeAgentResult result;
   result.index_uuid = request.index_uuid;
@@ -1327,6 +1333,7 @@ MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
 MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDeltaLedgerForIndex(
     const EngineRequestContext& context,
     const MgaSecondaryIndexDeltaRecoveryRepairRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaSecondaryIndexDeltaRecoveryRepairResult>("mga_index_entries", context);
   // DPC_SECONDARY_INDEX_DELTA_RECOVERY_REPAIR: engine-owned bounded recovery
   // validation. Transaction finality comes only from durable MGA inventory.
   MgaSecondaryIndexDeltaRecoveryRepairResult result;
@@ -1591,6 +1598,7 @@ MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDel
 MgaSecondaryIndexGarbageCleanupResult CleanupMgaSecondaryIndexGarbageForIndex(
     const EngineRequestContext& context,
     const MgaSecondaryIndexGarbageCleanupRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaSecondaryIndexGarbageCleanupResult>("mga_index_entries", context);
   // DPC_SECONDARY_INDEX_GARBAGE_CLEANUP_AGENT: engine-owned cleanup using
   // DPC-030 durable MGA cleanup horizon authority.
   MgaSecondaryIndexGarbageCleanupResult result;
@@ -1821,6 +1829,7 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,
     std::uint64_t limit) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaIndexedRowsLookupResult>("mga_index_entries", context);
   // DPC_SECONDARY_INDEX_DELTA_OVERLAY_LOOKUP: non-unique deferred secondary
   // index readers must combine persisted base entries with visible MGA deltas.
   MgaIndexedRowsLookupResult result;

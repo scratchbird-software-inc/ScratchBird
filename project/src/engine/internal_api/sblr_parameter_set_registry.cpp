@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "sblr_parameter_set_registry.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
@@ -786,6 +787,7 @@ SblrParameterBindPublicationResult LoadBindLocked(
 
 SblrParameterSetMutationResult IssueSblrParameterSet(
     const EngineRequestContext& context,const SblrParameterSetIssueRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrParameterSetMutationResult>("sblr_parameter_set", context);
   std::lock_guard lock(RegistryMutex()); SblrParameterSetMutationResult result;
   if (!HasPrivateReceiptAuthority(context)) { result.diagnostic=Diagnostic("SECURITY.ACCESS_DENIED","sblr.parameter_set.issue_denied","engine-owned private statement receipt required"); return result; }
   if (context.database_path.empty() ||
@@ -860,6 +862,7 @@ SblrParameterSetMutationResult IssueSblrParameterSet(
 
 SblrParameterSetLoadResult LoadSblrParameterSet(const EngineRequestContext& context,
                                                 const EngineUuid& uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrParameterSetLoadResult>("sblr_parameter_set", context);
   std::lock_guard lock(RegistryMutex()); return LoadLocked(context,uuid);
 }
 
@@ -867,6 +870,7 @@ SblrParameterBindPublicationResult PublishSblrParameterBinding(
     const EngineRequestContext& context,
     const SblrParameterSetSnapshot& admitted,
     const SblrParameterBindPublicationRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrParameterBindPublicationResult>("sblr_parameter_set", context);
   std::lock_guard lock(RegistryMutex());
   SblrParameterBindPublicationResult result;
   const auto refuse = [&](std::string code, std::string key,
@@ -1035,6 +1039,7 @@ SblrParameterBindPublicationResult PublishSblrParameterBinding(
 SblrParameterBindPublicationResult LoadSblrParameterBinding(
     const EngineRequestContext& context,
     const EngineUuid& parameter_set_descriptor_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrParameterBindPublicationResult>("sblr_parameter_set", context);
   std::lock_guard lock(RegistryMutex());
   if (!HasPrivateReceiptAuthority(context)) {
     SblrParameterBindPublicationResult result;
@@ -1068,6 +1073,7 @@ SblrParameterSetMutationResult InvalidateSblrParameterSet(
     const EngineRequestContext& context,const EngineUuid& uuid,
     const EngineUuid& expected_uuid,std::uint64_t expected_generation,
     const std::string& reason) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrParameterSetMutationResult>("sblr_parameter_set", context);
   std::lock_guard lock(RegistryMutex()); SblrParameterSetMutationResult result;
   if (!HasAdmin(context) && !HasPrivateReceiptAuthority(context)) { result.diagnostic=Diagnostic("SECURITY.ACCESS_DENIED","sblr.parameter_set.invalidate_denied","admin or engine-owned receipt authority required"); return result; }
   auto loaded=LoadLocked(context,uuid); if(!loaded.ok){result.diagnostic=loaded.diagnostic;return result;}
@@ -1115,6 +1121,7 @@ EngineApiDiagnostic RevalidateSblrParameterSet(
     const EngineUuid& batch,std::uint64_t batch_generation,
     const EngineUuid& dynamic,std::uint64_t dynamic_generation,
     SblrParameterSetSnapshot* current) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_parameter_set", context);
   std::lock_guard lock(RegistryMutex());
   const auto loaded = LoadLocked(context, admitted.parameter_set_descriptor_uuid);
   if (!loaded.ok) return loaded.diagnostic;

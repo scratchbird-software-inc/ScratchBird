@@ -13,6 +13,7 @@
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "mga_relation_store/mga_savepoint_marker_codec.hpp"
 #include "mga_relation_store/mga_savepoint_append_recovery.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "local_transaction_store.hpp"
@@ -231,12 +232,14 @@ SavepointParsedState ParseSavepointBytes(
 }
 
 SavepointParsedState ParseSavepoints(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SavepointParsedState>("mga_savepoints", context);
   return ParseSavepointsWithObservation(context, nullptr);
 }
 
 MgaSavepointMarkerObservation ObserveMgaSavepointMarker(
     const EngineRequestContext& context, const std::string& identity,
     std::uint64_t creation_ordinal) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaSavepointMarkerObservation>("mga_savepoints", context);
   MgaSavepointMarkerObservation result;
   result.transaction = context.local_transaction_id;
   result.identity = identity;
@@ -260,6 +263,7 @@ MgaSavepointMarkerObservation ObserveMgaSavepointMarker(
 
 MgaSavepointMarkerObservation ObserveUniqueMgaSavepointMarkerV1(
     const EngineRequestContext& context, const std::string& identity) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaSavepointMarkerObservation>("mga_savepoints", context);
   MgaSavepointMarkerObservation result;
   result.transaction = context.local_transaction_id; result.identity = identity;
   result.require_unique_identity = true;
@@ -282,6 +286,7 @@ MgaSavepointMarkerObservation ObserveUniqueMgaSavepointMarkerV1(
 
 EngineApiDiagnostic ValidateMgaSavepointMarkerAuthority(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_savepoints", context);
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.savepoint", "database_path_required");
   }
@@ -366,6 +371,7 @@ bool IndexEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
 
 std::uint64_t CurrentMgaSavepointAuthorityGeneration(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::uint64_t>("mga_savepoints", context);
   const auto pending = savepoint_append_recovery::Check(context);
   if (pending.error) return 0;
   if (context.database_path.empty()) {
@@ -419,14 +425,17 @@ static EngineApiDiagnostic CreateMgaSavepointMarkerImpl(const EngineRequestConte
 }
 
 EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context,const std::string& name) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_savepoints", context);
   return CreateMgaSavepointMarkerImpl(context,name,1);
 }
 EngineApiDiagnostic CreateMgaStatementSavepointMarker(const EngineRequestContext& context,const EngineUuid& identity) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_savepoints", context);
   if(!core::uuid::IsEngineIdentityUuid(identity))
     return MakeInvalidRequestDiagnostic("transaction.create_statement_savepoint","binary_statement_identity_required");
   return CreateMgaSavepointMarkerImpl(context,MgaSavepointUuidKey(identity),4);
 }
 EngineApiDiagnostic ValidateMgaStatementSavepointFinality(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_savepoints", context);
   const auto guard=AcquireTransactionInventoryGuard(context.database_path);
   const auto parsed=ParseSavepoints(context);
   if(parsed.diagnostic.error)return parsed.diagnostic;
@@ -449,6 +458,7 @@ EngineApiDiagnostic ValidateMgaStatementSavepointFinality(const EngineRequestCon
 }
 
 EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_savepoints", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   if (MgaPublicationCallbackScope::RefuseSavepointMutation(context))
     return MakeInvalidRequestDiagnostic("transaction.release_savepoint", "publication_callback_reentry");
@@ -505,6 +515,7 @@ EngineApiDiagnostic ReconcileMgaPendingSavepointAppendRecoveryV1(
 }
 
 EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_savepoints", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   if (MgaPublicationCallbackScope::RefuseSavepointMutation(context))
     return MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "publication_callback_reentry");
@@ -543,6 +554,7 @@ EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& con
 EngineApiDiagnostic ValidateMgaSavepointExists(const EngineRequestContext& context,
                                                const std::string& savepoint_name,
                                                const std::string& operation_id) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_savepoints", context);
   if (context.local_transaction_id == 0) {
     return MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required");
   }
@@ -560,6 +572,7 @@ EngineApiDiagnostic ValidateMgaSavepointExists(const EngineRequestContext& conte
 
 
 MgaSavepointNamesResult ActiveMgaSavepointNames(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaSavepointNamesResult>("mga_savepoints", context);
   MgaSavepointNamesResult result;
   result.diagnostic = OkDiagnostic();
   if (context.local_transaction_id == 0 || context.database_path.empty()) {

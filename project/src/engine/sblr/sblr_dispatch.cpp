@@ -7835,6 +7835,7 @@ SblrExecutionContext SblrExecutionContextFromEngineContext(
     const api::EngineRequestContext& context) {
   SblrExecutionContext out;
   out.database_path = context.database_path;
+  out.native_served_facts = context.native_served_facts;  // SB_NATIVE_FAMILY_GUARD: the marker survives the conversion
   out.database_uuid = context.database_uuid;
   out.cluster_uuid = context.cluster_uuid;
   out.node_uuid = context.node_uuid;
@@ -9172,6 +9173,7 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
   function_request.context.policy_allowed = request.context.security_context_present;
   function_request.context.dependency_available = true;
   function_request.context.sblr_context.database_path = request.context.database_path;
+  function_request.context.sblr_context.native_served_facts = request.context.native_served_facts;
   function_request.context.sblr_context.database_uuid = request.context.database_uuid;
   function_request.context.sblr_context.cluster_uuid = request.context.cluster_uuid;
   function_request.context.sblr_context.node_uuid = request.context.node_uuid;

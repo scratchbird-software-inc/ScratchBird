@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "native_legacy_registry_refusal.hpp"
 #include "mga_relation_store/mga_relation_locator.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "crud_support/bound_ordered_index_key.hpp"
@@ -566,6 +567,7 @@ PreparedIndexLineBufferJob BuildPreparedIndexLineBuffers(
 EngineApiDiagnostic AppendMgaRowVersion(const EngineRequestContext& context,
                                          const CrudRowVersionRecord& row,
                                          std::uint64_t* written_event_sequence) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", context);
   std::vector<CrudRowVersionRecord> rows{row};
   std::vector<std::uint64_t> sequences;
   const auto diagnostic = AppendMgaRowVersions(context, &rows, written_event_sequence == nullptr ? nullptr : &sequences);
@@ -633,6 +635,7 @@ void MgaRelationHotAppendContext::SetDecodedRowCacheAutoWarm(bool enabled) {
 
 EngineApiDiagnostic MgaRelationHotAppendContext::PrepareRowVersionSequences(
     std::span<CrudRowVersionRecord* const> rows) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (rows.empty() || !impl_->prepared_row_sequences.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "row_sequence_preparation_invalid");
   }
@@ -661,6 +664,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::PrepareRowVersionSequences(
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     std::vector<CrudRowVersionRecord>* rows,
     std::vector<std::uint64_t>* written_event_sequences) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
   }
@@ -820,6 +824,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     const std::vector<CrudValueFields>*
         value_batch,
     std::vector<std::uint64_t>* written_event_sequences) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (value_batch == nullptr) {
     return AppendRowVersions(rows, written_event_sequences);
   }
@@ -980,6 +985,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
 
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     const std::vector<CrudRowVersionRecord>& rows) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   return AppendRowVersionsReadOnly(
       rows,
       static_cast<const std::vector<CrudValueFields>*>(
@@ -990,6 +996,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersionsReadOnly(
     const std::vector<CrudRowVersionRecord>& rows,
     const std::vector<CrudValueFields>*
         value_batch) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (!impl_->prepared_row_sequences.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
   }
@@ -1145,6 +1152,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnly(
     const std::vector<CrudValueFields>*
         value_batch,
     bool shared_key_order_known) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (!impl_->prepared_row_sequences.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
   }
@@ -1321,6 +1329,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyTyped(
     const std::vector<CrudRowVersionRecord>& rows,
     std::span<const EngineRowValue> typed_rows,
     std::span<const std::string> shared_field_order) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   return AppendRowVersionsReadOnlyScopedOnlyBinary(rows, typed_rows, {}, shared_field_order, {});
 }
 
@@ -1330,6 +1339,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyCanonical(
     std::span<const CrudValueFields> values,
     std::span<const std::string> shared_field_order,
     std::span<const std::string> field_types) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (field_types.size() != shared_field_order.size() || field_types.empty())
     return MakeInvalidRequestDiagnostic("mga.row_store", "canonical_row_types_required");
   return AppendRowVersionsReadOnlyScopedOnlyBinary(rows, {}, values, shared_field_order, field_types);
@@ -1342,6 +1352,7 @@ MgaRelationHotAppendContext::AppendRowVersionsReadOnlyScopedOnlyBinary(
     std::span<const CrudValueFields> canonical_values,
     std::span<const std::string> shared_field_order,
     std::span<const std::string> field_types) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   const bool canonical = !field_types.empty();
   if (!impl_->prepared_row_sequences.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
@@ -1445,6 +1456,7 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyTyped(
     const EngineUuid& temporary_session_uuid,
     std::span<const EngineRowValue> typed_rows,
     std::span<const std::string> shared_field_order) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (!impl_->prepared_row_sequences.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
   }
@@ -1539,6 +1551,7 @@ MgaRelationHotAppendContext::AppendRowVersionIdentitiesReadOnlyScopedOnlyNativeP
     const EngineUuid& table_uuid,
     const EngineUuid& temporary_session_uuid,
     const EngineNativeRowPacketFrame& frame) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (!impl_->prepared_row_sequences.empty()) {
     return MakeInvalidRequestDiagnostic("mga.row_store", "prepared_rows_require_mutable_append");
   }
@@ -1712,6 +1725,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
 
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
     const std::vector<MgaIndexEntryAppendBatch>& batches) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
   }
@@ -1783,6 +1797,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
 
 EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
     const std::vector<MgaExactIndexEntryAppendBatch>& input_batches) {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(impl_->context.database_path);
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
@@ -1908,6 +1923,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(impl_->context.database_path);
   const auto domains = impl_->ValidateDomainDependencies();
   if (domains.error) return domains;
@@ -2101,6 +2117,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushIndexEntries() {
 }
 
 EngineApiDiagnostic MgaRelationHotAppendContext::Flush() {
+  if (NativeServedContext(impl_->context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", impl_->context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(impl_->context.database_path);
   const auto rows = FlushRowVersions();
   if (rows.error) { return rows; }
@@ -2110,6 +2127,7 @@ EngineApiDiagnostic MgaRelationHotAppendContext::Flush() {
 EngineApiDiagnostic AppendMgaRowVersions(const EngineRequestContext& context,
                                           std::vector<CrudRowVersionRecord>* rows,
                                           std::vector<std::uint64_t>* written_event_sequences) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", context);
   MgaRelationHotAppendContext append_context(context);
   const auto appended = append_context.AppendRowVersions(rows, written_event_sequences);
   if (appended.error) { return appended; }

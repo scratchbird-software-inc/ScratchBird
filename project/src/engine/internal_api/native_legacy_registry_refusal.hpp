@@ -18,6 +18,8 @@
 #include "api_diagnostics.hpp"
 #include "native_served_database_facts.hpp"
 
+#include <type_traits>
+
 namespace scratchbird::engine::internal_api {
 
 inline bool NativeServedContext(const EngineRequestContext& context) noexcept {
@@ -32,6 +34,46 @@ inline EngineApiDiagnostic NativeLegacyRegistryRefusal(const char* registry_fami
   diagnostic.fields.push_back({"registry_family", registry_family});
   diagnostic.identity_fields.push_back({"database_uuid", context.database_uuid});
   return diagnostic;
+}
+
+// SEARCH_KEY: SB_NATIVE_FAMILY_GUARD (2026-12-04, owner: guard each ".sb." family at its entry before S4g).
+// The entry-point form of the same refusal. A legacy side-file family guards its ENTRY (the load/open/append/publish function
+// every caller of that store calls) with
+//     if (NativeServedContext(ctx)) return NativeFamilyRefusalAs<ReturnType>("<side-file stem>", ctx);
+// as the FIRST statement, before any lock, validation, path or file touch. `family` is the side-file stem the family names
+// (e.g. "mga_row_versions"), a build-time token. The return type decides how the refusal is carried:
+//   * EngineApiDiagnostic                      -> the refusal itself;
+//   * a result type with a `.diagnostic` member -> a value-initialized result whose diagnostic is the refusal;
+//   * a result type with an `ok` flag and a `.diagnostics` list (EngineApiResult and its derived results) -> ok = false and the
+//     refusal as the one diagnostic;
+//   * void -> a plain return (nothing is read or written);
+//   * any other default-constructible type (bool, integers, optional, vector, plain records: an entry that cannot carry a
+//     diagnostic) -> the value-initialized EMPTY answer, which touches no file. Such entries are listed in the inventory so the
+//     owner can decide whether a caller outside the family needs a carrier.
+// A non-native context is never affected.
+template <class Result>
+Result NativeFamilyRefusalAs(const char* family, const EngineRequestContext& context) {
+  if constexpr (std::is_void_v<Result>) {
+    (void)family;
+    (void)context;
+    return;
+  } else if constexpr (std::is_same_v<Result, EngineApiDiagnostic>) {
+    return NativeLegacyRegistryRefusal(family, context);
+  } else if constexpr (requires(Result& r) { r.diagnostic = NativeLegacyRegistryRefusal(family, context); }) {
+    Result result{};
+    result.diagnostic = NativeLegacyRegistryRefusal(family, context);
+    return result;
+  } else if constexpr (requires(Result& r) {
+                         r.ok = false;
+                         r.diagnostics.push_back(NativeLegacyRegistryRefusal(family, context));
+                       }) {
+    Result result{};
+    result.ok = false;
+    result.diagnostics.push_back(NativeLegacyRegistryRefusal(family, context));
+    return result;
+  } else {
+    return Result{};
+  }
 }
 
 }  // namespace scratchbird::engine::internal_api

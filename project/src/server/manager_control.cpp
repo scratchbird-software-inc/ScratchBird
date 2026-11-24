@@ -283,6 +283,8 @@ engine_api::EngineRequestContext EngineContextForManagement(
                                   : engine_api::EngineTrustMode::server_isolated;
   engine_context.request_id = IdentityBytes(frame.header.request_uuid);
   engine_context.database_path = session.database_path;
+  // SB_NATIVE_FAMILY_GUARD (2026-12-04): the session's native marker rides every engine context built from the session.
+  engine_context.native_served_facts = session.native_served_facts;
   engine_context.served_route_owner = session.served_route_owner;
   // SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q104 = 2): the server's own
   // configured policy pack, never a client value. Owner Q113 = 1 makes the

@@ -330,6 +330,7 @@ scratchbird::engine::sblr::SblrExecutionContext AlterSblrContext(
     const EngineRequestContext& context) {
   scratchbird::engine::sblr::SblrExecutionContext out;
   out.database_path = context.database_path;
+  out.native_served_facts = context.native_served_facts;  // SB_NATIVE_FAMILY_GUARD: the marker survives the conversion
   out.database_uuid = context.database_uuid;
   out.cluster_uuid = context.cluster_uuid;
   out.node_uuid = context.node_uuid;

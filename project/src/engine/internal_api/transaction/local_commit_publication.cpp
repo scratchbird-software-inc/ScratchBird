@@ -11,6 +11,7 @@
 #include "transaction/local_commit_publication_codec.hpp"
 #include "transaction/local_publication_store.hpp"
 #include "engine/authority_hash_material.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "dml/transactional_index_provider.hpp"
 #include "dml/mga_relation_read_view.hpp"
@@ -393,6 +394,7 @@ const char* LocalCommitPublicationRecoveryClassName(
 
 LocalCommitPublicationResult RunLocalCommitPageBarrier(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<LocalCommitPublicationResult>("mga_transaction_publication", context);
   LocalCommitPublicationResult result;
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
       context.transaction_uuid.is_nil()) {

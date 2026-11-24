@@ -15,6 +15,7 @@
 #include "transaction/transaction_api.hpp"
 #include <filesystem>
 #include <mutex>
+#include "native_legacy_registry_refusal.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -774,6 +775,7 @@ void FillAllocationResult(EngineApiResult* result, const EngineSequenceAllocatio
 
 EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleState(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineLoadSequenceGeneratorLifecycleStateResult>("sequence_generator_events", context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   std::vector<RawSequenceEvent> events;
   auto read = ReadRawEvents(context, &events);
@@ -932,6 +934,7 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
 
 EngineSequenceCreateGeneratorResult EngineSequenceCreateGenerator(
     const EngineSequenceCreateGeneratorRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceCreateGeneratorResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.create";
   EngineApiDiagnostic diagnostic;
@@ -972,6 +975,7 @@ EngineSequenceCreateGeneratorResult EngineSequenceCreateGenerator(
 
 EngineSequenceAlterGeneratorResult EngineSequenceAlterGenerator(
     const EngineSequenceAlterGeneratorRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceAlterGeneratorResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.alter";
   EngineApiDiagnostic diagnostic;
@@ -1015,6 +1019,7 @@ EngineSequenceAlterGeneratorResult EngineSequenceAlterGenerator(
 
 EngineSequenceRestartGeneratorResult EngineSequenceRestartGenerator(
     const EngineSequenceRestartGeneratorRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceRestartGeneratorResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.restart";
   EngineApiDiagnostic diagnostic;
@@ -1053,6 +1058,7 @@ EngineSequenceRestartGeneratorResult EngineSequenceRestartGenerator(
 
 EngineSequenceDropGeneratorResult EngineSequenceDropGenerator(
     const EngineSequenceDropGeneratorRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceDropGeneratorResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.drop";
   EngineApiDiagnostic diagnostic;
@@ -1087,6 +1093,7 @@ EngineSequenceDropGeneratorResult EngineSequenceDropGenerator(
 
 EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
     const EngineSequenceAllocateValueRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceAllocateValueResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.allocate";
   EngineApiDiagnostic diagnostic;
@@ -1274,6 +1281,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
 
 EngineSequenceApplyMgaTransactionOutcomeResult EngineSequenceApplyMgaTransactionOutcome(
     const EngineSequenceApplyMgaTransactionOutcomeRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceApplyMgaTransactionOutcomeResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.apply_mga_outcome";
   if (request.context.database_path.empty()) {
@@ -1351,6 +1359,7 @@ EngineSequenceApplyMgaTransactionOutcomeResult EngineSequenceApplyMgaTransaction
 
 EngineSequenceBindIdentityValueResult EngineSequenceBindIdentityValue(
     const EngineSequenceBindIdentityValueRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceBindIdentityValueResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.identity.bind";
   EngineApiDiagnostic diagnostic;
@@ -1419,6 +1428,7 @@ EngineSequenceBindIdentityValueResult EngineSequenceBindIdentityValue(
 
 EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
     const EngineSequenceRecoverGeneratorStateRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceRecoverGeneratorStateResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.recover";
   const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::sequence_default);
@@ -1474,6 +1484,7 @@ EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
 
 EngineSequenceEvaluateMgaRetentionResult EngineSequenceEvaluateMgaRetention(
     const EngineSequenceEvaluateMgaRetentionRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineSequenceEvaluateMgaRetentionResult>("sequence_generator_events", request.context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(request.context.database_path);
   constexpr const char* kOperation = "sequence.generator.evaluate_mga_retention";
   const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::sequence_default);

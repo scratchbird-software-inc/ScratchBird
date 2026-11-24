@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "management/memory_management_api.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
@@ -1468,6 +1469,7 @@ const char* EngineMemoryRateLimitActionName(
 
 EngineMemoryManagementResult EnginePlanMemoryManagementOperation(
     const EngineMemoryManagementRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineMemoryManagementResult>("sys_memory_catalogs", request.context);
   mem::MemoryPressureDecision pressure_decision;
   mem::MemorySupportBundleResult support_bundle;
   if (auto diagnostic =

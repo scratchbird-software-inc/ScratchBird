@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_database_attach_journal.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
@@ -534,6 +535,7 @@ SblrDatabaseAttachJournalHashV1 SblrDatabaseAttachAliasNameSha256V1(
 SblrDatabaseAttachJournalResultV1 LookupSblrDatabaseAttachJournalV1(
     const EngineRequestContext& context,
     const SblrDatabaseAttachJournalKeyV1& key) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrDatabaseAttachJournalResultV1>("sblr_database_attach_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -545,6 +547,7 @@ SblrDatabaseAttachJournalResultV1 LookupSblrDatabaseAttachJournalV1(
 SblrDatabaseAttachJournalResultV1 EnsureSblrDatabaseAttachJournalV1(
     const EngineRequestContext& context,
     const SblrDatabaseAttachJournalKeyV1& key) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrDatabaseAttachJournalResultV1>("sblr_database_attach_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -576,6 +579,7 @@ SblrDatabaseAttachJournalResultV1 PublishSblrDatabaseAttachJournalResultV1(
     const EngineRequestContext& context,
     const SblrDatabaseAttachJournalKeyV1& key,
     const std::vector<std::uint8_t>& canonical_result_bytes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrDatabaseAttachJournalResultV1>("sblr_database_attach_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",

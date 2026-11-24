@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_parse_text_journal.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
@@ -426,6 +427,7 @@ bool InputsValid(const EngineRequestContext& context,
 SblrParseTextJournalResultV1 LookupSblrParseTextJournalV1(
     const EngineRequestContext& context,
     const SblrParseTextJournalKeyV1& key) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrParseTextJournalResultV1>("sblr_parse_text_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -437,6 +439,7 @@ SblrParseTextJournalResultV1 LookupSblrParseTextJournalV1(
 SblrParseTextJournalResultV1 EnsureSblrParseTextJournalV1(
     const EngineRequestContext& context,
     const SblrParseTextJournalKeyV1& key) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrParseTextJournalResultV1>("sblr_parse_text_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -468,6 +471,7 @@ SblrParseTextJournalResultV1 PublishSblrParseTextJournalResultV1(
     const EngineRequestContext& context,
     const SblrParseTextJournalKeyV1& key,
     const std::vector<std::uint8_t>& canonical_result_bytes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrParseTextJournalResultV1>("sblr_parse_text_journal", context);
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",

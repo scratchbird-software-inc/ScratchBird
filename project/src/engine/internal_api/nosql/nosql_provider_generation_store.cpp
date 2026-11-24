@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "nosql/nosql_provider_generation_store.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
@@ -2269,6 +2270,7 @@ EngineNoSqlProviderGenerationMetadata MakeDocumentProviderGenerationMetadata(
 EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
     const EngineRequestContext& context,
     const EngineNoSqlProviderGenerationMetadata& metadata) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineNoSqlProviderGenerationResult>("nosql_provider_generations", context);
   std::lock_guard<std::mutex> guard(StoreMutex());
   // Sealed capabilities bind their original identities, locator and epochs.
   // Context defaults may complete an unsealed ordinary generation, but must
@@ -2381,6 +2383,7 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
     EngineNoSqlProviderFamily family,
     const std::string& provider_id,
     const EngineUuid& collection_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineNoSqlProviderGenerationResult>("nosql_provider_generations", context);
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto loaded = LoadLocked(context);
   EngineNoSqlProviderGenerationResult result;
@@ -2442,6 +2445,7 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
     EngineNoSqlProviderFamily family,
     const EngineUuid& provider_uuid,
     const EngineUuid& collection_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineNoSqlProviderGenerationResult>("nosql_provider_generations", context);
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto loaded = LoadLocked(context);
   EngineNoSqlProviderGenerationResult result;
@@ -2501,6 +2505,7 @@ EngineNoSqlProviderGenerationResult LoadNoSqlProviderGeneration(
 EngineNoSqlProviderGenerationResult ValidateNoSqlProviderGeneration(
     const EngineRequestContext& context,
     const EngineNoSqlPhysicalProviderContract& contract) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineNoSqlProviderGenerationResult>("nosql_provider_generations", context);
   if (!contract.provider_generation.required) {
     EngineNoSqlProviderGenerationResult result;
     result.ok = true;
@@ -2593,6 +2598,7 @@ EngineNoSqlProviderGenerationResult ValidateNoSqlProviderGeneration(
 EngineNoSqlProviderGenerationResult RepairNoSqlProviderGeneration(
     const EngineRequestContext& context,
     const EngineNoSqlProviderGenerationRepairRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineNoSqlProviderGenerationResult>("nosql_provider_generations", context);
   if (!request.repair_admitted) {
     return Failure(context,
                    "nosql.provider_generation.repair",
@@ -2643,6 +2649,7 @@ EngineNoSqlProviderGenerationResult DropNoSqlProviderGeneration(
     EngineNoSqlProviderFamily family,
     const std::string& provider_id,
     const EngineUuid& collection_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineNoSqlProviderGenerationResult>("nosql_provider_generations", context);
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
   auto generations = LoadLocked(context);
@@ -2691,6 +2698,7 @@ EngineNoSqlProviderGenerationResult DropNoSqlProviderGeneration(
 
 std::vector<EngineNoSqlProviderGenerationMetadata> ListNoSqlProviderGenerations(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::vector<EngineNoSqlProviderGenerationMetadata>>("nosql_provider_generations", context);
   std::lock_guard<std::mutex> guard(StoreMutex());
   return LoadLocked(context);
 }
@@ -2698,6 +2706,7 @@ std::vector<EngineNoSqlProviderGenerationMetadata> ListNoSqlProviderGenerations(
 EngineNoSqlProviderGenerationResult CleanupNoSqlProviderGenerations(
     const EngineRequestContext& context,
     bool drop_persistent_state) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineNoSqlProviderGenerationResult>("nosql_provider_generations", context);
   std::lock_guard<std::mutex> guard(StoreMutex());
   const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
   GenerationCache().erase(StoreKey(context));

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "notification/notification_api.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/binary_catalog_metadata.hpp"
@@ -452,6 +453,7 @@ void AddPublicationRow(EngineApiResult* result, const EventPublicationShape& pub
 
 // SEARCH_KEY: EVN_IMPL_003_ENGINE_NOTIFICATION_API
 EngineCreateEventChannelResult EngineCreateEventChannel(const EngineCreateEventChannelRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCreateEventChannelResult>("notification_events", request.context);
   const std::string operation_id = "event.channel.create";
   auto status = ValidateEventContext(request, operation_id, true);
   if (status.error) { return MakeCrudDiagnosticResult<EngineCreateEventChannelResult>(request.context, operation_id, status); }
@@ -482,6 +484,7 @@ EngineCreateEventChannelResult EngineCreateEventChannel(const EngineCreateEventC
 }
 
 EngineAlterEventChannelResult EngineAlterEventChannel(const EngineAlterEventChannelRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineAlterEventChannelResult>("notification_events", request.context);
   const std::string operation_id = "event.channel.alter";
   auto status = ValidateEventContext(request, operation_id, true);
   if (status.error) { return MakeCrudDiagnosticResult<EngineAlterEventChannelResult>(request.context, operation_id, status); }
@@ -515,6 +518,7 @@ EngineAlterEventChannelResult EngineAlterEventChannel(const EngineAlterEventChan
 }
 
 EngineDropEventChannelResult EngineDropEventChannel(const EngineDropEventChannelRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineDropEventChannelResult>("notification_events", request.context);
   const std::string operation_id = "event.channel.drop";
   auto status = ValidateEventContext(request, operation_id, true);
   if (status.error) { return MakeCrudDiagnosticResult<EngineDropEventChannelResult>(request.context, operation_id, status); }
@@ -539,6 +543,7 @@ EngineDropEventChannelResult EngineDropEventChannel(const EngineDropEventChannel
 }
 
 EngineListenNotificationResult EngineListenNotification(const EngineListenNotificationRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineListenNotificationResult>("notification_events", request.context);
   const std::string operation_id = "event.channel.listen";
   auto status = ValidateEventContext(request, operation_id, OptionBool(request, "commit_delayed:", false));
   if (status.error) { return MakeCrudDiagnosticResult<EngineListenNotificationResult>(request.context, operation_id, status); }
@@ -570,6 +575,7 @@ EngineListenNotificationResult EngineListenNotification(const EngineListenNotifi
 }
 
 EngineUnlistenNotificationResult EngineUnlistenNotification(const EngineUnlistenNotificationRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineUnlistenNotificationResult>("notification_events", request.context);
   const std::string operation_id = "event.channel.unlisten";
   auto status = ValidateEventContext(request, operation_id, OptionBool(request, "commit_delayed:", false));
   if (status.error) { return MakeCrudDiagnosticResult<EngineUnlistenNotificationResult>(request.context, operation_id, status); }
@@ -599,6 +605,7 @@ EngineUnlistenNotificationResult EngineUnlistenNotification(const EngineUnlisten
 }
 
 EngineNotifyEventChannelResult EngineNotifyEventChannel(const EngineNotifyEventChannelRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineNotifyEventChannelResult>("notification_events", request.context);
   const std::string operation_id = "event.channel.notify";
   auto status = ValidateEventContext(request, operation_id, true);
   if (status.error) { return MakeCrudDiagnosticResult<EngineNotifyEventChannelResult>(request.context, operation_id, status); }
@@ -645,6 +652,7 @@ EngineNotifyEventChannelResult EngineNotifyEventChannel(const EngineNotifyEventC
 }
 
 EngineListEventSubscriptionsResult EngineListEventSubscriptions(const EngineListEventSubscriptionsRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineListEventSubscriptionsResult>("notification_events", request.context);
   const std::string operation_id = "event.subscription.list";
   auto status = ValidateEventContext(request, operation_id, false);
   if (status.error) { return MakeCrudDiagnosticResult<EngineListEventSubscriptionsResult>(request.context, operation_id, status); }
@@ -665,6 +673,7 @@ EngineListEventSubscriptionsResult EngineListEventSubscriptions(const EngineList
 }
 
 EnginePollEventDeliveryResult EnginePollEventDelivery(const EnginePollEventDeliveryRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EnginePollEventDeliveryResult>("notification_events", request.context);
   const std::string operation_id = "event.delivery.poll";
   auto status = ValidateEventContext(request, operation_id, false);
   if (status.error) { return MakeCrudDiagnosticResult<EnginePollEventDeliveryResult>(request.context, operation_id, status); }
@@ -696,6 +705,7 @@ EnginePollEventDeliveryResult EnginePollEventDelivery(const EnginePollEventDeliv
 }
 
 EngineAcknowledgeEventDeliveryResult EngineAcknowledgeEventDelivery(const EngineAcknowledgeEventDeliveryRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineAcknowledgeEventDeliveryResult>("notification_events", request.context);
   const std::string operation_id = "event.delivery.ack";
   auto status = ValidateEventContext(request, operation_id, false);
   if (status.error) { return MakeCrudDiagnosticResult<EngineAcknowledgeEventDeliveryResult>(request.context, operation_id, status); }
@@ -747,6 +757,7 @@ EngineAcknowledgeEventDeliveryResult EngineAcknowledgeEventDelivery(const Engine
 }
 
 EngineUnlistenSessionNotificationsResult EngineUnlistenSessionNotifications(const EngineUnlistenSessionNotificationsRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineUnlistenSessionNotificationsResult>("notification_events", request.context);
   const std::string operation_id = "session.notification.unlisten_all";
   auto status = ValidateEventContext(request, operation_id, OptionBool(request, "commit_delayed:", false));
   if (status.error) { return MakeCrudDiagnosticResult<EngineUnlistenSessionNotificationsResult>(request.context, operation_id, status); }

@@ -11,6 +11,7 @@
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "crud_support/crud_store.hpp"
@@ -278,6 +279,7 @@ MgaEventSequenceRangeReservation ReserveEventSequenceRange(
     std::uint64_t count,
     const std::function<std::uint64_t()>& bootstrap_loader,
     std::vector<std::string>* deferred_allocator_lines) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaEventSequenceRangeReservation>("mga_event_sequence_allocator", context);
   if (context.database_path.empty()) {
     return RefuseEventSequenceReservation(
         context, stream_kind, stream_path, "database_path_required");
@@ -394,6 +396,7 @@ bool AppendDeferredEventSequenceAllocatorLines(
     const EngineRequestContext& context,
     std::vector<std::string>* lines,
     MgaRelationHotAppendCounters* counters) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_event_sequence_allocator", context);
   if (lines == nullptr || lines->empty()) { return true; }
   const bool ok = AppendLines(
       EventSequenceAllocatorStorePath(context),
@@ -409,6 +412,7 @@ bool AppendDeferredEventSequenceAllocatorLines(
 }
 
 std::uint64_t ScanNextRowEventSequence(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::uint64_t>("mga_event_sequence_allocator", context);
   std::uint64_t maximum=0;
   const auto scan=[&](const std::string& path) {
     std::vector<CrudRowVersionRecord> rows;ScopedRelationSummary summary;
@@ -427,12 +431,14 @@ std::uint64_t ScanNextRowEventSequence(const EngineRequestContext& context) {
 }
 
 std::uint64_t NextRowEventSequence(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::uint64_t>("mga_event_sequence_allocator", context);
   return NextReservedEventSequence(
       context, "row_versions", RowStorePath(context),
       ScanNextRowEventSequence(context));
 }
 
 std::uint64_t ScanNextIndexEventSequence(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::uint64_t>("mga_event_sequence_allocator", context);
   std::uint64_t maximum=0;
   const auto scan=[&](const std::string& path) {
     std::vector<scratchbird::core::index::byte> bytes;
@@ -452,6 +458,7 @@ std::uint64_t ScanNextIndexEventSequence(const EngineRequestContext& context) {
 }
 
 std::uint64_t NextIndexEventSequence(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::uint64_t>("mga_event_sequence_allocator", context);
   return NextReservedEventSequence(
       context, "index_entries", IndexStorePath(context),
       ScanNextIndexEventSequence(context));
@@ -459,6 +466,7 @@ std::uint64_t NextIndexEventSequence(const EngineRequestContext& context) {
 
 std::uint64_t ScanNextMetadataEventSequence(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::uint64_t>("mga_event_sequence_allocator", context);
   std::uint64_t max_sequence = 0;
   std::vector<std::string> records;
   if (!ReadCompleteMgaMetadataRecords(MetadataStorePath(context), &records)) return 0;
@@ -509,6 +517,7 @@ std::uint64_t ScanNextMetadataEventSequence(
 }
 
 std::uint64_t NextMetadataEventSequence(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::uint64_t>("mga_event_sequence_allocator", context);
   return NextReservedEventSequence(
       context, "relation_metadata", MetadataStorePath(context),
       ScanNextMetadataEventSequence(context));
@@ -522,6 +531,7 @@ void ClearMgaEventSequenceRangeCacheForTesting() {
 MgaEventSequenceRangeReservation ReserveMgaRowEventSequenceRangeForTesting(
     const EngineRequestContext& context,
     std::uint64_t count) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaEventSequenceRangeReservation>("mga_event_sequence_allocator", context);
   return ReserveEventSequenceRange(
       context, "row_versions", RowStorePath(context), count,
       [&context]() { return ScanNextRowEventSequence(context); });

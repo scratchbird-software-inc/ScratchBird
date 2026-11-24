@@ -14,6 +14,7 @@
 #include "dml/serializable_mutation_guard.hpp"
 #include "dml/dml_target_access_plan.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "disk_device.hpp"
@@ -820,6 +821,7 @@ SerializableDmlAdmissionResult RecordSerializableSelectRead(
     EngineUuid relation_uuid,
     const EnginePredicateEnvelope& predicate,
     std::span<const std::string> option_envelopes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SerializableDmlAdmissionResult>("serializable_access", context);
   if (const auto* error = DmlRowIdentityPredicateError(predicate))
     return Refuse(operation_id, "CATALOG.INVALID_INPUT",
                   "dml.row_identity_predicate.invalid", error);
@@ -851,6 +853,7 @@ SerializableDmlAdmissionResult CheckSerializableInsertMutation(
     EngineUuid relation_uuid,
     std::span<const EngineRowValue> rows,
     std::span<const std::string> option_envelopes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SerializableDmlAdmissionResult>("serializable_access", context);
   if (!IsSerializableContext(context)) {
     return InactiveResult();
   }
@@ -871,6 +874,7 @@ SerializableDmlAdmissionResult RecordSerializableInsertMutation(
     EngineUuid relation_uuid,
     std::span<const EngineRowValue> rows,
     std::span<const std::string> option_envelopes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SerializableDmlAdmissionResult>("serializable_access", context);
   if (!IsSerializableContext(context)) {
     return InactiveResult();
   }
@@ -894,6 +898,7 @@ SerializableDmlAdmissionResult CheckSerializablePredicateMutation(
     const EnginePredicateEnvelope& predicate,
     bool delete_row,
     std::span<const std::string> option_envelopes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SerializableDmlAdmissionResult>("serializable_access", context);
   if (const auto* error = DmlRowIdentityPredicateError(predicate))
     return Refuse(operation_id, "CATALOG.INVALID_INPUT",
                   "dml.row_identity_predicate.invalid", error);
@@ -918,6 +923,7 @@ SerializableDmlAdmissionResult RecordSerializablePredicateMutation(
     const EnginePredicateEnvelope& predicate,
     bool delete_row,
     std::span<const std::string> option_envelopes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SerializableDmlAdmissionResult>("serializable_access", context);
   if (const auto* error = DmlRowIdentityPredicateError(predicate))
     return Refuse(operation_id, "CATALOG.INVALID_INPUT",
                   "dml.row_identity_predicate.invalid", error);

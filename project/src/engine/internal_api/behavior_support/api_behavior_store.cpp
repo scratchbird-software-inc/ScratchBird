@@ -9,6 +9,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "transaction/mutation_authority.hpp"
 #include "transaction/transaction_api.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "uuid.hpp"
 #include "api_behavior_record_codec.hpp"
@@ -39,6 +40,7 @@ std::string JoinOptions(const std::vector<std::string>& options) {
 }  // namespace
 
 EngineApiDiagnostic AppendApiBehaviorEvent(const EngineRequestContext& context, const std::string& event) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("api_events", context);
   const auto path_status = ValidateApiBehaviorContext(context, "api_behavior.append_event", false, true);
   if (path_status.error) { return path_status; }
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
@@ -101,6 +103,7 @@ ApiBehaviorPersistedRecord PersistApiBehaviorRecord(const EngineApiRequest& requ
                                                     bool require_transaction,
                                                     std::string explicit_state,
                                                     bool deleted) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<ApiBehaviorPersistedRecord>("api_events", request.context);
   return PersistApiBehaviorRecordWithPayload(request,
                                             operation_id,
                                             object_kind,
@@ -117,6 +120,7 @@ ApiBehaviorPersistedRecord PersistApiBehaviorRecordWithPayload(const EngineApiRe
                                                                std::string explicit_state,
                                                                bool deleted,
                                                                std::string payload_override) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<ApiBehaviorPersistedRecord>("api_events", request.context);
   ApiBehaviorPersistedRecord result;
   const auto context_status = ValidateApiBehaviorContext(request.context, operation_id, require_transaction, true);
   if (context_status.error) { result.diagnostic = context_status; return result; }

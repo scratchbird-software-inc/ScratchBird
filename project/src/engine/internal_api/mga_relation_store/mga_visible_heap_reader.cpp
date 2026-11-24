@@ -17,6 +17,7 @@
 #include "mga_relation_store/mga_row_version_reader.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -2409,6 +2410,7 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
     HeapReadRuntimeObservation* runtime_observation,
     const PreparedMgaHeapReadAuthority* prepared_authority = nullptr,
     StreamingVisibleSelection* visible_selection = nullptr) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaVisibleHeapRelationCountResult>("mga_relation_scope", context);
   MgaVisibleHeapRelationCountResult result;
   result.memory_grant_bytes = request.maximum_memory_bytes;
   const auto refuse = [&](std::string detail,

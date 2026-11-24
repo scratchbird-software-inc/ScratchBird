@@ -1,4 +1,5 @@
 #include "sblr_autonomous_frame_coordinator.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
@@ -278,6 +279,7 @@ bool Publish(const EngineRequestContext& c,
 EngineApiDiagnostic PublishSblrAutonomousBodyFrameProjection(
     const EngineRequestContext& c,
     const SblrAutonomousBodyFrameProjectionV1& authority) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_autonomous_frame", c);
   std::lock_guard lock(mutex);
   if (!HasTag(c, "private_psql_autonomous_body_compiler") ||
       !c.statement_metadata_snapshot_engine_owned)
@@ -301,6 +303,7 @@ EngineApiDiagnostic PublishSblrAutonomousBodyFrameProjection(
 EngineApiDiagnostic CompileAndPublishSblrAutonomousBodyFrameProjection(
     const EngineRequestContext& c, const EngineUuid& receipt,
     std::uint64_t occurrence) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_autonomous_frame", c);
   if (!HasTag(c, "private_psql_autonomous_body_compiler") ||
       !c.statement_metadata_snapshot_engine_owned || receipt != c.statement_uuid ||
       !occurrence || c.transaction_uuid.is_nil() ||
@@ -330,6 +333,7 @@ EngineApiDiagnostic CompileAndPublishSblrAutonomousBodyFrameProjection(
 
 EngineApiDiagnostic RevokeSblrAutonomousBodyFrameProjection(
     const EngineRequestContext& c, const EngineUuid& receipt) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_autonomous_frame", c);
   std::lock_guard lock(mutex);
   if (!HasTag(c, "private_psql_autonomous_body_compiler"))
     return Diagnostic("SECURITY.ACCESS_DENIED", "sblr.psql_autonomous.projection_hidden");
@@ -347,6 +351,7 @@ EngineApiDiagnostic RevokeSblrAutonomousBodyFrameProjection(
 SblrAutonomousFrameCoordinatorResult ReserveSblrAutonomousFrame(
     const EngineRequestContext& c, const EngineUuid& receipt,
     std::uint64_t occurrence) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<SblrAutonomousFrameCoordinatorResult>("sblr_autonomous_frame", c);
   std::lock_guard lock(mutex);
   SblrAutonomousFrameCoordinatorResult out;
   if (!HasTag(c, "private_psql_autonomous_frame_coordination") ||
@@ -398,6 +403,7 @@ SblrAutonomousFrameCoordinatorResult ReserveSblrAutonomousFrame(
 SblrAutonomousFrameCoordinatorResult FinalizeSblrAutonomousFrame(
     const EngineRequestContext& c, const EngineUuid& id,
     std::uint64_t frame_generation, bool commit) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<SblrAutonomousFrameCoordinatorResult>("sblr_autonomous_frame", c);
   std::lock_guard lock(mutex);
   SblrAutonomousFrameCoordinatorResult out;
   if (!HasTag(c, "private_psql_autonomous_frame_coordination")) {
@@ -418,6 +424,7 @@ SblrAutonomousFrameCoordinatorResult FinalizeSblrAutonomousFrame(
 }
 
 EngineApiDiagnostic RecoverSblrAutonomousFrameCoordinator(const EngineRequestContext& c) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_autonomous_frame", c);
   std::lock_guard lock(mutex);
   if (!HasTag(c, "right:SBLR_PSQL_AUTONOMOUS_FRAME_ADMIN")) return Diagnostic("SECURITY.ACCESS_DENIED", "sblr.psql_autonomous.recovery_denied");
   for (auto& [_, snapshot] : rows) if (snapshot.state == SblrAutonomousFrameState::reserved) {

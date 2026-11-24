@@ -13,6 +13,7 @@
 #include <optional>
 #include <set>
 #include <type_traits>
+#include "native_legacy_registry_refusal.hpp"
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -405,6 +406,7 @@ static_assert(std::is_nothrow_move_constructible_v<RowResult>);
 } // namespace
 
 PubResult PrepareMgaBulkImportPublicationV1(const EngineRequestContext& c,const Publication& requested) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<PubResult>("mga_bulk_import_publication", c);
   return Run<PubResult>([&] {
     Context(c);auto entry=Owned(c);entry.publication=requested;entry.publication.lifecycle=Life::prepared;
     if(binary::Encode(entry.publication).empty())Invalid();
@@ -419,12 +421,15 @@ PubResult PrepareMgaBulkImportPublicationV1(const EngineRequestContext& c,const 
   });
 }
 PubResult PublishMgaBulkImportPublicationV1(const EngineRequestContext& c,const Publication& requested) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<PubResult>("mga_bulk_import_publication", c);
   return Run<PubResult>([&]{return Transition(c,requested,Life::published_uncommitted);});
 }
 PubResult AbortMgaBulkImportPublicationV1(const EngineRequestContext& c,const Publication& requested) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<PubResult>("mga_bulk_import_publication", c);
   return Run<PubResult>([&]{return Transition(c,requested,Life::aborted);});
 }
 PubResult RecoverMgaBulkImportPublicationV1(const EngineRequestContext& c,const Sha& key) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<PubResult>("mga_bulk_import_publication", c);
   return Run<PubResult>([&]{Context(c);if(!Nonzero(key))Invalid();Journal journal(c,1,&key);
     auto out=Select(journal,key);
     if(out.found && out.record.lifecycle==Life::published_uncommitted) {
@@ -434,6 +439,7 @@ PubResult RecoverMgaBulkImportPublicationV1(const EngineRequestContext& c,const 
     journal.FinishRecovery();return out;});
 }
 RowResult StoreMgaBulkImportImportedRowEventsV1(const EngineRequestContext& c,const std::vector<Event>& requested) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<RowResult>("mga_bulk_import_imported_rows", c);
   return Run<RowResult>([&] {
     Context(c);auto entry=Owned(c);entry.events=requested;Cohort(entry.events);
     for(auto& row:entry.events){BodyOwner(c,row);if(binary::Encode(row).empty())Invalid();}
@@ -451,6 +457,7 @@ RowResult StoreMgaBulkImportImportedRowEventsV1(const EngineRequestContext& c,co
   });
 }
 RowResult RecoverMgaBulkImportImportedRowEventsV1(const EngineRequestContext& c,const Sha& key) {
+  if (NativeServedContext(c)) return NativeFamilyRefusalAs<RowResult>("mga_bulk_import_imported_rows", c);
   return Run<RowResult>([&] {
     Context(c);if(!Nonzero(key))Invalid();Journal journal(c,2,&key);
     auto out=Success<RowResult>();

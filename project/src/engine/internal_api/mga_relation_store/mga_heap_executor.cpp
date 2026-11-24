@@ -163,6 +163,8 @@ struct CurrentHeapMgaResolutionBinding {
   scratchbird::engine::internal_api::EngineTrustMode trust_mode =
       scratchbird::engine::internal_api::EngineTrustMode::server_isolated;
   std::string database_path;
+  // SB_NATIVE_FAMILY_GUARD: the native marker of the statement's context travels with the binding.
+  std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> native_served_facts;
   PhysicalUuid transaction_uuid;
   PhysicalUuid statement_uuid;
   PhysicalUuid statement_snapshot_uuid;
@@ -181,6 +183,7 @@ CanonicalExecutionMgaAuthority BuildCurrentHeapExecutionMgaAuthority(
   CurrentHeapMgaResolutionBinding binding;
   binding.trust_mode = context.trust_mode;
   binding.database_path = context.database_path;
+  binding.native_served_facts = context.native_served_facts;
   binding.transaction_uuid = context.transaction_uuid;
   binding.statement_uuid = context.statement_uuid;
   binding.statement_snapshot_uuid = context.statement_snapshot_uuid;
@@ -194,6 +197,7 @@ CanonicalExecutionMgaAuthority BuildCurrentHeapExecutionMgaAuthority(
     api::EngineRequestContext context;
     context.trust_mode = binding.trust_mode;
     context.database_path = binding.database_path;
+    context.native_served_facts = binding.native_served_facts;
     context.transaction_uuid = binding.transaction_uuid;
     context.statement_uuid = binding.statement_uuid;
     context.statement_snapshot_uuid =

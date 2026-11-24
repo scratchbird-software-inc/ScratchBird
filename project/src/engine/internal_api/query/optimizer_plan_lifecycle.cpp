@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/optimizer_plan_lifecycle.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "uuid.hpp"
@@ -869,6 +870,7 @@ bool EntryEpochsMatch(const EngineOptimizerPlanCacheEntry& entry,
 
 EngineLoadOptimizerPlanLifecycleStateResult LoadOptimizerPlanLifecycleState(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineLoadOptimizerPlanLifecycleStateResult>("optimizer_plan_events", context);
   std::vector<RawPlanEvent> events;
   auto result = ReadRawEvents(context, &events);
   if (!result.ok) {
@@ -931,6 +933,7 @@ EngineLoadOptimizerPlanLifecycleStateResult LoadOptimizerPlanLifecycleState(
 
 EngineOptimizerCachePlanResult EngineOptimizerCachePlan(
     const EngineOptimizerCachePlanRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineOptimizerCachePlanResult>("optimizer_plan_events", request.context);
   constexpr const char* kOperation = "query.optimizer.cache_plan";
   EngineApiDiagnostic context_diagnostic;
   if (!ValidateMutatingContext(request.context, &context_diagnostic)) {
@@ -1060,6 +1063,7 @@ EngineOptimizerCachePlanResult EngineOptimizerCachePlan(
 
 EngineOptimizerValidateCachedPlanResult EngineOptimizerValidateCachedPlan(
     const EngineOptimizerValidateCachedPlanRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineOptimizerValidateCachedPlanResult>("optimizer_plan_events", request.context);
   constexpr const char* kOperation = "query.optimizer.validate_cached_plan";
   const auto refuse = [&](EngineApiDiagnostic diagnostic,
                           const bool invalidation_required = false) {
@@ -1252,6 +1256,7 @@ EngineOptimizerPlanUseValidationResult RevalidateOptimizerPlanStatementUse(
 
 EngineOptimizerInvalidatePlanCacheResult EngineOptimizerInvalidatePlanCache(
     const EngineOptimizerInvalidatePlanCacheRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineOptimizerInvalidatePlanCacheResult>("optimizer_plan_events", request.context);
   constexpr const char* kOperation = "query.optimizer.invalidate_plan_cache";
   EngineApiDiagnostic context_diagnostic;
   if (!ValidateMutatingContext(request.context, &context_diagnostic)) {
@@ -1345,6 +1350,7 @@ EngineOptimizerInvalidatePlanCacheResult EngineOptimizerInvalidatePlanCache(
 
 EngineOptimizerRecoverPlanCacheResult EngineOptimizerRecoverPlanCache(
     const EngineOptimizerRecoverPlanCacheRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineOptimizerRecoverPlanCacheResult>("optimizer_plan_events", request.context);
   constexpr const char* kOperation = "query.optimizer.recover_plan_cache";
   EngineApiDiagnostic context_diagnostic;
   if (!ValidateMutatingContext(request.context, &context_diagnostic)) {

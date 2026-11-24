@@ -21,6 +21,7 @@ bool CrudAssignmentsTouchOpaqueColumn(const CrudTableRecord& table,
 }
 
 CrudStoreResult LoadCrudState(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<CrudStoreResult>("crud_events", context);
   CrudStoreResult result;
   const auto path_status = ValidateCrudDatabasePath(context, "crud.load_state");
   if (path_status.error) { result.diagnostic = path_status; return result; }

@@ -1,4 +1,5 @@
 #include "sblr_cursor_open_coordinator.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
@@ -104,6 +105,7 @@ SblrCursorOpenResult CompileAndPublishSblrExecutablePlanReceipt(
     const EngineRequestContext& context, const EngineUuid& receipt_uuid,
     std::uint64_t occurrence, std::uint8_t mode, std::uint8_t hold,
     std::uint32_t fetch_size, std::uint64_t availability_generation) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrCursorOpenResult>("sblr_cursor_open", context);
   std::lock_guard lock(coordinator_mutex);
   SblrCursorOpenResult result;
   const auto database = DatabaseIdentity(context);
@@ -205,6 +207,7 @@ SblrCursorOpenResult OpenSblrCursor(
     std::uint64_t descriptor_generation,
     const std::string& descriptor_evidence_sha256,
     std::uint64_t availability_generation) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrCursorOpenResult>("sblr_cursor_open", context);
   std::lock_guard lock(coordinator_mutex);
   SblrCursorOpenResult result;
   const auto database = DatabaseIdentity(context);
@@ -247,6 +250,7 @@ SblrCursorOpenResult OpenSblrCursor(
 
 EngineApiDiagnostic RecoverSblrOpenCursors(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("sblr_cursor_open", context);
   std::lock_guard lock(coordinator_mutex);
   const auto database = DatabaseIdentity(context);
   if (!HasTag(context, "right:SBLR_CURSOR_ADMIN") || !database.ok()) {
@@ -272,6 +276,7 @@ SblrCursorOpenResult FetchSblrCursor(
     std::uint64_t cursor_generation, std::uint64_t position_generation,
     const std::string& admitted_evidence, std::uint64_t availability_generation,
     std::uint32_t maximum_rows) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrCursorOpenResult>("sblr_cursor_open", context);
   std::lock_guard lock(coordinator_mutex);
   SblrCursorOpenResult result;
   const auto database = DatabaseIdentity(context);
@@ -319,6 +324,7 @@ SblrCursorOpenResult CloseSblrCursor(
     std::uint64_t cursor_generation, std::uint64_t position_generation,
     const std::string& admitted_evidence, std::uint64_t availability_generation,
     std::uint8_t close_reason) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrCursorOpenResult>("sblr_cursor_open", context);
   std::lock_guard lock(coordinator_mutex);
   SblrCursorOpenResult result;
   const auto database = DatabaseIdentity(context);

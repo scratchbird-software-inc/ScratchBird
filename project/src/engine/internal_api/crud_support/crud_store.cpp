@@ -14,6 +14,7 @@
 // New SBSQL/SBLR work must be placed in the family-owned source files and
 // registry fragments, not appended to this wrapper.
 
+#include "native_legacy_registry_refusal.hpp"
 #include "crud_store_00_common_types.inc"
 #include "crud_store_01_relation_descriptor.inc"
 #include "crud_store_02_row_encoding.inc"

@@ -10,6 +10,7 @@
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
@@ -249,6 +250,7 @@ bool RowsContainLargeValueLocatorsImpl(const std::vector<CrudRowVersionRecord>& 
 
 MgaLargeValueReclaimLoadResult LoadVisibleMgaLargeValueReclaims(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaLargeValueReclaimLoadResult>("mga_large_values", context);
   return LoadVisibleMgaLargeValueReclaimsImpl(context);
 }
 
@@ -256,6 +258,7 @@ MgaTemporaryLargeValueRecoveryResult ClassifyMgaTemporaryLargeValueRecovery(
     const EngineRequestContext& context,
     const std::set<EngineUuid>& temporary_tables,
     const std::map<std::uint64_t, std::string>& transaction_states) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaTemporaryLargeValueRecoveryResult>("mga_large_values", context);
   MgaTemporaryLargeValueRecoveryResult result;
   std::vector<std::string> records;
   if (!ReadLargeValueRecords(LargeValueStorePath(context), &records)) {
@@ -316,6 +319,7 @@ bool RowsContainLargeValueLocators(
 EngineApiDiagnostic ExpandMgaLargeValueLocators(
     const EngineRequestContext& context,
     std::vector<CrudRowVersionRecord>* rows) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_large_values", context);
   return ExpandMgaLargeValueLocatorsImpl(context, rows);
 }
 
@@ -326,6 +330,7 @@ EngineApiDiagnostic PersistMgaLargeValuesForRow(const EngineRequestContext& cont
                                                 bool force_large_value,
                                                 CrudValueFields* values,
                                                 std::vector<EngineEvidenceReference>* evidence) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_large_values", context);
   MgaLargeValuePersistBatchCounters counters;
   return PersistMgaLargeValuesForRows(
       context,
@@ -343,6 +348,7 @@ EngineApiDiagnostic PersistMgaLargeValuesForRows(
     const std::vector<MgaLargeValuePersistBatchRowInput>& rows,
     MgaLargeValuePersistBatchCounters* counters,
     std::vector<EngineEvidenceReference>* evidence) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_large_values", context);
   MgaLargeValuePersistBatchCounters local_counters;
   if (counters == nullptr) {
     counters = &local_counters;
@@ -482,6 +488,7 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
     const std::string& cleanup_reason,
     std::set<EngineUuid>* already_reclaimed_overflow_uuids,
     std::uint64_t* reclaimed_count) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_large_values", context);
   EngineRequestContext owner = context;
   owner.local_transaction_id = local_transaction_id;
   const auto savepoint = AdmitMgaSavepointProducer(owner, MgaMutationProducer::large_value_reclaim);

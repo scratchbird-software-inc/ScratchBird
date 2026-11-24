@@ -22,6 +22,7 @@
 
 namespace scratchbird::engine::internal_api {
 struct EngineDescriptor;
+struct NativeServedDatabaseFacts;
 }
 
 namespace scratchbird::engine::sblr {
@@ -236,6 +237,10 @@ struct SblrExecutionContext {
   bool security_context_present = false;
   bool transaction_context_present = false;
   bool cluster_authority_available = false;
+  // SB_NATIVE_FAMILY_GUARD (2026-12-04): the server-set native marker travels through every EngineRequestContext <->
+  // SblrExecutionContext conversion. Without it a conversion round trip would rebuild a LEGACY-looking context from a native
+  // one and every ".sb." family guard downstream would silently pass. Never serialized; set only by those conversions.
+  std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> native_served_facts;
 };
 
 struct SblrFrame {

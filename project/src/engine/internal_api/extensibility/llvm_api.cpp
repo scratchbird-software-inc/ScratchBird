@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "extensibility/llvm_api.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "extensibility/extensibility_support.hpp"
@@ -216,7 +217,10 @@ native::NativeCompileRequest BuildNativeCompileRequest(const EngineCompileLlvmMo
   native_request.module_payload = module;
   native_request.target_object_uuid = request.target_object.uuid;
   native_request.principal_uuid = request.context.principal_uuid;
-  native_request.database_path = request.context.database_path;
+  // SB_NATIVE_FAMILY_GUARD (2026-12-04): the AOT artifact directory is the side directory "<database>.sb.native_aot" (native_compile.cpp
+  // ArtifactDirectory). A native context has no such directory: the empty path is the existing "no artifact location" answer there,
+  // so nothing is created next to the database file. The compile itself (JIT or in-memory AOT result) is not refused.
+  native_request.database_path = NativeServedContext(request.context) ? std::string{} : request.context.database_path;
   native_request.database_uuid = request.context.database_uuid;
   native_request.session_uuid = request.context.session_uuid;
   native_request.statement_uuid = request.context.statement_uuid;

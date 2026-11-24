@@ -1125,6 +1125,8 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
                            : engine_api::EngineTrustMode::server_isolated;
   context.request_id.assign(reinterpret_cast<const char*>(frame.header.request_uuid.data()), frame.header.request_uuid.size());
   context.database_path = session.database_path;
+  // SB_NATIVE_FAMILY_GUARD (2026-12-04): the session's native marker rides every engine context built from the session.
+  context.native_served_facts = session.native_served_facts;
   context.database_uuid = session.database_uuid;
   if (context.database_path.empty()) {
     for (const auto& database : engine_state.databases) {

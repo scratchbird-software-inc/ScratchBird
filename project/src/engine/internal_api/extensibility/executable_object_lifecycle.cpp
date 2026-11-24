@@ -10,6 +10,7 @@
 #include "extensibility/executable_object_record_codec.hpp"
 #include "catalog/binary_view_options.hpp"
 #include <filesystem>
+#include "native_legacy_registry_refusal.hpp"
 
 #include "crud_support/crud_store.hpp"
 #include "dml/delete_api.hpp"
@@ -1838,6 +1839,7 @@ EngineApiDiagnostic PreflightCreateExecutableObjectImpl(
 
 EngineApiDiagnostic ValidateExecutableObjectCurrentAdmission(
     const EngineRequestContext& context, const EngineExecutableObjectRecord& admitted) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("executable_object_events", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   const auto inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!inventory.ok()) return ExecDiagnostic(kExecutableObjectDiagnosticMgaVisibilityRefused,
@@ -1874,11 +1876,13 @@ EngineApiDiagnostic ValidateExecutableObjectCurrentAdmission(
 
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleState(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineLoadExecutableObjectLifecycleStateResult>("executable_object_events", context);
   return LoadState(context, {.enforce_visibility = true});
 }
 
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleStateForRuntimeDispatch(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineLoadExecutableObjectLifecycleStateResult>("executable_object_events", context);
   return LoadState(context, {.enforce_visibility = false});
 }
 
@@ -1889,11 +1893,13 @@ EngineApiDiagnostic ValidateExecutableObjectExactMgaSelector(
 
 EngineApiDiagnostic PreflightCreateExecutableObject(
     const EngineCreateExecutableObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("executable_object_events", request.context);
   return PreflightCreateExecutableObjectImpl(request);
 }
 
 EngineCreateExecutableObjectResult EngineCreateExecutableObject(
     const EngineCreateExecutableObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineCreateExecutableObjectResult>("executable_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const std::string object_kind = ObjectKind(request);
@@ -2044,6 +2050,7 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
 
 EngineAlterExecutableObjectResult EngineAlterExecutableObject(
     const EngineAlterExecutableObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineAlterExecutableObjectResult>("executable_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
@@ -2140,6 +2147,7 @@ EngineAlterExecutableObjectResult EngineAlterExecutableObject(
 
 EngineDropExecutableObjectResult EngineDropExecutableObject(
     const EngineDropExecutableObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineDropExecutableObjectResult>("executable_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
@@ -2203,6 +2211,7 @@ EngineDropExecutableObjectResult EngineDropExecutableObject(
 
 EngineQuiesceExecutableObjectResult EngineQuiesceExecutableObject(
     const EngineQuiesceExecutableObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineQuiesceExecutableObjectResult>("executable_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
@@ -2239,6 +2248,7 @@ EngineQuiesceExecutableObjectResult EngineQuiesceExecutableObject(
 
 EngineUnloadExecutableObjectResult EngineUnloadExecutableObject(
     const EngineUnloadExecutableObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineUnloadExecutableObjectResult>("executable_object_events", request.context);
   const auto owner = AcquireTransactionInventoryGuard(request.context.database_path);
   const EngineUuid object_uuid = ObjectUuid(request);
   const auto authority = ValidateManageAuthority(request, ObjectKind(request));
@@ -2288,16 +2298,19 @@ EngineUnloadExecutableObjectResult EngineUnloadExecutableObject(
 
 EngineBeginExecutableObjectInvocationResult EngineBeginExecutableObjectInvocation(
     const EngineBeginExecutableObjectInvocationRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineBeginExecutableObjectInvocationResult>("executable_object_events", request.context);
   return BeginInvocationWithOperation(request, kOperationBeginInvocation);
 }
 
 EngineFinishExecutableObjectInvocationResult EngineFinishExecutableObjectInvocation(
     const EngineFinishExecutableObjectInvocationRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineFinishExecutableObjectInvocationResult>("executable_object_events", request.context);
   return FinishInvocationWithOperation(request, kOperationFinishInvocation);
 }
 
 EngineInvokeExecutableObjectResult EngineInvokeExecutableObject(
     const EngineInvokeExecutableObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineInvokeExecutableObjectResult>("executable_object_events", request.context);
   EngineBeginExecutableObjectInvocationRequest begin;
   static_cast<EngineApiRequest&>(begin) = request;
   auto begun = BeginInvocationWithOperation(begin, kOperationInvoke);
@@ -2359,6 +2372,7 @@ EngineInvokeExecutableObjectResult EngineInvokeExecutableObject(
 
 EngineFireExecutableEventTriggerResult EngineFireExecutableEventTrigger(
     const EngineFireExecutableEventTriggerRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineFireExecutableEventTriggerResult>("executable_object_events", request.context);
   const auto context = ValidateContext(request, true, true);
   if (context.error) {
     return DiagnosticResult<EngineFireExecutableEventTriggerResult>(
@@ -2448,6 +2462,7 @@ EngineFireExecutableEventTriggerResult EngineFireExecutableEventTrigger(
 
 EngineInspectExecutableObjectResult EngineInspectExecutableObjects(
     const EngineInspectExecutableObjectRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineInspectExecutableObjectResult>("executable_object_events", request.context);
   const auto context = ValidateContext(request, false, true);
   if (context.error) {
     return DiagnosticResult<EngineInspectExecutableObjectResult>(

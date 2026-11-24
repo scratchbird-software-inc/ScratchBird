@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "nosql/document_api.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -2031,6 +2032,7 @@ EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertReques
 }
 
 EngineDocumentFindResult EngineDocumentFind(const EngineDocumentFindRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineDocumentFindResult>("nosql_document_provider", request.context);
   constexpr const char* kOperation = "nosql.document_find";
   if (!request.context.cluster_authority_available && EngineNoSqlRequiresClusterAuthority(request)) {
     return EngineNoSqlClusterAuthorityUnavailable<EngineDocumentFindResult>(request, kOperation);
@@ -2212,6 +2214,7 @@ EngineDocumentUpdateResult EngineDocumentUpdate(const EngineDocumentUpdateReques
 }
 
 EngineDocumentDeleteResult EngineDocumentDelete(const EngineDocumentDeleteRequest& request) {
+  if (NativeServedContext(request.context)) return NativeFamilyRefusalAs<EngineDocumentDeleteResult>("nosql_document_provider", request.context);
   constexpr const char* kOperation = "nosql.document_delete";
   if (!request.context.cluster_authority_available && EngineNoSqlRequiresClusterAuthority(request)) {
     return EngineNoSqlClusterAuthorityUnavailable<EngineDocumentDeleteResult>(request, kOperation);
@@ -2241,6 +2244,7 @@ EngineDocumentDeleteResult EngineDocumentDelete(const EngineDocumentDeleteReques
 
 void EngineDocumentProviderCleanup(const EngineRequestContext& context,
                                    bool drop_persistent_state) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<void>("nosql_document_provider", context);
   {
     std::lock_guard<std::mutex> guard(DocumentStoresMutex());
     DocumentStores().erase(StoreKey(context));

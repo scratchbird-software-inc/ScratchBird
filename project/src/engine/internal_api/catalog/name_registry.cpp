@@ -576,6 +576,7 @@ NameRegistryEntry MakeNameRegistryEntry(const EngineRequestContext& context,
 EngineApiDiagnostic AppendNameRegistryEntry(const EngineRequestContext& context,
                                             const NameRegistryEntry& entry,
                                             const std::string& operation_id) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("name_events", context);
   const auto context_status = ValidateApiBehaviorContext(context, operation_id, false, true);
   if (context_status.error) { return context_status; }
   ApiBehaviorRecord record;record.creator_tx=entry.creator_tx;record.operation_id=operation_id;
@@ -592,6 +593,7 @@ EngineApiDiagnostic PersistNameRegistryEntriesForObject(const EngineRequestConte
                                                         const EngineUuid& scope_uuid,
                                                         const std::vector<EngineLocalizedName>& names,
                                                         const std::string& fallback_name) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("name_events", context);
   std::vector<EngineLocalizedName> effective_names = names;
   if (effective_names.empty()) {
     EngineLocalizedName generated;
@@ -615,6 +617,7 @@ EngineApiDiagnostic PersistNameRegistryEntriesForObject(const EngineRequestConte
 EngineApiDiagnostic RetireNameRegistryEntriesForObject(const EngineRequestContext& context,
                                                        const std::string& operation_id,
                                                        const EngineUuid& object_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("name_events", context);
   const auto context_status = ValidateApiBehaviorContext(context, operation_id, false, true);
   if (context_status.error) { return context_status; }
   if(!core::uuid::IsEngineIdentityUuid(object_uuid))return MakeInvalidRequestDiagnostic(operation_id,"object_uuid_required");

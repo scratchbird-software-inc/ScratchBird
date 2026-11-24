@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_optimizer_stats_drop_journal.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "core/hash/hash_digest.hpp"
@@ -455,6 +456,7 @@ bool InvalidateDerivedCache(std::uint64_t statistics_epoch,
 
 SblrOptimizerStatsEpochSnapshotV1 InspectSblrOptimizerStatsEpochV1(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrOptimizerStatsEpochSnapshotV1>("sblr_optimizer_stats_epoch", context);
   std::lock_guard<std::mutex> process_guard(g_process_journal_mutex);
   if (!ContextValid(context)) {
     SblrOptimizerStatsEpochSnapshotV1 result;
@@ -513,6 +515,7 @@ SblrOptimizerStatsEpochSnapshotV1 InspectSblrOptimizerStatsEpochV1(
 SblrOptimizerStatsDropPublicationV1 PublishSblrOptimizerStatsDropV1(
     const EngineRequestContext& context,
     const drop::SblrOptimizerStatsDropDescriptorV1& descriptor) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<SblrOptimizerStatsDropPublicationV1>("sblr_optimizer_stats_epoch", context);
   SblrOptimizerStatsDropPublicationV1 result;
   const auto descriptor_bytes = drop::EncodeSblrOptimizerStatsDropDescriptorV1(
       descriptor);

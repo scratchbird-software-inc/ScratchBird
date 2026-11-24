@@ -10,6 +10,7 @@
 #include "mga_relation_store/mga_row_version_reader.hpp"
 #include "hash_digest.hpp"
 #include "dml/test_optimization_profile.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -174,6 +175,7 @@ bool LoadDecodedScopedRowsForTable(
     const EngineUuid& table_uuid,
     std::vector<CrudRowVersionRecord>* rows,
     bool* used_segment) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_relation_scope", context);
   if (rows == nullptr || !core::uuid::IsEngineIdentityUuid(table_uuid)) return false;
   rows->clear();
   if (used_segment != nullptr) *used_segment = false;
@@ -236,6 +238,7 @@ bool LoadDecodedScopedRowsForTableBounded(
     BoundedScopedRowReadControl* control,
     std::vector<CrudRowVersionRecord>* rows,
     bool* used_segment) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_relation_scope", context);
   if (control == nullptr || rows == nullptr ||
       !core::uuid::IsEngineIdentityUuid(table_uuid) ||
       control->maximum_row_versions == 0 || control->maximum_bytes == 0 ||

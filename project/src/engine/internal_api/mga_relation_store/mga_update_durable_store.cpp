@@ -11,6 +11,7 @@
 #include "mga_relation_store/mga_update_durable_frame_store_internal.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "crud_support/crud_store.hpp"
@@ -2252,6 +2253,7 @@ MgaDmlUpdateDurableAuthorityReservationResultV1
 ReserveMgaDmlUpdateDurableOperationAuthorityV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableAuthorityReservationRequestV1& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaDmlUpdateDurableAuthorityReservationResultV1>("mga_durable_operations", context);
   MgaDmlUpdateDurableAuthorityReservationResultV1 result;
   MgaDmlUpdateDurableOperationIdentityV1 identity;
   identity.database_uuid = context.database_uuid;
@@ -2350,6 +2352,7 @@ MgaDmlUpdateDurableOperationMutationResultV1
 AbandonMgaDmlUpdateDurableOperationAuthorityReservationV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableOperationIdentityV1& identity) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaDmlUpdateDurableOperationMutationResultV1>("mga_durable_operations", context);
   if (!DmlUpdateDurableIdentityMatchesContext(context, identity)) {
     return DmlUpdateDurableMutation(
         MgaDmlUpdateDurableOperationOutcomeV1::access_denied,
@@ -2955,6 +2958,7 @@ MgaDmlUpdateDurableOperationRecoveryResultV1
 RecoverMgaDmlUpdateDurableOperationChainV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableOperationLookupV1& lookup) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaDmlUpdateDurableOperationRecoveryResultV1>("mga_durable_operations", context);
   g_dml_update_durable_recovery_calls.fetch_add(1,
                                                  std::memory_order_relaxed);
   const std::string path = DmlUpdateDurablePathForLookup(context, lookup);
@@ -3205,6 +3209,7 @@ MgaDmlUpdateDurableOperationMutationResultV1
 RollbackMgaDmlUpdateStatementFromValidatedDurableAuthorityV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateValidatedDurableAuthorityHandleV1& validated_handle) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaDmlUpdateDurableOperationMutationResultV1>("mga_durable_operations", context);
   if (!validated_handle.valid() ||
       !DmlUpdateDurableIdentityMatchesContext(
           context, validated_handle.impl_->identity)) {
@@ -3499,6 +3504,7 @@ bool TruncateMgaDmlUpdateDurableExtentForTestingV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableOperationLookupV1& lookup,
     std::uint64_t exact_file_bytes) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_durable_operations", context);
   std::string path;
   if (!DmlUpdateDurableAuthenticateTestingLookup(context, lookup, &path)) {
     return false;
@@ -3515,6 +3521,7 @@ bool TruncateMgaDmlUpdateDurableExtentForTestingV1(
 bool QuarantineMgaDmlUpdateDurableOperationForTestingV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableOperationLookupV1& lookup) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_durable_operations", context);
   std::string path;
   if (!DmlUpdateDurableAuthenticateTestingLookup(context, lookup, &path)) {
     return false;
@@ -3527,6 +3534,7 @@ bool QuarantineMgaDmlUpdateDurableOperationForTestingV1(
 bool DeleteMgaDmlUpdateDurableOperationForTestingV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableOperationLookupV1& lookup) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_durable_operations", context);
   std::string path;
   if (!DmlUpdateDurableAuthenticateTestingLookup(context, lookup, &path)) {
     return false;
@@ -3544,6 +3552,7 @@ MgaDmlUpdateStatementSavepointAuthorityResultV1
 CreateMgaDmlUpdateStatementSavepointAuthorityV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointBindingV1& binding) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaDmlUpdateStatementSavepointAuthorityResultV1>("mga_update_statement_savepoints", context);
   const EngineUuid reserved_barrier =
       DmlUpdateStatementFreshDistinctUuid(binding);
   if (reserved_barrier.is_nil()) {
@@ -3562,6 +3571,7 @@ CreateMgaDmlUpdateStatementSavepointAuthorityWithReservedBarrierV1(
     const MgaDmlUpdateStatementSavepointBindingV1& binding,
     const EngineUuid& reserved_publication_barrier_uuid,
     std::uint64_t reserved_publication_barrier_generation) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaDmlUpdateStatementSavepointAuthorityResultV1>("mga_update_statement_savepoints", context);
   std::lock_guard<std::mutex> guard(
       DmlUpdateStatementSavepointJournalMutex());
   if (!DmlUpdateStatementBindingMatchesContext(context, binding) ||
@@ -3657,6 +3667,7 @@ MgaDmlUpdateStatementSavepointAuthorityResultV1
 RollbackMgaDmlUpdateStatementSavepointAuthorityV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointAuthorityV1& admitted) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaDmlUpdateStatementSavepointAuthorityResultV1>("mga_update_statement_savepoints", context);
   std::lock_guard<std::mutex> guard(
       DmlUpdateStatementSavepointJournalMutex());
   auto current = DmlUpdateStatementLoadSavepointAuthority(
@@ -3718,6 +3729,7 @@ MgaDmlUpdateStatementSavepointAuthorityResultV1
 ReleaseMgaDmlUpdateStatementSavepointAuthorityV1(
     const EngineRequestContext& context,
     const MgaDmlUpdateStatementSavepointAuthorityV1& admitted) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaDmlUpdateStatementSavepointAuthorityResultV1>("mga_update_statement_savepoints", context);
   std::lock_guard<std::mutex> guard(
       DmlUpdateStatementSavepointJournalMutex());
   auto current = DmlUpdateStatementLoadSavepointAuthority(
@@ -3785,6 +3797,7 @@ bool ApplyDmlUpdateBinarySavepointRecordsForStoreModule(
     const EngineRequestContext& context,
     SavepointParsedState* state,
     std::string* refusal_detail) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_update_statement_savepoints", context);
   return ApplyDmlUpdateBinarySavepointRecords(context, state,
                                                refusal_detail);
 }

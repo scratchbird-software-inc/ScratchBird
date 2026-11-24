@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "behavior_support/api_behavior_store.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "local_transaction_store.hpp"
 #include "uuid.hpp"
@@ -162,6 +163,7 @@ EngineApiDiagnostic ValidateApiBehaviorContext(const EngineRequestContext& conte
 }
 
 ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<ApiBehaviorStoreResult>("api_events", context);
   ApiBehaviorStoreResult result;
   const auto path_status = ValidateApiBehaviorContext(context, "api_behavior.load_state", false, true);
   if (path_status.error) { result.diagnostic = path_status; return result; }
@@ -221,6 +223,7 @@ std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestCont
                                                          const std::string& object_kind,
                                                          std::uint64_t observer_tx,
                                                          EngineApiDiagnostic& diagnostic) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::vector<ApiBehaviorRecord>>("api_events", context);
   EngineRequestContext effective = context;
   if (effective.local_transaction_id == 0) { effective.local_transaction_id = observer_tx; }
   const auto loaded = LoadApiBehaviorState(effective);
@@ -237,6 +240,7 @@ std::optional<ApiBehaviorRecord> FindVisibleApiBehaviorRecord(const EngineReques
                                                               const EngineUuid& object_uuid,
                                                               std::uint64_t observer_tx,
                                                               EngineApiDiagnostic& diagnostic) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::optional<ApiBehaviorRecord>>("api_events", context);
   for (const auto& record : VisibleApiBehaviorRecords(context, {}, observer_tx, diagnostic)) {
     if (record.object_uuid == object_uuid) { return record; }
   }

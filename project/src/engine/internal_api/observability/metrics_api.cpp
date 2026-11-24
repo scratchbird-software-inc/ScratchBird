@@ -8,6 +8,7 @@
 
 #include "observability/metrics_api.hpp"
 #include "observability/lifecycle_metric_definitions.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
@@ -197,7 +198,10 @@ std::string MetricHistoryPath(const EngineApiRequest& request) {
   if (!configured.empty()) {
     return configured;
   }
-  if (!request.context.database_path.empty()) {
+  // SB_NATIVE_FAMILY_GUARD (2026-12-04): the ".metrics.history" side file next to the database belongs to a legacy
+  // database. A native context has no such file: the empty path makes every caller answer from the in-process history
+  // (or "not_configured"), and nothing is read, probed or created next to the database file.
+  if (!request.context.database_path.empty() && !NativeServedContext(request.context)) {
     return request.context.database_path + ".metrics.history";
   }
   return {};

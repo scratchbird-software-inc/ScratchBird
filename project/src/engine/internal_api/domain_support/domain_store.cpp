@@ -14,6 +14,7 @@
 #include "mga_relation_store/mga_binary_identity_codec.hpp"
 #include "mga_relation_store/stored_scalar_payload.hpp"
 #include "sbl_numeric.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "crud_support/crud_store.hpp"
 #include "crud_support/native_value_payload.hpp"
@@ -1266,6 +1267,7 @@ void AppendEncodedDescriptorField(std::string* descriptor,
 }  // namespace
 
 DomainStoreResult LoadDomainState(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<DomainStoreResult>("domain_catalog", context);
   DomainStoreResult result;
   const auto path_status = ValidateCrudDatabasePath(context, "domain.load_state");
   if (path_status.error) { result.diagnostic = path_status; return result; }
@@ -1289,6 +1291,7 @@ DomainStoreResult LoadDomainState(const EngineRequestContext& context) {
 }
 
 EngineApiDiagnostic AppendDomainEvent(const EngineRequestContext& context, const std::string& event) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("domain_catalog", context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   const auto path_status = ValidateCrudDatabasePath(context, "domain.append_event");
   if (path_status.error) { return path_status; }
@@ -1333,6 +1336,7 @@ std::string MakeDomainDropEvent(std::uint64_t creator_tx, const EngineUuid& doma
 std::optional<DomainRecord> FindVisibleDomain(const EngineRequestContext& context,
                                               const EngineUuid& domain_uuid,
                                               std::uint64_t observer_tx) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<std::optional<DomainRecord>>("domain_catalog", context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   const auto domains = LoadDomainState(context);
   if (!domains.ok) { return std::nullopt; }
@@ -1377,6 +1381,7 @@ EngineApiDiagnostic BindDomainScalarBaseDescriptor(
 EngineApiDiagnostic BindDomainInnerBaseDescriptor(
     const EngineRequestContext& context, const DomainRecord& inner,
     DomainRecord* record) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("domain_catalog", context);
   if (!record) return DomainValidationDiagnostic("domain_record_required");
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   const auto visible = FindVisibleDomain(context, inner.domain_uuid, context.local_transaction_id);
@@ -1405,6 +1410,7 @@ EngineApiDiagnostic BindDomainInnerBaseDescriptor(
 DomainInheritedProfileResolution ResolveDomainInheritedProfile(
     const EngineRequestContext& context, const EngineUuid& domain_uuid,
     std::uint64_t observer_tx) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<DomainInheritedProfileResolution>("domain_catalog", context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   DomainInheritedProfileResolution result;
   const auto domain = FindVisibleDomain(context, domain_uuid, observer_tx);
@@ -1439,6 +1445,7 @@ DomainInheritedProfileResolution ResolveDomainInheritedProfile(
 
 EngineApiDiagnostic AdmitDomainMutationChain(const EngineRequestContext& context,
     const EngineUuid& domain_uuid, std::uint64_t observer_tx) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("domain_catalog", context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   const auto domain = FindVisibleDomain(context, domain_uuid, observer_tx);
   EngineDescriptor base;
@@ -1515,6 +1522,7 @@ bool DomainChainContainsUuid(const EngineRequestContext& context,
                              const EngineUuid& start_domain_uuid,
                              const EngineUuid& searched_domain_uuid,
                              std::uint64_t observer_tx) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("domain_catalog", context);
   if (start_domain_uuid.is_nil() || searched_domain_uuid.is_nil()) { return false; }
   const auto guard = AcquireTransactionInventoryGuard(context.database_path);
   const auto catalog = LoadDomainState(context);
@@ -1545,6 +1553,7 @@ DomainValueValidationResult ValidateDomainTypedValue(const EngineRequestContext&
                                                      const EngineTypedValue& input_value,
                                                      std::uint64_t observer_tx,
                                                      bool explicit_cast) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<DomainValueValidationResult>("domain_catalog", context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   DomainValueValidationResult result;
   if (context.query_cancellation_requested && context.query_cancellation_requested()) {
@@ -1670,6 +1679,7 @@ DomainRowValidationResult ApplyDomainRulesToCrudValues(
     const CrudValueFields& input_values,
     std::uint64_t observer_tx,
     ConstraintDmlValidationCache* cache) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<DomainRowValidationResult>("domain_catalog", context);
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   DomainRowValidationResult result;
   result.values = input_values;
@@ -1808,6 +1818,7 @@ DomainReadPolicyResult ApplyDomainReadPoliciesToCrudValues(
     const std::vector<std::pair<std::string, std::string>>& table_columns,
     const CrudValueFields& input_values,
     std::uint64_t observer_tx) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<DomainReadPolicyResult>("domain_catalog", context);
   DomainReadPolicyResult result;
   result.values = input_values;
   for (const auto& [column_name, column_descriptor] : table_columns) {

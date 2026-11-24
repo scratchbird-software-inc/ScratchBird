@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
+#include "native_legacy_registry_refusal.hpp"
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <unistd.h>
@@ -194,6 +195,10 @@ MgaDmlDeleteDurableStoreV1::~MgaDmlDeleteDurableStoreV1() = default;
 std::unique_ptr<MgaDmlDeleteDurableStoreV1> MgaDmlDeleteDurableStoreV1::Open(
     const EngineRequestContext& context, const w::TypedUpdateUuid& descriptor_uuid,
     std::uint64_t generation, EngineApiDiagnostic* diagnostic) {
+  if (NativeServedContext(context)) {
+    if (diagnostic != nullptr) *diagnostic = NativeLegacyRegistryRefusal("mga_delete_operations", context);
+    return {};
+  }
   const auto refuse = [&](const char* why) -> std::unique_ptr<MgaDmlDeleteDurableStoreV1> {
     Diagnostic(diagnostic, why); return {};
   };

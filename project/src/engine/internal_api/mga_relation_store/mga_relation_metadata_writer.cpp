@@ -18,6 +18,7 @@
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_row_version_reader.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -264,6 +265,7 @@ EngineApiDiagnostic CheckMetadataPublicationCancellation(
 
 EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
                                            const CrudTableRecord& table) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_relation_metadata", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   // Only sequenced relation-storage metadata is appended here. Catalog/name
   // mutations remain guarded at their owning API boundary.
@@ -455,6 +457,7 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
     const EngineRequestContext& context, const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& indexes,
     MgaRelationStorageDescriptor* descriptor) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_relation_metadata", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.relation_metadata.table_create.sealed_descriptor_v2";
   const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
@@ -494,6 +497,7 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
 EngineApiDiagnostic AppendMgaConstraintMutationBatch(
     const EngineRequestContext& context,
     const MgaConstraintMutationBatch& batch) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_relation_metadata", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.constraint_mutation_batch";
   const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
@@ -1042,6 +1046,7 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
 MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
     const EngineRequestContext& context,
     const MgaBigintIdentityMigrationRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaBigintIdentityMigrationResult>("mga_relation_metadata", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.bigint_identity_migration";
   MgaBigintIdentityMigrationResult result;
@@ -1267,6 +1272,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
 MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
     const EngineRequestContext& context,
     const MgaInt32IdentityMigrationRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaInt32IdentityMigrationResult>("mga_relation_metadata", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.int32_identity_migration";
   MgaInt32IdentityMigrationResult result;
@@ -1538,6 +1544,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
 MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     const EngineRequestContext& context,
     const MgaTextIdentityMigrationRequest& request) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaTextIdentityMigrationResult>("mga_relation_metadata", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   constexpr const char* kOperation = "mga.text_identity_migration";
   MgaTextIdentityMigrationResult result;
@@ -2022,6 +2029,7 @@ EngineApiDiagnostic PrepareMgaIndexMetadataFrame(
 
 EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                            const CrudIndexRecord& index) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_relation_metadata", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::relation_descriptor);
   if (savepoint.error) return savepoint;

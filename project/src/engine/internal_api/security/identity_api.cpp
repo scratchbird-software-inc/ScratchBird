@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "security/identity_api.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "bootstrap_schema_roots.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -209,6 +210,7 @@ EngineApiDiagnostic CreateIdentityHomeSchema(const EngineCreateIdentityRequest& 
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_IDENTITY_API_BEHAVIOR
 EngineCreateIdentityResult EngineCreateIdentity(const EngineCreateIdentityRequest& input) {
+  if (NativeServedContext(input.context)) return NativeFamilyRefusalAs<EngineCreateIdentityResult>("api_events", input.context);
   auto request = input;
   if (!request.context.security_context_present) {
     return SecurityFailure<EngineCreateIdentityResult>(

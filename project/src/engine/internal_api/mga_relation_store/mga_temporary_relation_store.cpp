@@ -17,6 +17,7 @@
 #include "mga_relation_store/mga_row_codec.hpp"
 #include "mga_relation_store/mga_row_version_reader.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "dml/transactional_index_provider.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
@@ -268,6 +269,7 @@ MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
 
 MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaTemporaryRecoveryClassificationResult>("mga_row_versions", context);
   struct LatestRowState {
     std::uint64_t event_sequence = 0;
     bool deleted = false;
@@ -495,6 +497,7 @@ EngineApiDiagnostic AppendMgaTemporaryTableMetadataRetirement(
     std::uint64_t local_transaction_id,
     const CrudTableRecord& table,
     const std::string& cleanup_reason) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", context);
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.temporary_session_cleanup",
                                         "database_path_required");
@@ -529,6 +532,7 @@ EngineApiDiagnostic ApplyMgaTemporaryCleanupActions(
     std::uint64_t* deleted_row_count,
     std::uint64_t* reclaimed_large_value_count,
     std::uint64_t* retired_private_metadata_count) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", context);
   if (deleted_row_count != nullptr) { *deleted_row_count = 0; }
   if (reclaimed_large_value_count != nullptr) { *reclaimed_large_value_count = 0; }
   if (retired_private_metadata_count != nullptr) {
@@ -620,6 +624,7 @@ EngineApiDiagnostic ApplyMgaTemporaryOnCommitActions(const EngineRequestContext&
                                                      std::uint64_t local_transaction_id,
                                                      std::uint64_t* deleted_row_count,
                                                      std::uint64_t* reclaimed_large_value_count) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", context);
   return ApplyMgaTemporaryCleanupActions(context,
                                          local_transaction_id,
                                          "temporary_on_commit_delete_rows",
@@ -637,6 +642,7 @@ EngineApiDiagnostic ApplyMgaTemporarySessionCleanupActions(
     std::uint64_t* deleted_row_count,
     std::uint64_t* reclaimed_large_value_count,
     std::uint64_t* retired_private_metadata_count) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", context);
   return ApplyMgaTemporaryCleanupActions(context,
                                          local_transaction_id,
                                          "temporary_session_cleanup",
@@ -651,6 +657,7 @@ EngineApiDiagnostic ApplyMgaTemporarySessionCleanupActions(
 MgaTemporaryTableDropResult DropMgaTemporaryTable(
     const EngineRequestContext& context,
     const EngineUuid& table_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaTemporaryTableDropResult>("mga_row_versions", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   MgaTemporaryTableDropResult result;
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(table_uuid)) {

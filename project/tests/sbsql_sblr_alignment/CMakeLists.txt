@@ -4600,6 +4600,56 @@ add_test(NAME sbsql_sblr_alignment_native_receipt_gate_coverage
   COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_CURRENT_SOURCE_DIR}/native_receipt_gate_coverage_test.py ${PROJECT_SOURCE_DIR})
 set_tests_properties(sbsql_sblr_alignment_native_receipt_gate_coverage PROPERTIES
   LABELS "sbsql_sblr_alignment;native_receipt_gate;source_policy" TIMEOUT 120)
+# SB_NATIVE_FAMILY_GUARDS (2026-12-04; owner: the database is ONE file, no other files, legacy ".sb." side files are drift). The receipt gate
+# refuses the bridge consumers on a native receipt; the allowed CopyStatementContextEngineContextV1 still returns a native-marked context
+# that the server passes to INTERNAL APIs. Every ".sb." family now refuses a native context at its ENTRY (native_legacy_registry_refusal.hpp,
+# NativeFamilyRefusalAs). native_family_guards_<size> calls every guarded entry on a production-created native database with two native
+# contexts (the receipt's copy, and one built the way prepared_statement_registry_context builds it) and asserts the exact code and family,
+# a byte-identical file and no new file; native_family_guards_strace_<size> adds 0 `.sb.*` syscalls; native_family_guard_policy is the
+# source-policy test (a new ".sb." family file, or a new public function that reaches a side-file path, fails it). NEW targets.
+add_executable(sbsql_sblr_alignment_native_family_guards native_family_guards_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_family_guards sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)
+target_compile_definitions(sbsql_sblr_alignment_native_family_guards PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_family_guards PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_family_guards PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_family_guards PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_family_guards PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"
+  SB_NATIVE_LOGIN_MATERIAL_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_login_material>")
+foreach(sb_nf_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_nf_parts "${sb_nf_size}")
+  list(GET sb_nf_parts 0 sb_nf_bytes)
+  list(GET sb_nf_parts 1 sb_nf_label)
+  add_test(NAME sbsql_sblr_alignment_native_family_guards_${sb_nf_label}
+    COMMAND sbsql_sblr_alignment_native_family_guards size ${sb_nf_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_family_guards_${sb_nf_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_family_guards;binary_uuid"
+    TIMEOUT 600)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_nf_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_nf_parts "${sb_nf_size}")
+    list(GET sb_nf_parts 0 sb_nf_bytes)
+    list(GET sb_nf_parts 1 sb_nf_label)
+    add_test(NAME sbsql_sblr_alignment_native_family_guards_strace_${sb_nf_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_family_guards_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_family_guards>
+        --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --size ${sb_nf_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_family_guards_strace_${sb_nf_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_family_guards;strace"
+      TIMEOUT 600)
+  endforeach()
+endif()
+add_test(NAME sbsql_sblr_alignment_native_family_guard_policy
+  COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_CURRENT_SOURCE_DIR}/native_family_guard_policy_test.py ${PROJECT_SOURCE_DIR})
+set_tests_properties(sbsql_sblr_alignment_native_family_guard_policy PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_family_guards;source_policy" TIMEOUT 120)
 if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   foreach(sb_nl_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     string(REPLACE ":" ";" sb_nl_parts "${sb_nl_size}")

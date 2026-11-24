@@ -22,6 +22,7 @@
 #include "mga_relation_store/mga_savepoint_store.hpp"
 #include "mga_relation_store/mga_update_durable_store.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
+#include "native_legacy_registry_refusal.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -1361,12 +1362,14 @@ bool TextMigrationLineageCreatorVisibleForStoreModule(
 bool UpdateScopedRelationSummariesForStoreModule(
     const EngineRequestContext& context,
     const std::map<EngineUuid, ScopedRelationSummaryDelta>& deltas) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<bool>("mga_row_versions", context);
   return UpdateScopedRelationSummaries(context, deltas);
 }
 
 void FilterMgaRelationMetadataForStoreModule(
     const EngineRequestContext& context,
     RelationReadSnapshot* metadata) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<void>("mga_relation_metadata", context);
   FilterVisibleRetiredTemporaryMetadata(context, metadata);
   FilterMgaTemporaryObjectsForSession(context, metadata);
 }
@@ -1374,6 +1377,7 @@ void FilterMgaRelationMetadataForStoreModule(
 void FilterVisibleRetiredTemporaryMetadataForStoreModule(
     const EngineRequestContext& context,
     RelationReadSnapshot* metadata) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<void>("mga_relation_metadata", context);
   FilterVisibleRetiredTemporaryMetadata(context, metadata);
 }
 
@@ -1410,6 +1414,7 @@ std::string ComputeMgaConstraintMutationBatchHash(
 
 MgaMetadataWorkPresenceResult HasVisibleMgaDeferredConstraintMetadata(
     const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaMetadataWorkPresenceResult>("mga_row_versions", context);
   MgaMetadataWorkPresenceResult result;
   if (context.database_path.empty()) {
     result.diagnostic =
@@ -1461,6 +1466,7 @@ MgaMetadataWorkPresenceResult HasMgaTemporaryCleanupMetadataWork(
     bool include_delete_rows,
     bool include_preserve_rows,
     bool retire_private_metadata) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaMetadataWorkPresenceResult>("mga_row_versions", context);
   MgaMetadataWorkPresenceResult result;
   if (context.database_path.empty()) {
     result.diagnostic =
@@ -1509,6 +1515,7 @@ MgaMetadataWorkPresenceResult HasMgaTemporaryCleanupMetadataWork(
 }
 
 MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& context) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<MgaRelationStoreResult>("mga_row_versions", context);
   MgaRelationStoreResult result;
   result.full_state_load = true;
   if (context.database_path.empty()) {
@@ -2152,6 +2159,7 @@ EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContex
                                                        const CrudTableRecord& table,
                                                        const std::vector<CrudIndexRecord>& indexes,
                                                        MgaRelationStorageDescriptor* descriptor) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_row_versions", context);
   const auto persisted =
       LoadDescriptorFieldsByRelation(context, table.table_uuid);
   const auto existing = persisted.find(table.table_uuid);
@@ -2599,6 +2607,7 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
     const scratchbird::transaction::mga::SnapshotVectorDescriptor*
         resolved_statement_snapshot,
     const EngineDmlDeleteBindingAuthorityV1* delete_binding) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<PreparedMgaHeapReadAuthorityCohortResult>("mga_row_versions", context);
   PreparedMgaHeapReadAuthorityCohortResult result;
   const auto refuse = [&](EngineApiDiagnostic diagnostic) {
     result = {};
@@ -2812,6 +2821,7 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
 
 PreparedMgaHeapReadAuthorityResult PrepareMgaHeapReadAuthorityForStoreModule(
     const EngineRequestContext& context, const EngineUuid& relation_uuid) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<PreparedMgaHeapReadAuthorityResult>("mga_row_versions", context);
   PreparedMgaHeapReadAuthorityResult result;
   const std::array<EngineUuid, 1> relations{relation_uuid};
   auto prepared = PrepareMgaHeapReadAuthoritiesForStoreModule(context,

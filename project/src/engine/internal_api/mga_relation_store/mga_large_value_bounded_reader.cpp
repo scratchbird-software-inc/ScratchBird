@@ -11,6 +11,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include "native_legacy_registry_refusal.hpp"
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -39,6 +40,7 @@ EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
     const EngineRequestContext& context, std::vector<CrudRowVersionRecord>* rows,
     BoundedScopedRowReadControl* control, std::uint64_t retained_memory,
     const std::function<bool(std::uint64_t)>& creator_visible) {
+  if (NativeServedContext(context)) return NativeFamilyRefusalAs<EngineApiDiagnostic>("mga_large_values", context);
   const auto refuse = [&](std::string detail, bool budget = false) {
     if (control) {
       control->refusal_detail = detail;
