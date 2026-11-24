@@ -118,6 +118,19 @@ SessionOperationResult RejectPrepareSblrBeforeEngine(
     const sbps::Frame& request,
     std::string diagnostic_code,
     std::string detail);
+// SEARCH_KEY: SB_NATIVE_TRANSACTION_BOUNDARY (S5). The native COMMIT / ROLLBACK step of a native session (the database loop's atomic
+// CompleteAndBegin keyed by the session UUID; see sblr_dispatch_server.cpp). Exported so the in-process tests drive the REAL step; the
+// server's execute path is its only production caller.
+struct NativeBoundaryOutcome {
+  bool ok = false;
+  std::string payload;           // the boundary message vector (ok)
+  std::string diagnostic_code;   // specific code (refused / failed)
+  std::string detail;            // machine token
+  ServerTransactionState replacement;
+};
+NativeBoundaryOutcome RunNativeTransactionBoundary(const ServerSessionRecord& session, const ServerTransactionState& finalized, bool commit,
+                                                   bool retaining);
+
 SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                          const HostedEngineState& engine_state,
                                          const sbps::Frame& request,

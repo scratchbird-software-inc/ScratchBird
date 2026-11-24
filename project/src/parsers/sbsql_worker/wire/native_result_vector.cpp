@@ -132,4 +132,28 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
   return out;
 }
 
+NativeBoundaryParseStatus ParseNativeTransactionBoundary(std::string_view engine_payload, bool expect_commit,
+                                                         NativeTransactionBoundary* out) {
+  std::vector<pr::Field> fields;
+  if (!engine_payload.starts_with(pr::kMagic) || !pr::Decode(engine_payload, &fields) || fields.size() < 2 ||
+      fields[1].name != "result_kind" || fields[1].kind != pr::Kind::text || fields[1].value != "native_transaction_boundary")
+    return NativeBoundaryParseStatus::not_native_boundary;
+  if (fields.size() != 7 || fields[0].name != "operation_id" || fields[2].name != "ended_order" ||
+      fields[2].kind != pr::Kind::unsigned_integer || fields[3].name != "ended_uuid" || fields[3].kind != pr::Kind::uuid ||
+      fields[4].name != "finality" || fields[4].kind != pr::Kind::text || fields[5].name != "new_order" ||
+      fields[5].kind != pr::Kind::unsigned_integer || fields[6].name != "new_uuid" || fields[6].kind != pr::Kind::uuid)
+    return NativeBoundaryParseStatus::refused;
+  const bool committed = fields[4].value == "committed";
+  if ((!committed && fields[4].value != "rolled_back") || committed != expect_commit) return NativeBoundaryParseStatus::refused;
+  NativeTransactionBoundary parsed;
+  parsed.ended_order = Le64(fields[2].value);
+  parsed.ended_uuid = fields[3].value;
+  parsed.committed = committed;
+  parsed.new_order = Le64(fields[5].value);
+  parsed.new_uuid = fields[6].value;
+  if (parsed.ended_order == 0 || parsed.new_order <= parsed.ended_order) return NativeBoundaryParseStatus::refused;
+  if (out != nullptr) *out = std::move(parsed);
+  return NativeBoundaryParseStatus::parsed;
+}
+
 }  // namespace scratchbird::parser::sbsql

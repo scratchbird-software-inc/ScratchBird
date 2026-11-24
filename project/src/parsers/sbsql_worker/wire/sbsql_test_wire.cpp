@@ -12574,7 +12574,8 @@ std::optional<CanonicalBytes> EncodeNativeTxnCommitOperationBinary(
   if (!tx::DecodeSblrTransactionHandleV1(admitted_handle.data(),
                                          admitted_handle.size(), &handle,
                                          &detail) ||
-      context.preliminary_transaction_commit_executor_availability_generation == 0 ||
+      (context.preliminary_transaction_commit_executor_availability_generation == 0 &&
+       !context.preliminary_native_variant) ||
       (commit_mode != 1 && commit_mode != 2))
     return std::nullopt;
   tx::SblrTransactionCommitOptionsV1 options;
@@ -12622,7 +12623,8 @@ std::optional<CanonicalBytes> EncodeNativeTxnRollbackOperationBinary(
   if (!tx::DecodeSblrTransactionHandleV1(admitted_handle.data(),
                                          admitted_handle.size(), &handle,
                                          &detail) ||
-      context.preliminary_transaction_rollback_executor_availability_generation == 0)
+      (context.preliminary_transaction_rollback_executor_availability_generation == 0 &&
+       !context.preliminary_native_variant))
     return std::nullopt;
   tx::SblrTransactionRollbackOptionsV1 options;
   options.transaction_uuid = handle.transaction_uuid;
@@ -31378,6 +31380,26 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         }
         const auto* canonical_result_bytes =
             reinterpret_cast<const std::uint8_t*>(executed.row_packet.data());
+        // SB_NATIVE_TRANSACTION_BOUNDARY_PARSER (S5): a NATIVE database answers COMMIT / ROLLBACK with a message vector
+        // (result_kind native_transaction_boundary), not the legacy binary result projection. Strict decode; it must agree with the typed
+        // replacement the server published for the same statement. Anything else is the legacy decode, unchanged.
+        NativeTransactionBoundary native_boundary;
+        auto native_boundary_status = NativeBoundaryParseStatus::not_native_boundary;
+        if (lowered.operation_id == "engine.op.txn_commit" || lowered.operation_id == "engine.op.txn_rollback") {
+          native_boundary_status = ParseNativeTransactionBoundary(
+              executed.row_packet, lowered.operation_id == "engine.op.txn_commit", &native_boundary);
+          if (native_boundary_status == NativeBoundaryParseStatus::parsed &&
+              (!executed.replacement_transaction_present ||
+               executed.replacement_transaction.local_transaction_id != native_boundary.new_order))
+            native_boundary_status = NativeBoundaryParseStatus::refused;
+          if (native_boundary_status == NativeBoundaryParseStatus::refused) {
+            result.accepted = false;
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "SBSQL.NATIVE_RESULT.BOUNDARY_INVALID", "ERROR",
+                "The native transaction boundary result could not be read.", "sbp_sbsql.wire"));
+            return result;
+          }
+        }
         if (lowered.operation_id == "engine.op.txn_begin") {
           scratchbird::engine::sblr::SblrTransactionHandleV1 handle;
           std::string detail;
@@ -31397,7 +31419,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         } else if (lowered.operation_id == "engine.op.txn_commit") {
           scratchbird::engine::sblr::SblrTransactionCommitResultV1 committed;
           std::string detail;
-          if (!scratchbird::engine::sblr::DecodeSblrTransactionCommitResultV1(
+          if (native_boundary_status != NativeBoundaryParseStatus::parsed &&
+              !scratchbird::engine::sblr::DecodeSblrTransactionCommitResultV1(
                   canonical_result_bytes, executed.row_packet.size(),
                   &committed, &detail)) {
             result.accepted = false;
@@ -31418,7 +31441,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         } else if (lowered.operation_id == "engine.op.txn_rollback") {
           scratchbird::engine::sblr::SblrTransactionRollbackResultV1 rolled_back;
           std::string detail;
-          if (!scratchbird::engine::sblr::DecodeSblrTransactionRollbackResultV1(
+          if (native_boundary_status != NativeBoundaryParseStatus::parsed &&
+              !scratchbird::engine::sblr::DecodeSblrTransactionRollbackResultV1(
                   canonical_result_bytes, executed.row_packet.size(),
                   &rolled_back, &detail)) {
             result.accepted = false;

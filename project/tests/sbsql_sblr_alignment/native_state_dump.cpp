@@ -12,7 +12,9 @@
 //   usage: native_state_dump <path> <page_size>
 #include "../support/native_offline_file_reader.hpp"
 
+#include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <iostream>
 
 int main(int argc, char** argv) {
@@ -28,6 +30,26 @@ int main(int argc, char** argv) {
   for (const auto& [order, word] : file.words) {
     const auto code = static_cast<unsigned>(word.state);
     std::cout << "TIP order=" << order << " state=" << (code < 13 ? state_names[code] : "?") << '\n';
+  }
+  // S5: the durable HEADER of every transaction (what a boundary must write): final state, the identities at +64 (principal), +80
+  // (attachment) and +96 (session), the isolation profile, read-only, and whether the completion times are set.
+  const auto hex = [](const scratchbird::core::platform::Uuid& id) {
+    std::string out;
+    char buffer[3];
+    for (const auto byte : id.bytes) {
+      std::snprintf(buffer, sizeof buffer, "%02x", static_cast<unsigned>(byte));
+      out += buffer;
+    }
+    return out;
+  };
+  for (const auto& [order, header] : file.headers) {
+    const auto final_code = static_cast<unsigned>(header.final_state);
+    std::cout << "HEADER order=" << order << " final=" << (final_code < 13 ? state_names[final_code] : "?")
+              << " txn=" << hex(header.transaction_uuid) << " principal=" << hex(header.principal_or_agent_uuid)
+              << " attachment=" << hex(header.attachment_uuid) << " session=" << hex(header.session_uuid)
+              << " isolation=" << static_cast<unsigned>(header.isolation_profile) << " read_only=" << (header.read_only ? 1 : 0)
+              << " commit_time=" << (header.commit_time_utc_ns != 0 ? 1 : 0)
+              << " completed_at=" << (header.completed_at_utc_ns != 0 ? 1 : 0) << '\n';
   }
   static const char* const kind_names[] = {"?", "connection", "session", "attachment", "settings_change"};
   for (const auto& record : file.ledger) {

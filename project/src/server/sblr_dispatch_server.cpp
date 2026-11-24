@@ -13,6 +13,7 @@
 // SEARCH_KEY: SB_SERVER_SBLR_DISPATCH_RESULTS
 
 #include "sblr_dispatch_server.hpp"
+#include "native_database_loop.hpp"
 #include "../wire/parser_server_ipc/binary_identity_io.hpp"
 #include "hash_digest.hpp"
 #include "../wire/language_bundle_identity.hpp"
@@ -4889,6 +4890,13 @@ bool RollbackUnpublishedTransaction(
     const std::array<std::uint8_t, 16>& request_uuid,
     const ServerTransactionState& transaction,
     std::string* rollback_detail = nullptr) {
+  // SB_NATIVE_TRANSACTION_BOUNDARY (S5, Q4): a NATIVE session's transactions belong to the database loop, never to the legacy engine. This
+  // helper must not call the legacy rollback for one: it reports "not cleaned up" (the caller quarantines the id in memory) and the loop
+  // rolls the replacement back when the session ends (SB_NATIVE_LOOP_SESSIONS: END rolls back every transaction the session owns).
+  if (session.native_session_approved) {
+    if (rollback_detail != nullptr) *rollback_detail = "native_replacement_ends_with_session";
+    return false;
+  }
   const auto* database = HostedDatabaseForSession(engine_state, session);
   if (database == nullptr || transaction.local_transaction_id == 0 ||
       transaction.transaction_uuid.is_nil()) {
@@ -7304,6 +7312,70 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   result.session_uuid = decoded->session_uuid;
   result.payload = EncodePrepareResult("accepted", prepared.prepared_statement_uuid, prepared.operation_id);
   return result;
+}
+
+// SEARCH_KEY: SB_NATIVE_TRANSACTION_BOUNDARY (thin-slice S5; owner Q146/Q150/Q168/Q169, plan 36 T7). A COMMIT or ROLLBACK statement on a NATIVE
+// session ends the user's transaction and gives the session its REPLACEMENT in ONE atomic loop step (CompleteAndBegin): the executor's legacy
+// commit and the legacy replacement begin are NOT used. The owner key is the session UUID (the loop checks ownership before writing); the replacement
+// keeps the principal (+64), attachment (+80) and session (+96) and takes the session's CURRENT settings (Q168), not the finished transaction's.
+// RETAINING (commit_mode 2) is refused with ONE specific code before anything is written. The result is a message vector (machine token, UUIDs,
+// u64 order); the parser builds any text.
+NativeBoundaryOutcome RunNativeTransactionBoundary(const ServerSessionRecord& session,
+                                                   const ServerTransactionState& finalized, bool commit,
+                                                   bool retaining) {
+  NativeBoundaryOutcome out;
+  if (retaining) {
+    out.diagnostic_code = "ENGINE.NATIVE.OPERATION_NOT_BUILT";
+    out.detail = "requires=native_retaining_boundary";
+    return out;
+  }
+  const auto loop = session.native_loop.lock();
+  if (!loop) {
+    out.diagnostic_code = "PARSER_SERVER_IPC.NATIVE_SESSION_LOOP_UNAVAILABLE";
+    out.detail = "native_loop_unavailable";
+    return out;
+  }
+  NativeLoopCompleteAndBeginRequest request;
+  request.owner_key = NativeUuid{session.session_uuid};
+  request.transaction_order = finalized.local_transaction_id;
+  request.completion = commit ? NativeLoopCompletion::commit : NativeLoopCompletion::rollback;
+  // Q168: the session's CURRENT settings (the same values the approval wrote into the session record).
+  request.read_only = session.default_transaction_read_only;
+  request.isolation_profile =
+      static_cast<std::uint8_t>(scratchbird::core::catalog::IsolationProfileKind::snapshot_stable);
+  request.identity.principal_uuid = NativeUuid{session.effective_user_uuid};
+  request.identity.attachment_uuid = NativeUuid{session.attachment_id};
+  request.identity.session_uuid = NativeUuid{session.session_uuid};
+  const auto done = loop->SubmitCompleteAndBeginWork(request).get();
+  if (!done.ok()) {
+    out.diagnostic_code = NativeLoopTransactionErrorCode(done.error);
+    out.detail = NativeLoopTransactionErrorName(done.error);
+    if (!done.writer_error.empty()) out.detail += ":" + done.writer_error;
+    return out;
+  }
+  const auto u64 = [](std::uint64_t v) {
+    std::string s(8, '\0');
+    for (int i = 0; i < 8; ++i) s[i] = static_cast<char>(v >> (i * 8));
+    return s;
+  };
+  out.payload = ResultRecord({
+      {"operation_id", public_result::Kind::text, commit ? "engine.op.txn_commit" : "engine.op.txn_rollback"},
+      {"result_kind", public_result::Kind::text, "native_transaction_boundary"},
+      {"ended_order", public_result::Kind::unsigned_integer, u64(done.completed_order)},
+      {"ended_uuid", public_result::Kind::uuid, IdentityBytes(finalized.transaction_uuid)},
+      {"finality", public_result::Kind::text, done.committed ? "committed" : "rolled_back"},
+      {"new_order", public_result::Kind::unsigned_integer, u64(done.begun_order)},
+      {"new_uuid", public_result::Kind::uuid, IdentityBytes(done.begun_uuid)},
+  });
+  auto& r = out.replacement;
+  r.local_transaction_id = done.begun_order;
+  r.snapshot_visible_through_local_transaction_id = 0;  // the native snapshot is derived with the receipt (S4f)
+  r.transaction_uuid = done.begun_uuid;
+  r.transaction_timestamp = CurrentUtcTimestampText();
+  r.isolation_level = "snapshot";
+  r.read_only = request.read_only;
+  out.ok = true;
+  return out;
 }
 
 SessionOperationResult HandleExecuteSblrImpl(
@@ -10096,7 +10168,27 @@ SessionOperationResult HandleExecuteSblrImpl(
               "bulk_import_stream_registry_unavailable");
         }
       }
-      auto public_abi = canonical_ingress
+      // SB_NATIVE_TRANSACTION_BOUNDARY (S5): a NATIVE session's COMMIT/ROLLBACK is the loop's atomic CompleteAndBegin, not the
+      // executor (whose gate refuses opcode 257) and not the legacy replacement begin.
+      std::optional<NativeBoundaryOutcome> native_boundary;
+      if (canonical_ingress && selected_transaction.has_value() && session->native_session_approved &&
+          (admission.operation_id == "engine.op.txn_commit" || admission.operation_id == "engine.op.txn_rollback")) {
+        native_boundary = RunNativeTransactionBoundary(
+            *session, *selected_transaction, admission.operation_id == "engine.op.txn_commit",
+            canonical_commit_options.has_value() && canonical_commit_options->commit_mode == 2);
+      }
+      auto public_abi = native_boundary.has_value()
+                            ? [&]() {
+                                PublicAbiDispatchResult boundary_result;
+                                boundary_result.attempted = true;
+                                boundary_result.ok = native_boundary->ok;
+                                boundary_result.payload = native_boundary->payload;
+                                boundary_result.diagnostic_code = native_boundary->diagnostic_code;
+                                boundary_result.diagnostic_detail = native_boundary->detail;
+                                boundary_result.audit_detail = native_boundary->ok ? "" : native_boundary->detail;
+                                return boundary_result;
+                              }()
+                        : canonical_ingress
                             ? DispatchThroughStatementContextReceipt(
                                   *live_statement_context,
                                   admission.admission_token,
@@ -10600,14 +10692,22 @@ SessionOperationResult HandleExecuteSblrImpl(
           ServerTransactionState replacement;
           std::string replacement_code;
           std::string replacement_detail;
-          if (!BeginOrdinaryReplacementTransactionForSession(
-                  *session,
-                  engine_state,
-                  request_record.request_uuid,
-                  finalized_transaction,
-                  &replacement,
-                  &replacement_code,
-                  &replacement_detail)) {
+          bool replacement_begun = false;
+          if (native_boundary.has_value()) {
+            // SB_NATIVE_TRANSACTION_BOUNDARY: the loop already began the replacement in the same atomic step.
+            replacement = native_boundary->replacement;
+            replacement_begun = true;
+          } else {
+            replacement_begun = BeginOrdinaryReplacementTransactionForSession(
+                *session,
+                engine_state,
+                request_record.request_uuid,
+                finalized_transaction,
+                &replacement,
+                &replacement_code,
+                &replacement_detail);
+          }
+          if (!replacement_begun) {
             ProjectDefaultTransactionToLegacyFields(session);
             transaction_response.selected_present = false;
             transaction_response.diagnostic_code =

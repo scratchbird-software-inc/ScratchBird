@@ -20,6 +20,7 @@
 // "scalar_projection_rows", row_count, row[i] and row_meta[i]), so every downstream decoder (the line wire, SBWP) is unchanged.
 // A payload that is not a native vector is left alone (status not_native_vector): legacy rows pass through byte for byte.
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,5 +39,20 @@ struct NativeVectorConversion {
 // `column_names` are the parser's own output names (one per result column, in order).
 NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engine_payload,
                                                            const std::vector<std::string>& column_names);
+
+// SEARCH_KEY: SB_NATIVE_TRANSACTION_BOUNDARY_PARSER (S5). A NATIVE database answers COMMIT / ROLLBACK with result_kind
+// "native_transaction_boundary": ended_order (u64), ended_uuid, finality (machine token committed | rolled_back), new_order (u64), new_uuid. No
+// prose, no name. The parser decodes it strictly and builds any client text itself.
+struct NativeTransactionBoundary {
+  std::uint64_t ended_order{0};
+  std::string ended_uuid;      // 16 bytes
+  bool committed{false};
+  std::uint64_t new_order{0};
+  std::string new_uuid;        // 16 bytes
+};
+enum class NativeBoundaryParseStatus { not_native_boundary, parsed, refused };
+// `expect_commit`: the statement asked for a commit (finality must be committed) or a rollback (rolled_back).
+NativeBoundaryParseStatus ParseNativeTransactionBoundary(std::string_view engine_payload, bool expect_commit,
+                                                         NativeTransactionBoundary* out);
 
 }  // namespace scratchbird::parser::sbsql

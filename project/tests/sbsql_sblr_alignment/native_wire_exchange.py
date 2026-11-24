@@ -288,7 +288,7 @@ def check_directories(work):
     check(os.listdir(os.path.join(work, "sr")) == [], f"server runtime directory is not empty: {os.listdir(os.path.join(work, 'sr'))}")
 
 
-def analyse_strace(log, path, logins, per_login, label, restart, size=0, allowed=frozenset(), map_pages=frozenset()):
+def analyse_strace(log, path, logins, per_login, label, restart, size=0, allowed=frozenset(), map_pages=frozenset(), boundaries=0):
     with open(log, encoding="utf-8", errors="replace") as handle:
         lines = merge_split_lines(handle.readlines())
     sb_lines = [line for line in lines if ".sb." in line]
@@ -335,12 +335,25 @@ def analyse_strace(log, path, logins, per_login, label, restart, size=0, allowed
     else:
         # The S4e per-login count covers the state, header and ledger chains' sectors. A chain acquiring a NEW page adds, per new page, exactly the
         # whole-page write (counted apart), ONE 512-byte link write into the chain's previous page, and at most TWO 512-byte writes to the allocation map.
-        bound = logins * per_login + len(full_pages)
-        check(counts["serving"][0] <= bound, f"{label}: {counts['serving'][0]} chain-sector pwrite64 on the data file, at most {logins} logins x {per_login} + {len(full_pages)} link writes = {bound} are implied by the approvals and the {len(full_pages)} new chain pages")
+        # S5: each COMMIT / ROLLBACK boundary is ONE CompleteAndBegin: at most 4 sector writes (T1: 4 for an odd n, 3 for an even n) and ONE sync
+        # under the default policy; the boundary adds NO ledger record.
+        bound = logins * per_login + len(full_pages) + 4 * boundaries
+        check(counts["serving"][0] <= bound, f"{label}: {counts['serving'][0]} chain-sector pwrite64 on the data file, at most {logins} logins x {per_login} + {len(full_pages)} link writes + 4 x {boundaries} boundaries = {bound} are implied by the approvals and the {len(full_pages)} new chain pages")
         check(len(map_writes) <= 2 * len(full_pages), f"{label}: {len(map_writes)} allocation-map writes for {len(full_pages)} new chain pages (at most 2 each)")
+        every_write = counts["serving"][0] + len(full_pages) + len(map_writes)
+        check(counts["serving"][1] <= every_write, f"{label}: more syncs ({counts['serving'][1]}) than data-file writes ({every_write})")
         check(counts["serving"][0] > 0, f"{label}: no pwrite64 at all for {logins} logins: the detector is blind")
         check(counts["shutdown"][0] == 0 and counts["shutdown"][1] <= 1, f"{label}: shutdown wrote {counts['shutdown']}")
     return counts, len(lines)
+
+
+def header_dump(args, path, size):
+    done = subprocess.run([args.state_dump, path, str(size)], capture_output=True, text=True, timeout=300)
+    check(done.returncode == 0, f"native_state_dump: {done.stderr[-500:]}")
+    out = {}
+    for m in re.finditer(r"^HEADER order=(\d+) (.*)$", done.stdout, re.M):
+        out[int(m.group(1))] = dict(item.split("=", 1) for item in m.group(2).split())
+    return out
 
 
 def run(args, work):
@@ -393,6 +406,35 @@ def run(args, work):
         check(refused.returncode != 0 and token in refused.stdout + refused.stderr,
               f"{sql!r}: expected {token}, rc={refused.returncode}: {refused.stdout!r} {refused.stderr!r}")
 
+    # --- S5: COMMIT / ROLLBACK from statements (plan 36 CompleteAndBegin): the session keeps working in the REPLACEMENT transaction ---
+    boundaries = {}   # login index (0-based, counting only logins that hold a slot) -> the finalities its statements ended, in order
+    def boundary_login(label, sql, finalities, pattern=None, expect_rc=0, token=None):
+        nonlocal logins
+        done = sbsql(args, work, port, label, sql)
+        index = logins
+        logins += 1
+        if token is not None:
+            check(done.returncode != 0 and token in done.stdout + done.stderr, f"{sql!r}: expected {token}, rc={done.returncode}: {done.stdout!r} {done.stderr!r}")
+        else:
+            check(done.returncode == 0, f"{sql!r}: rc={done.returncode}: {done.stdout!r} {done.stderr!r}")
+            if pattern:
+                check(re.search(pattern[0], done.stdout, re.M) and re.search(pattern[1], done.stdout, re.M), f"{sql!r}: {done.stdout!r}")
+        boundaries[index] = list(finalities)
+        return done
+    boundary_login("commit-one", "COMMIT; SELECT 1 AS one", ["committed"], (r"^\|\s*one\s*\|\s*$", r"^\|\s*1\s*\|\s*$"))
+    boundary_login("rollback-two", "ROLLBACK; SELECT 2 AS two", ["rolled_back"], (r"^\|\s*two\s*\|\s*$", r"^\|\s*2\s*\|\s*$"))
+    boundary_login("commit-work", "COMMIT WORK; ROLLBACK WORK; SELECT 1 AS one", ["committed", "rolled_back"], (r"^\|\s*one\s*\|\s*$", r"^\|\s*1\s*\|\s*$"))
+    boundary_login("repeat", "COMMIT; COMMIT; ROLLBACK; COMMIT; SELECT 2 AS two", ["committed", "committed", "rolled_back", "committed"],
+                   (r"^\|\s*two\s*\|\s*$", r"^\|\s*2\s*\|\s*$"))
+    # RETAINING (Q169) is NOT built on the native path: ONE specific code, nothing written (the statement ends no transaction).
+    boundary_login("retain", "COMMIT RETAIN", [], token="ENGINE.NATIVE.OPERATION_NOT_BUILT")
+    boundary_login("retaining", "COMMIT RETAINING", [], token="ENGINE.NATIVE.OPERATION_NOT_BUILT")
+    # Strict tokens (controller Q1): nothing after COMMIT / ROLLBACK is silently ignored; ROLLBACK RETAIN[ING] has no lowering yet.
+    boundary_login("rb-retain", "ROLLBACK RETAIN", [], token="SBSQL.PARSER.ROLLBACK_RETAINING_NOT_BUILT")
+    boundary_login("rb-retaining", "ROLLBACK RETAINING", [], token="SBSQL.PARSER.ROLLBACK_RETAINING_NOT_BUILT")
+    boundary_login("rb-chain", "ROLLBACK AND CHAIN", [], token="SBSQL.PARSER.TRANSACTION_CONTROL_TOKEN_UNKNOWN")
+    boundary_login("commit-garbage", "COMMIT garbage", [], token="SBSQL.PARSER.TRANSACTION_CONTROL_TOKEN_UNKNOWN")
+
     # --- the line client over the same port (AUTH / EXECUTE / QUIT) ---
     transcript = line_client(port, [f"AUTH {USER} {PASSWORD}", "EXECUTE SELECT 1 AS one", "QUIT"],
                              [[r"^OK AUTHENTICATED"], [r"^RESULT \S+ \d+ \S+", r"^ERROR"], [r"^OK BYE"]]); logins += 1
@@ -434,9 +476,36 @@ def run(args, work):
           f"{ {n: page_type(image_after, n) for n in outside} })")
     tips, ledger = state_dump(args, database, size)
     map_pages = outside_ok
-    check(len(tips) == 1 + logins, f"expected {1 + logins} TIP slots (create + {logins} logins), found {len(tips)}: {tips}")
-    check(tips[1] == "committed" and all(state == "rolled_back" for order, state in tips.items() if order != 1),
-          f"every session's transaction must be rolled_back (ended): {tips}")
+    # Expected TIP: slot 1 is the create; each login then holds one slot per boundary it ran plus the replacement that its end rolled back.
+    expected = ["committed"]
+    boundary_total = 0
+    for login in range(logins):
+        ended = boundaries.get(login, [])
+        boundary_total += len(ended)
+        expected.extend(ended + ["rolled_back"])
+    check([tips[order] for order in sorted(tips)] == expected and sorted(tips) == list(range(1, len(expected) + 1)),
+          f"TIP slots: the boundaries must leave exactly {expected}; found {tips}")
+    # HEADER evidence (plan 36 CompleteAndBegin): every boundary's ended slot is final, its replacement is the NEXT order, and the
+    # replacement keeps the principal (+64), attachment (+80) and session (+96) of the ended transaction and its isolation and read-only.
+    headers = header_dump(args, database, size)
+    check(sorted(headers) == sorted(tips), f"header slots {sorted(headers)} differ from the TIP slots {sorted(tips)}")
+    order = 2
+    for login in range(logins):
+        ended = boundaries.get(login, [])
+        for finality in ended + ["rolled_back"]:
+            header = headers[order]
+            check(header["final"] == finality and header["completed_at"] == "1", f"slot {order}: header {header} is not final {finality}")
+            check(header["commit_time"] == ("1" if finality == "committed" else "0"), f"slot {order}: commit time wrong: {header}")
+            check(set(header["session"]) != {"0"} and set(header["attachment"]) != {"0"} and set(header["principal"]) != {"0"},
+                  f"slot {order}: header identities not bound: {header}")
+            if order > 2 and (order - 1) in headers and headers[order - 1]["session"] == header["session"]:
+                previous = headers[order - 1]
+                check(previous["principal"] == header["principal"] and previous["attachment"] == header["attachment"] and
+                      previous["isolation"] == header["isolation"] and previous["read_only"] == header["read_only"],
+                      f"slot {order}: the replacement does not keep the identity or settings of slot {order - 1}: {previous} vs {header}")
+            order += 1
+    sessions_of = [headers[o]["session"] for o in sorted(headers) if o != 1]
+    check(len(set(sessions_of)) == logins, f"{logins} sessions expected across the headers, found {len(set(sessions_of))}")
     kinds = [kind for _, kind in ledger]
     check(kinds == ["connection", "session", "attachment", "session"] * logins,
           f"each login must leave exactly connection, session (begin), attachment, session (end) in the ledger, {logins} logins; found {len(ledger)} records: {kinds}")
@@ -444,7 +513,7 @@ def run(args, work):
     counts1 = None
     lines1 = 0
     if args.strace:
-        counts1, lines1 = analyse_strace(log1, database, logins, per_login, "run", False, size, allowed, map_pages)
+        counts1, lines1 = analyse_strace(log1, database, logins, per_login, "run", False, size, allowed, map_pages, boundary_total)
 
     # --- restart: serves again; nothing written ---
     image_restart_before = sha256(database)
@@ -465,7 +534,7 @@ def run(args, work):
 
     summary = (f"native_wire_exchange {size}: {logins} logins + 1 refused; one=1 through SBsql, SBsql -q -A -t and the line client; "
                f"refused shapes keep their tokens; wrong password: generic failure, file unchanged; SBsrv exit 0; db dir = the file only; "
-               f"changed pages {sorted(changed)} within the chains; {len(tips) - 1} sessions ended (TIP rolled_back, {len(ledger)} ledger records, 4 per login); restart serves")
+               f"changed pages {sorted(changed)} within the chains; {logins} sessions ended, {boundary_total} COMMIT/ROLLBACK boundaries (TIP slots {len(tips)}, {len(ledger)} ledger records, 4 per login); restart serves")
     if args.strace:
         summary += (f"; strace: 0 .sb. syscalls; 512-byte pwrite64 {counts1['serving'][0]} + whole new chain pages {counts1['full_pages']} + {counts1['map_writes']} map writes <= {logins}x{per_login} (S4e: {per_approve} per approval + {per_end} per end), "
                     f"fsync {counts1['serving'][1]}, shutdown {counts1['shutdown']}; restart {counts2}; {lines1} syscalls traced")

@@ -589,6 +589,29 @@ bool IsDatabaseLifecycleStatement(const CstDocument& cst) {
   return words.size() >= 2 && words[0] == "ALTER" && words[1] == "DATABASE";
 }
 
+// SEARCH_KEY: SB_TRANSACTION_CONTROL_STRICT_TOKENS (S5, controller Q1 2026-12-09). COMMIT and ROLLBACK take only the tokens their surfaces
+// define; anything else is REFUSED with a specific code instead of silently running as a plain boundary. COMMIT: [WORK | TRANSACTION] |
+// RETAIN [SNAPSHOT] | RETAINING | OPTIONS ...; ROLLBACK: [WORK | TRANSACTION] | TO ... (savepoint, decided elsewhere). ROLLBACK RETAIN /
+// RETAINING has no lowering yet (the rollback options operand admits only mode 1): refused with its own code. Returns the code ("" = fine).
+std::string_view TransactionControlTokenRefusal(const CstDocument& cst, std::string_view keyword) {
+  if (keyword != "COMMIT" && keyword != "ROLLBACK") return {};
+  auto words = MeaningfulTokenWords(cst);
+  while (words.size() > 1 && words.back() == ";") words.pop_back();
+  if (words.size() <= 1) return {};
+  const std::string_view second = words[1];
+  if (keyword == "ROLLBACK") {
+    if (second == "TO" || (words.size() > 2 && words[2] == "TO")) return {};
+    if (words.size() == 2 && (second == "WORK" || second == "TRANSACTION")) return {};
+    for (std::size_t i = 1; i < words.size(); ++i)
+      if (words[i] == "RETAIN" || words[i] == "RETAINING") return "SBSQL.PARSER.ROLLBACK_RETAINING_NOT_BUILT";
+    return "SBSQL.PARSER.TRANSACTION_CONTROL_TOKEN_UNKNOWN";
+  }
+  if (second == "OPTIONS") return {};
+  if (words.size() == 2 && (second == "WORK" || second == "TRANSACTION" || second == "RETAIN" || second == "RETAINING")) return {};
+  if (words.size() == 3 && second == "RETAIN" && words[2] == "SNAPSHOT") return {};
+  return "SBSQL.PARSER.TRANSACTION_CONTROL_TOKEN_UNKNOWN";
+}
+
 const StatementSurfaceDescriptor* DescriptorForStatementTokens(
     const CstDocument& cst, std::string_view first_keyword) {
   const auto words = MeaningfulTokenWords(cst);
@@ -1159,7 +1182,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
                ? FindStatementSurfaceById("SBSQL-41AABA342C25")
                : FindStatementSurfaceById("SBSQL-1B59D6E97591");
   } else if (keyword == "COMMIT") {
-    if (second == "RETAIN" || second == "OPTIONS") return FindStatementSurfaceByName("commit_options");
+    if (second == "RETAIN" || second == "RETAINING" || second == "OPTIONS") return FindStatementSurfaceByName("commit_options");
     return (second == "WORK" || second == "TRANSACTION")
                ? FindStatementSurfaceById("SBSQL-7A09CE443D7A")
                : FindStatementSurfaceById("SBSQL-37B92A5842F6");
@@ -3295,6 +3318,11 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.produces_sblr = true;
   } else if (keyword == "BEGIN" || keyword == "COMMIT" || keyword == "ROLLBACK" ||
              keyword == "SAVEPOINT" || keyword == "RELEASE") {
+    if (const auto refusal = TransactionControlTokenRefusal(cst, keyword); !refusal.empty()) {
+      ast.messages.diagnostics.push_back(MakeDiagnostic(
+          std::string(refusal), "ERROR", "the transaction control statement carries a token its surface does not define",
+          "sbp_sbsql.ast", {{"first_token", first->text}}));
+    }
     ast.family = StatementFamily::kTransaction;
     ast.registry_family = "sbsql.transaction.control.v3";
     ast.operation_family = "sblr.transaction.control.v3";

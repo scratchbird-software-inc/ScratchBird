@@ -209,6 +209,45 @@ int main() {
           "another result_kind is left alone");
   }
 
+
+  // ---- S5: the native transaction boundary vector (COMMIT / ROLLBACK): strict decode, nothing guessed ----
+  {
+    const auto u64 = [](std::uint64_t v) { std::string s(8, '\0'); for (int i = 0; i < 8; ++i) s[i] = static_cast<char>(v >> (8 * i)); return s; };
+    const std::string ended(16, '\x11'), fresh(16, '\x22');
+    const auto make = [&](const std::string& finality, std::uint64_t ended_order, std::uint64_t new_order) {
+      return std::vector<pr::Field>{{"operation_id", pr::Kind::text, "engine.op.txn_commit"},
+                                    {"result_kind", pr::Kind::text, "native_transaction_boundary"},
+                                    {"ended_order", pr::Kind::unsigned_integer, u64(ended_order)},
+                                    {"ended_uuid", pr::Kind::uuid, ended},
+                                    {"finality", pr::Kind::text, finality},
+                                    {"new_order", pr::Kind::unsigned_integer, u64(new_order)},
+                                    {"new_uuid", pr::Kind::uuid, fresh}};
+    };
+    sbsql::NativeTransactionBoundary boundary;
+    using S = sbsql::NativeBoundaryParseStatus;
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(make("committed", 5, 6)), true, &boundary) == S::parsed && boundary.committed &&
+              boundary.ended_order == 5 && boundary.new_order == 6 && boundary.ended_uuid == ended && boundary.new_uuid == fresh,
+          "a commit boundary decodes to its orders, UUIDs and finality");
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(make("rolled_back", 5, 6)), false, &boundary) == S::parsed && !boundary.committed,
+          "a rollback boundary decodes");
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(make("rolled_back", 5, 6)), true, nullptr) == S::refused,
+          "finality that contradicts the statement (rolled_back for a COMMIT) is refused");
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(make("committed", 5, 6)), false, nullptr) == S::refused,
+          "finality that contradicts the statement (committed for a ROLLBACK) is refused");
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(make("COMMITTED", 5, 6)), true, nullptr) == S::refused, "an unknown finality token is refused");
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(make("committed", 5, 5)), true, nullptr) == S::refused, "a replacement that is not a later order is refused");
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(make("committed", 0, 1)), true, nullptr) == S::refused, "an ended order of 0 is refused");
+    auto extra = make("committed", 5, 6);
+    extra.push_back({"message", pr::Kind::text, "committed"});
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(extra), true, nullptr) == S::refused, "an extra (prose) field is refused");
+    auto renamed = make("committed", 5, 6);
+    renamed[5].name = "next_order";
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(renamed), true, nullptr) == S::refused, "a renamed field is refused");
+    Check(sbsql::ParseNativeTransactionBoundary("", true, nullptr) == S::not_native_boundary, "an empty payload is not a boundary");
+    Check(sbsql::ParseNativeTransactionBoundary(Encode(std::vector<pr::Field>{{"operation_id", pr::Kind::text, "x"}, {"result_kind", pr::Kind::text, "bound_projection"}}), true, nullptr) == S::not_native_boundary,
+          "another result_kind is not a boundary");
+  }
+
   std::cout << "native_result_vector_parse: " << checks << " checks, " << failures << " failures\n";
   return failures == 0 ? 0 : 1;
 }

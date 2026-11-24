@@ -887,14 +887,17 @@ void TraceState() {
   Disconnect(*s1);
 }
 
+#if !defined(SB_NATIVE_SELECT_ONE_FIXTURE_ONLY)
 std::optional<int> ExtraReceiptStateForTest(const std::string& state, const Offline&) {
   if (state == "record") { RecordState(); return 0; }
   if (state == "select_one") { SelectOneState(); return 0; }
   if (state == "trace") { TraceState(); return 0; }
   return std::nullopt;
 }
+#endif
 }  // namespace
 
+#if !defined(SB_NATIVE_SELECT_ONE_FIXTURE_ONLY)
 int main(int argc, char** argv) {
   if (argc == 7 && std::string(argv[1]) == "serve") {
     served.bootstrap = FromHex(argv[5]);
@@ -911,3 +914,4 @@ int main(int argc, char** argv) {
   }
   return 2;
 }
+#endif  // SB_NATIVE_SELECT_ONE_FIXTURE_ONLY

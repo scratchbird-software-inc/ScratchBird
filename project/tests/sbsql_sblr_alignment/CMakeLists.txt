@@ -4670,6 +4670,52 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
       TIMEOUT 190)
   endforeach()
 endif()
+# SB_NATIVE_BOUNDARY (S5, 2026-12-09): COMMIT / ROLLBACK on a native session, the real server step (RunNativeTransactionBoundary), in process, per page size
+# (native_boundary_<size>: every behaviour; native_boundary_crash_<size>: a failed or crashed boundary and the next open; native_boundary_strace_8k: the
+# measured writes and syncs per boundary). Reuses native_select_one_test.cpp's helpers (SB_NATIVE_SELECT_ONE_FIXTURE_ONLY hides that file's main).
+add_executable(sbsql_sblr_alignment_native_boundary native_boundary_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api/sblr_executor_availability_registry.cpp)
+add_dependencies(sbsql_sblr_alignment_native_boundary sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)
+target_compile_definitions(sbsql_sblr_alignment_native_boundary PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1 SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM=1)
+target_compile_features(sbsql_sblr_alignment_native_boundary PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_boundary PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_boundary PRIVATE
+  sbl_sbsql_parser_worker_core sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_boundary PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"
+  SB_NATIVE_LOGIN_MATERIAL_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_login_material>")
+foreach(sb_nb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_nb_parts "${sb_nb_size}")
+  list(GET sb_nb_parts 0 sb_nb_bytes)
+  list(GET sb_nb_parts 1 sb_nb_label)
+  add_test(NAME sbsql_sblr_alignment_native_boundary_${sb_nb_label}
+    COMMAND sbsql_sblr_alignment_native_boundary size ${sb_nb_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_boundary_${sb_nb_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_boundary;binary_uuid" TIMEOUT 190)
+  add_test(NAME sbsql_sblr_alignment_native_boundary_crash_${sb_nb_label}
+    COMMAND sbsql_sblr_alignment_native_boundary crash ${sb_nb_bytes} run)
+  set_tests_properties(sbsql_sblr_alignment_native_boundary_crash_${sb_nb_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_boundary;crash;binary_uuid" TIMEOUT 190)
+endforeach()
+if(Python3_EXECUTABLE)
+  add_test(NAME sbsql_sblr_alignment_native_boundary_source_policy
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_boundary_source_policy.py"
+      "${PROJECT_SOURCE_DIR}/src/server/sblr_dispatch_server.cpp")
+  set_tests_properties(sbsql_sblr_alignment_native_boundary_source_policy PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_boundary;source_policy" TIMEOUT 60)
+endif()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  add_test(NAME sbsql_sblr_alignment_native_boundary_strace_8k
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_boundary_strace.py"
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_boundary>
+      --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material> --size 8192)
+  set_tests_properties(sbsql_sblr_alignment_native_boundary_strace_8k PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_boundary;strace" TIMEOUT 190)
+endif()
 if(Python3_EXECUTABLE)
   # the recorder seam is in no production library; the guarded test binary has it (so the check is not vacuous)
   add_test(NAME sbsql_sblr_alignment_native_recorder_seam_symbols
