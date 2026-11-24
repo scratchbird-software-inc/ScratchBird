@@ -4360,6 +4360,40 @@ add_executable(sbsql_sblr_alignment_native_state_dump native_state_dump.cpp)
 target_compile_features(sbsql_sblr_alignment_native_state_dump PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_native_state_dump PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
 target_link_libraries(sbsql_sblr_alignment_native_state_dump PRIVATE sb_storage_database sb_core_uuid OpenSSL::Crypto)
+# SB_NATIVE_WIRE_EXCHANGE (S4h part 1 regression, 2026-12-08): the REAL multi-process exchange SBsql -> SBgate -> SBParser -> SBsrv (no --config) -> engine
+# on a production-created native file, per page size (one target each; see native_wire_exchange.py for every assertion). `_strace_` runs SBsrv under
+# strace -f (pid-aware strace_attribution.py). TLS and SBWP-over-TLS are NOT exercised (--sslmode=disable). Keep a failed run's directory: SB_WIRE_EXCHANGE_KEEP=1.
+if(Python3_EXECUTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  foreach(sb_wx_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_wx_parts "${sb_wx_size}")
+    list(GET sb_wx_parts 0 sb_wx_bytes)
+    list(GET sb_wx_parts 1 sb_wx_label)
+    add_test(NAME sbsql_sblr_alignment_native_wire_exchange_${sb_wx_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_wire_exchange.py"
+        --sbsrv $<TARGET_FILE:sb_server> --listener $<TARGET_FILE:sb_listener> --parser $<TARGET_FILE:sbp_sbsql>
+        --sbsql $<TARGET_FILE:sb_isql>
+        --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --login-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login>
+        --state-dump $<TARGET_FILE:sbsql_sblr_alignment_native_state_dump>
+        --size ${sb_wx_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_wire_exchange_${sb_wx_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;wire_exchange;binary_uuid"
+      TIMEOUT 900)
+  endforeach()
+  if(SB_STRACE_EXECUTABLE)
+    add_test(NAME sbsql_sblr_alignment_native_wire_exchange_strace_8k
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_wire_exchange.py"
+        --sbsrv $<TARGET_FILE:sb_server> --listener $<TARGET_FILE:sb_listener> --parser $<TARGET_FILE:sbp_sbsql>
+        --sbsql $<TARGET_FILE:sb_isql>
+        --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --login-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login>
+        --state-dump $<TARGET_FILE:sbsql_sblr_alignment_native_state_dump>
+        --size 8192 --strace)
+    set_tests_properties(sbsql_sblr_alignment_native_wire_exchange_strace_8k PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;wire_exchange;strace;binary_uuid"
+      TIMEOUT 900)
+  endif()
+endif()
 add_executable(sbsql_sblr_alignment_native_handle native_handle_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_handle PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_native_handle PRIVATE
