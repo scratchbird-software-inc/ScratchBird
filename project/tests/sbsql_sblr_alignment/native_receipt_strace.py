@@ -59,7 +59,11 @@ def main():
     parser.add_argument("--test-bin", required=True)      # native_receipt (serve)
     parser.add_argument("--material-bin", required=True)  # native_login_material (create)
     parser.add_argument("--size", type=int, choices=SIZES)
+    # S4g part 2: native_select_one runs the same detector over its own `trace` state; its read-only region is named `statement`.
+    parser.add_argument("--region", default="receipt")
+    parser.add_argument("--label", default="native_receipt_strace")
     args = parser.parse_args()
+    region_name = args.region
     if shutil.which("strace") is None:
         fail("strace is required")
     work = tempfile.mkdtemp(prefix="sb_native_receipt_strace_")
@@ -112,18 +116,18 @@ def main():
                 m = re.search(r'\b' + OTHER_WRITES + r'\((\d+)', line)
                 if m and spans.covers(index):
                     fail(f"{size} {region}: a write-class syscall that is not a 512-byte pwrite64 or an fsync, on the data file: {line.strip()}")
-            for quiet in ("approve", "receipt", "disconnect", "end"):
+            for quiet in ("approve", region_name, "disconnect", "end"):
                 if opens.get(quiet):
                     fail(f"{size}: the engine opened the data file by path during {quiet}: {opens[quiet][0]}")
-            for needed in ("approve", "prepare", "receipt", "verify", "disconnect", "end"):
+            for needed in ("approve", "prepare", region_name, "verify", "disconnect", "end"):
                 if needed not in counts:
                     fail(f"{size}: region {needed} was not traced")
             if counts["startup"] != [0, 0]:
                 fail(f"{size}: {counts['startup'][0]} writes / {counts['startup'][1]} syncs on the data file during the open")
             if counts["approve"][0] < 4 or counts["approve"][1] < 4:
                 fail(f"{size}: the approval region shows {counts['approve']}: the detector does not see the loop's writes")
-            if counts["receipt"] != [0, 0]:
-                fail(f"{size}: acquiring receipts wrote to the data file: {counts['receipt'][0]} pwrite64 / {counts['receipt'][1]} fsync")
+            if counts[region_name] != [0, 0]:
+                fail(f"{size}: the {region_name} region wrote to the data file: {counts[region_name][0]} pwrite64 / {counts[region_name][1]} fsync")
             if counts["disconnect"][0] < 2:
                 fail(f"{size}: the disconnect region shows {counts['disconnect']}: the detector does not see the loop's writes")
             if counts["end"][0] != 0 or counts["end"][1] > 1:
@@ -139,9 +143,9 @@ def main():
                         fail(f"{size}: a test password appears in the trace or the output as {form!r}")
                 if password.encode() in image_after:
                     fail(f"{size}: a test password appears in the database file")
-            print(f"native_receipt_strace {size}: RECEIPT_OK; 0 .sb. syscalls; every write-class syscall on the data file is a 512-byte pwrite64 "
-                  f"or an fsync; the receipt region has {counts['receipt'][0]} writes / {counts['receipt'][1]} fsyncs; {len(lines)} syscalls traced")
-            for name in ("startup", "approve", "prepare", "receipt", "verify", "disconnect", "end"):
+            print(f"{args.label} {size}: RECEIPT_OK; 0 .sb. syscalls; every write-class syscall on the data file is a 512-byte pwrite64 "
+                  f"or an fsync; the {region_name} region has {counts[region_name][0]} writes / {counts[region_name][1]} fsyncs; {len(lines)} syscalls traced")
+            for name in ("startup", "approve", "prepare", region_name, "verify", "disconnect", "end"):
                 print(f"  {name:11s} pwrite64={counts[name][0]} fsync={counts[name][1]} path-opens={len(opens.get(name, []))}")
         control_dir = os.path.join(work, "control")
         os.mkdir(control_dir)
@@ -157,7 +161,7 @@ def main():
         if not control_writes:
             fail("the detector saw no pwrite64 on the data file during a create: it cannot be trusted")
         print(f"negative control: {len(control_writes)} pwrite64 on the data file during create")
-        print("native_receipt_strace: passed")
+        print(f"{args.label}: passed")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

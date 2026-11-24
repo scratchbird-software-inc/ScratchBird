@@ -33,19 +33,22 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--production", nargs="+", required=True)
     parser.add_argument("--guarded", required=True)
+    # S4g part 2: the same check for the executor-availability recorder seam (SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM)
+    parser.add_argument("--symbols", nargs="+", default=list(SYMBOLS))
     args = parser.parse_args()
+    SYMBOLS_TO_CHECK = tuple(args.symbols)
     if shutil.which("nm") is None:
         print("FAIL nm is required")
         sys.exit(1)
     for path in args.production:
         text = names(path)
-        for symbol in SYMBOLS:
+        for symbol in SYMBOLS_TO_CHECK:
             if symbol in text:
                 print(f"FAIL production artifact {path} contains {symbol}")
                 sys.exit(1)
         print(f"native_seam_symbols: {path}: neither seam symbol present")
     text = names(args.guarded)
-    for symbol in SYMBOLS:
+    for symbol in SYMBOLS_TO_CHECK:
         if symbol not in text:
             print(f"FAIL guarded test binary {args.guarded} lacks {symbol}: the check is vacuous")
             sys.exit(1)

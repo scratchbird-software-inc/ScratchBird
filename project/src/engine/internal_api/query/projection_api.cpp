@@ -14,6 +14,7 @@
 #ifndef SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY
 #include "behavior_support/api_behavior_store.hpp"
 #include "api_diagnostics.hpp"
+#include "sblr_executor_availability_registry.hpp"
 #include "security/security_model.hpp"
 #endif
 
@@ -729,9 +730,40 @@ EngineEvaluateProjectionResult ProjectionFailure(const EngineEvaluateProjectionR
                                                         std::move(detail)));
 }
 
+// SEARCH_KEY: SB_NATIVE_PROJECTION_EXECUTOR_ROWS (S4g part 2; owner Q302). On a NATIVE context every kind of projection expression asks the
+// native executor availability table for the row it executes (literal: engine.op.literal; function: engine.op.function_call; operator and
+// special form: engine.op.operator_call) BEFORE it is evaluated, so the table decides which shapes run natively and a row that is not
+// listed refuses with the table's own code SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (opcode_code, table and database identities). A legacy context
+// is unchanged (its evaluation never consulted the registry here). Reads only the table; nothing is written.
+bool NativeProjectionRowAdmitted(const EngineRequestContext& context, const SblrExecutorAvailabilityRowIdentity& row,
+                                 EngineProjectionFunctionResult* out) {
+  if (!context.native_served_facts) return true;
+  const auto loaded = LoadSblrExecutorAvailabilitySnapshot(context, row);
+  if (loaded.ok) return true;
+  out->ok = false;
+  out->diagnostics.push_back(loaded.diagnostic);
+  return false;
+}
+
 EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
     const EngineEvaluateProjectionRequest& request,
     const EngineProjectionExpression& expression) {
+  {
+    EngineProjectionFunctionResult refused;
+    const bool literal_kind = expression.expression_kind == "literal";
+    const bool function_kind = expression.expression_kind == "function";
+    const bool operator_kind = expression.expression_kind == "operator" || expression.expression_kind == "special_form";
+    if (literal_kind || function_kind || operator_kind) {
+      SblrExecutorAvailabilityRowIdentity row;  // the default identity is engine.op.literal
+      if (function_kind)
+        row = {kSblrFunctionCallExecutorId, kSblrFunctionCallOpcodeCode, kSblrFunctionCallOpcodeVersion, kSblrFunctionCallOperandDescriptorId,
+               kSblrFunctionCallResultDescriptorId, kSblrFunctionCallResultDescriptorVersion};
+      if (operator_kind)
+        row = {kSblrOperatorCallExecutorId, kSblrOperatorCallOpcodeCode, kSblrOperatorCallOpcodeVersion, kSblrOperatorCallOperandDescriptorId,
+               kSblrOperatorCallResultDescriptorId, kSblrOperatorCallResultDescriptorVersion};
+      if (!NativeProjectionRowAdmitted(request.context, row, &refused)) return refused;
+    }
+  }
   if (expression.expression_kind == "literal") {
     EngineProjectionFunctionResult out;
     if (expression.is_null &&

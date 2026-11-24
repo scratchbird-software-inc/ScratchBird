@@ -575,7 +575,6 @@ const std::vector<Gated>& GatedTable() {
     {"ResolveStatementSourceArtifactV1", "source_artifact", "native_source_artifact_registry", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementSourceArtifactReferenceV1 a1{}; StatementSourceArtifactRetentionV1 a2{}; return bridge::ResolveStatementSourceArtifactV1(receipt, &a1, &a2, out_result); }},
     {"IssueStatementSourceMapDescriptorV1", "sblr_descriptor_registries", "native_sblr_descriptor_registries", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { std::vector<std::uint8_t> a1{}; std::vector<std::uint8_t> a2{}; return bridge::IssueStatementSourceMapDescriptorV1(receipt, a1, &a2, out_result); }},
     {"IssueStatementErrorVectorDescriptorV1", "sblr_descriptor_registries", "native_sblr_descriptor_registries", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { std::vector<std::uint8_t> a1{}; std::vector<std::uint8_t> a2{}; return bridge::IssueStatementErrorVectorDescriptorV1(receipt, a1, &a2, out_result); }},
-    {"AcquireStatementPackageAdmissionReservation", "package_admission", "native_package_admission_registry", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementPackageAdmissionReservationRequest a0{}; a0.receipt = receipt; StatementPackageAdmissionReservationHandle a1{}; StatementPackageAdmissionReservationView a2{}; return bridge::AcquireStatementPackageAdmissionReservation(&a0, &a1, &a2, out_result); }},
   };
   return table;
 }
@@ -663,6 +662,25 @@ int GateState(const std::string& state, const Offline& offline) {
     const auto code = Code(result);
     Check(status != SB_ENGINE_STATUS_OK && code == "SECURITY.ACCESS_DENIED",
           "CopyStatementNameResolveAuthorityV1 (allowed): passes the gate to its own 'authority hidden' answer: " + code);
+  }
+
+  // S4g part 2 (OLD: refused, ENGINE.NATIVE.OPERATION_NOT_BUILT / native_package_admission_registry): AcquireStatementPackageAdmissionReservation is allowed
+  // natively (in-memory only). A default request passes the gate to its own request validation (it carries no payload) and writes nothing.
+  {
+    const auto before = Before(compare);
+    bridge::StatementPackageAdmissionReservationRequest request;
+    request.receipt = receipt;
+    bridge::StatementPackageAdmissionReservationHandle handle;
+    bridge::StatementPackageAdmissionReservationView view;
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::AcquireStatementPackageAdmissionReservation(&request, &handle, &view, &result);
+    const auto code = Code(result);
+    Check(status == SB_ENGINE_STATUS_INVALID_ARGUMENT && code == "SBLR.INGRESS_REVALIDATION_FAILED" && !handle,
+          "AcquireStatementPackageAdmissionReservation (allowed): passes the gate to its own request validation: " + code);
+    if (compare) {
+      Check(Image(served.path) == before.image, "AcquireStatementPackageAdmissionReservation (allowed): the file's bytes are identical");
+      Check(Listing(served.directory) == before.listing, "AcquireStatementPackageAdmissionReservation (allowed): no file or directory entry appeared");
+    }
   }
 
   // ---- every refused consumer, on the native receipt ---------------------------------------------------------------------------

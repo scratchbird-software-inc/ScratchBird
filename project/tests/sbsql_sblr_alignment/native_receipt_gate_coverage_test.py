@@ -32,7 +32,11 @@ ROOT = sys.argv[1] if len(sys.argv) > 1 else "."
 # ---- pinned data ------------------------------------------------------------------------------------------------------------
 # S4g part 1: CopyStatementNameResolveAuthorityV1 joins the allowed set (it reads the receipt's in-memory bind authority; no file, no registry),
 # beside the NAME_RESOLVE availability row, so the bound descriptor can be read back natively.
-PINNED_ALLOWED = {"AcquireStatementContextReceipt", "ReleaseStatementContextReceipt", "CopyStatementContextEngineContextV1", "CopyStatementNameResolveAuthorityV1"}
+# S4g part 2 (owner decision 2026-12-06, after an end-to-end audit): AcquireStatementPackageAdmissionReservation joins the allowed set (OLD: refused,
+# native_package_admission_registry): its body reads only the receipt and the session's in-memory resource ledger and records the reservation in a
+# process-local map; no file, no registry, no storage. Dispatch of the allow-listed envelope needs it.
+PINNED_ALLOWED = {"AcquireStatementContextReceipt", "ReleaseStatementContextReceipt", "CopyStatementContextEngineContextV1", "CopyStatementNameResolveAuthorityV1",
+                  "AcquireStatementPackageAdmissionReservation"}
 PINNED_OWN_GATE = {
     "DispatchStatementContextReceipt": "native_operation_not_built(native_session, out_result, \"dispatch_statement_context\"",
     "BindStatementNameResolveAuthorityV1": "context.native_served_facts && view.name_resolve_executor_availability_generation == 0",

@@ -1596,8 +1596,14 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
   if (request.context.statement_transaction_inventory_snapshot != nullptr) {
     const auto& retained =
         *request.context.statement_transaction_inventory_snapshot;
-    const auto fence = scratchbird::storage::database::
-        RevalidateLocalTransactionInventorySnapshot(retained);
+    // SEARCH_KEY: SB_NATIVE_STATEMENT_SNAPSHOT_NO_LEGACY_FENCE (S4g part 2). The legacy fence stats the data file and the legacy side file
+    // `<db>.sb.txn_publish` (found by the strace test: one ENOENT stat per dispatched statement). A NATIVE context's retained snapshot is the
+    // immutable snapshot vector the receipt published from the TIP at BEGIN: visibility is decided by that vector, not by a file fence, so no
+    // file is consulted (owner 2026-10-19 / 2026-11-16: one file, no side files; MGA: snapshot reads take no file-identity fence).
+    const bool native_snapshot = request.context.native_served_facts != nullptr;
+    const auto fence = native_snapshot
+        ? scratchbird::storage::database::LocalTransactionInventoryFenceResult{}
+        : scratchbird::storage::database::RevalidateLocalTransactionInventorySnapshot(retained);
     if (retained.database_path != request.context.database_path) {
       return MakeTxnError<EngineResolveStatementSnapshotResult>(
           request.context,
@@ -1606,7 +1612,7 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
               operation_id,
               "statement_transaction_inventory_snapshot_stale"));
     }
-    if (fence.ok()) {
+    if (native_snapshot || fence.ok()) {
       inventory = &retained.inventory;
     } else {
       // The publish journal is database-wide. Another session may commit or

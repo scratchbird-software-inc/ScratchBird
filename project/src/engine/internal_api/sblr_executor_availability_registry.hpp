@@ -597,6 +597,27 @@ SblrExecutorAvailabilityLoadResult NativeExecutorAvailabilityLookup(
     const EngineUuid& database_uuid, const SblrExecutorAvailabilityRowIdentity& exact_row_identity,
     const std::vector<SblrExecutorAvailabilityRowIdentity>& allow_list);
 
+// SEARCH_KEY: SB_NATIVE_DISPATCH_OPCODE_ALLOW (S4g part 2). True when a native dispatch may carry an operation with this opcode code:
+// the code belongs to a row of the allow-list (the table decides, never the caller). The dispatch gate refuses every other opcode with
+// SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (NativeExecutorNotImplementedDiagnostic) before anything else is read or written.
+bool NativeExecutorOpcodeCodeAllowed(std::uint16_t opcode_code);
+// The table's refusal for an opcode (fields: opcode_code, and row_identity_sha256 when a row is known; identities: the table and database).
+EngineApiDiagnostic NativeExecutorNotImplementedDiagnostic(const EngineUuid& database_uuid, std::uint16_t opcode_code,
+                                                           const std::string& row_identity_sha256);
+
+#if defined(SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM)
+// TEST SEAM (S4g part 2, owner Q302/Q304: "log every row asked, then allow-list exactly that"). Compiled ONLY when a test target
+// defines SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM and compiles this source itself; the production library has no such symbol
+// (native_seam_symbols.py checks with nm). While recording, every native availability lookup is logged and, when `grant` is set,
+// answered "installed" so the executor continues to the next row it needs.
+struct NativeExecutorRecordedRowForTest {
+  SblrExecutorAvailabilityRowIdentity row;
+  bool in_allow_list = false;
+};
+void StartNativeExecutorRecordingForTest(bool grant);
+std::vector<NativeExecutorRecordedRowForTest> StopNativeExecutorRecordingForTest();
+#endif
+
 std::string ComputeSblrExecutorAvailabilityRowIdentitySha256(
     const SblrExecutorAvailabilityRowIdentity& identity);
 

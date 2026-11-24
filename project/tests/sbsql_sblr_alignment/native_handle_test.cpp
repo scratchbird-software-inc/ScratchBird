@@ -33,7 +33,7 @@
 //     approved session is native_receipt_test's. The marker rule is unchanged: the handle's replaces whatever the caller put
 //     in its context] and the receipt still checks the context's database against the header snapshot (= the facts);
 //   * every executor-availability entry point answers from the per-build native table: nothing is available
-//     (the allow-list is empty), so each refuses SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED with structured fields;
+//     (the allow-list holds SBLR_NAME_RESOLVE and engine.op.literal, S4g part 2), so every other row refuses SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED with structured fields;
 //     Set refuses SBLR.EXECUTOR.NATIVE_AVAILABILITY_IMMUTABLE; the pure table logic (a test allow-list) answers
 //     installed;
 //   * the legacy side-file registries (diagnostic identity, transaction begin authority, catalog object events,
@@ -174,6 +174,11 @@ api::SblrExecutorAvailabilityRowIdentity LiteralRow() {
   row.result_descriptor_id = api::kSblrLiteralResultDescriptorId;
   row.result_descriptor_version = api::kSblrLiteralResultDescriptorVersion;
   return row;
+}
+// S4g part 2: a row that stays OFF the native allow-list and is asked by a projection operator (`SELECT 1 + 0`): engine.op.operator_call.
+api::SblrExecutorAvailabilityRowIdentity OperatorCallRow() {
+  return {api::kSblrOperatorCallExecutorId, api::kSblrOperatorCallOpcodeCode, api::kSblrOperatorCallOpcodeVersion, api::kSblrOperatorCallOperandDescriptorId,
+          api::kSblrOperatorCallResultDescriptorId, api::kSblrOperatorCallResultDescriptorVersion};
 }
 api::SblrExecutorAvailabilityRowIdentity ProjectRow() {
   api::SblrExecutorAvailabilityRowIdentity row;
@@ -426,7 +431,10 @@ int HandleMode(const fs::path& path) {
   native.security_context_present = true;
   const auto literal = LiteralRow();
   const auto project = ProjectRow();
-  for (const auto& row : {literal, project}) {
+  // S4g part 2 (OLD: the loop below ran over {literal, project}, both refused): the literal row is now on the allow-list (the recorder logged it for
+  // `SELECT 1 AS one`, owner Q302), so the refusal loop runs over two rows that stay off: the project row and the operator-call row.
+  const auto operator_call = OperatorCallRow();
+  for (const auto& row : {operator_call, project}) {
     const auto loaded = api::LoadSblrExecutorAvailabilitySnapshot(native, row);
     Check(!loaded.ok, "Load by identity: not available natively");
     CheckNotImplemented(loaded.diagnostic, row, facts->database_uuid, "Load by identity");
@@ -439,33 +447,37 @@ int HandleMode(const fs::path& path) {
   }
   {
     const auto no_row = api::LoadSblrExecutorAvailabilitySnapshot(native);
-    // (A default row identity IS the literal row, so the no-row forms ask about the literal.)
-    Check(!no_row.ok, "Load without a row: not available natively");
-    CheckNotImplemented(no_row.diagnostic, literal, facts->database_uuid, "Load without a row (the literal row)");
+    // (A default row identity IS the literal row, so the no-row forms ask about the literal.) OLD (S3e/S4g part 1): not available natively;
+    // NEW (S4g part 2): the literal row is on the allow-list, so the no-row form answers installed from the table.
+    Check(no_row.ok && no_row.snapshot.installed && no_row.snapshot.snapshot_uuid == api::NativeExecutorAvailabilityTableUuid(),
+          "Load without a row: the literal row is installed natively");
     const std::vector<api::SblrExecutorAvailabilityRowIdentity> both{literal, project};
     const auto batch = api::LoadSblrExecutorAvailabilitySnapshots(native, both);
-    Check(!batch.ok && batch.rows.size() == 2, "batch: one result per row");
-    CheckNotImplemented(batch.diagnostic, literal, facts->database_uuid, "batch (first failure)");
+    Check(!batch.ok && batch.rows.size() == 2 && batch.rows[0].ok, "batch: one result per row, the literal row answers, the project row does not");
+    CheckNotImplemented(batch.diagnostic, project, facts->database_uuid, "batch (first failure)");
     CheckNotImplemented(batch.rows[1].diagnostic, project, facts->database_uuid, "batch (second row)");
     api::SblrExecutorAvailabilitySnapshot admitted;
-    const auto revalidated = api::RevalidateSblrExecutorAvailability(native, admitted, nullptr);
-    CheckNotImplemented(revalidated, literal, facts->database_uuid, "Revalidate (no row: the literal row)");
+    const auto revalidated = api::RevalidateSblrExecutorAvailability(native, operator_call, admitted, nullptr);
+    CheckNotImplemented(revalidated, operator_call, facts->database_uuid, "Revalidate (the operator-call row)");
     api::SblrExecutorAvailabilitySetRequest set;
     set.database_uuid = facts->database_uuid;
-    set.exact_row_identity = literal;
+    set.exact_row_identity = operator_call;
     set.requested_state = api::SblrExecutorAvailabilityState::installed;
     set.reason_code = "test";
     const auto set_result = api::SetSblrExecutorAvailability(native, set);
     Check(!set_result.ok && set_result.diagnostic.code == "SBLR.EXECUTOR.NATIVE_AVAILABILITY_IMMUTABLE" &&
               HasIdentity(set_result.diagnostic, "availability_table_uuid", api::NativeExecutorAvailabilityTableUuid()),
           "Set refuses on native with a specific code");
-    // S4g part 1 (OLD, S3e: the allow-list was empty): ONE row is listed, SBLR_NAME_RESOLVE, and no other (the literal row above is not).
+    // S4g part 1 (OLD, S3e: the allow-list was empty): ONE row, SBLR_NAME_RESOLVE. S4g part 2 (NEW, owner Q302: enable exactly the rows the recorder
+    // logged): TWO rows, SBLR_NAME_RESOLVE and engine.op.literal. The operator-call and function-call rows (what `SELECT 1 + 0` asks) are NOT listed.
     {
       const auto& allowed = api::NativeExecutorAvailabilityAllowList();
-      Check(allowed.size() == 1 && allowed.front().executor_id == api::kSblrNameResolveExecutorId &&
-                allowed.front().opcode_code == api::kSblrNameResolveOpcodeCode,
-            "the native allow-list holds exactly the SBLR_NAME_RESOLVE row in this build");
-      Check(!api::LoadSblrExecutorAvailabilitySnapshot(native, literal).ok, "and the literal row is still not installed natively");
+      Check(allowed.size() == 2 && allowed[0].executor_id == api::kSblrNameResolveExecutorId && allowed[0].opcode_code == api::kSblrNameResolveOpcodeCode &&
+                api::ComputeSblrExecutorAvailabilityRowIdentitySha256(allowed[1]) == api::ComputeSblrExecutorAvailabilityRowIdentitySha256(literal),
+            "the native allow-list holds exactly the SBLR_NAME_RESOLVE and engine.op.literal rows in this build");
+      Check(api::LoadSblrExecutorAvailabilitySnapshot(native, literal).ok, "the literal row is installed natively");
+      Check(!api::LoadSblrExecutorAvailabilitySnapshot(native, operator_call).ok && !api::LoadSblrExecutorAvailabilitySnapshot(native, project).ok,
+            "and the operator-call and project rows are not");
     }
     // A context for another database than the facts names is refused, not answered.
     auto crossed = native;

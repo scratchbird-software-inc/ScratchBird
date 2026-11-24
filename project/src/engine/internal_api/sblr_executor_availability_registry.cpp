@@ -1233,10 +1233,74 @@ const std::vector<SblrExecutorAvailabilityRowIdentity>& NativeExecutorAvailabili
   // points refuse a native context with ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED (registry_family sblr_name_resolve_journal) before any
   // file is touched, and the native dispatch gate (DispatchStatementContextReceipt) still refuses every native operation with
   // ENGINE.NATIVE.OPERATION_NOT_BUILT. Every other row stays off the list until the executor runs natively end to end (S4g part 2).
-  static const std::vector<SblrExecutorAvailabilityRowIdentity> allowed{SblrExecutorAvailabilityRowIdentity{
-      kSblrNameResolveExecutorId, kSblrNameResolveOpcodeCode, kSblrNameResolveOpcodeVersion, kSblrNameResolveOperandDescriptorId,
-      kSblrNameResolveResultDescriptorId, kSblrNameResolveResultDescriptorVersion}};
+  // SEARCH_KEY: SB_NATIVE_ALLOW_LIST_LITERAL (S4g part 2, owner Q302: enable exactly the logged rows). The recorder logged ONE row while
+  // `SELECT 1 AS one` ran natively end to end: engine.op.literal (opcode 3) asked by the projection evaluator. Why it is safe: the literal row
+  // evaluates a typed value carried in the statement's own operand bytes; it reads no storage, no catalog row and no file, and writes nothing.
+  // Rows `SELECT 1 + 0` would ask (engine.op.operator_call 1025) and a function would ask (engine.op.function_call 1024) stay off.
+  static const std::vector<SblrExecutorAvailabilityRowIdentity> allowed{
+      SblrExecutorAvailabilityRowIdentity{kSblrNameResolveExecutorId, kSblrNameResolveOpcodeCode, kSblrNameResolveOpcodeVersion,
+                                          kSblrNameResolveOperandDescriptorId, kSblrNameResolveResultDescriptorId,
+                                          kSblrNameResolveResultDescriptorVersion},
+      SblrExecutorAvailabilityRowIdentity{}};
   return allowed;
+}
+
+EngineApiDiagnostic NativeExecutorNotImplementedDiagnostic(const EngineUuid& database_uuid, std::uint16_t opcode_code,
+                                                           const std::string& row_identity_sha256) {
+  auto diagnostic = MakeEngineApiDiagnostic("SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "sblr.executor.native_not_implemented", {}, true);
+  diagnostic.fields.push_back({"opcode_code", std::to_string(opcode_code)});
+  if (!row_identity_sha256.empty()) diagnostic.fields.push_back({"row_identity_sha256", row_identity_sha256});  // the dispatch gate knows the opcode, not a row
+  diagnostic.identity_fields.push_back({"availability_table_uuid", NativeExecutorAvailabilityTableUuid()});
+  diagnostic.identity_fields.push_back({"database_uuid", database_uuid});
+  return diagnostic;
+}
+
+#if defined(SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM)
+namespace {
+std::mutex g_native_recorder_mutex;
+bool g_native_recorder_active = false;
+bool g_native_recorder_grant = false;
+std::vector<NativeExecutorRecordedRowForTest> g_native_recorder_rows;
+bool NativeRecorderGrants() {
+  std::lock_guard<std::mutex> guard(g_native_recorder_mutex);
+  return g_native_recorder_active && g_native_recorder_grant;
+}
+void NativeRecorderLog(const SblrExecutorAvailabilityRowIdentity& row) {
+  std::lock_guard<std::mutex> guard(g_native_recorder_mutex);
+  if (!g_native_recorder_active) return;
+  NativeExecutorRecordedRowForTest entry;
+  entry.row = row;
+  for (const auto& allowed : NativeExecutorAvailabilityAllowList())
+    if (SameExecutorAvailabilityIdentity(allowed, row)) entry.in_allow_list = true;
+  g_native_recorder_rows.push_back(std::move(entry));
+}
+}  // namespace
+void StartNativeExecutorRecordingForTest(bool grant) {
+  std::lock_guard<std::mutex> guard(g_native_recorder_mutex);
+  g_native_recorder_active = true;
+  g_native_recorder_grant = grant;
+  g_native_recorder_rows.clear();
+}
+std::vector<NativeExecutorRecordedRowForTest> StopNativeExecutorRecordingForTest() {
+  std::lock_guard<std::mutex> guard(g_native_recorder_mutex);
+  g_native_recorder_active = false;
+  g_native_recorder_grant = false;
+  return std::exchange(g_native_recorder_rows, {});
+}
+#endif
+
+// SEARCH_KEY: SB_NATIVE_DISPATCH_ROOT_OPCODES (S4g part 2). The opcodes a native dispatch may carry as ENVELOPE members: package begin (1), package
+// end (2) and query.evaluate_projection (0x040E). None of them asks the availability table (the recorder logged no lookup for them), so they
+// are not rows; the rows a projection needs are asked inside the executor (SB_NATIVE_PROJECTION_EXECUTOR_ROWS). Every other opcode refuses at
+// the dispatch gate. Data, in one place; a test pins it.
+bool NativeExecutorOpcodeCodeAllowed(std::uint16_t opcode_code) {
+  static constexpr std::uint16_t kRoots[] = {1, 2, 0x040E};
+  for (const auto root : kRoots)
+    if (root == opcode_code) return true;
+#if defined(SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM)
+  if (NativeRecorderGrants()) return true;
+#endif
+  return false;
 }
 
 SblrExecutorAvailabilityLoadResult NativeExecutorAvailabilityLookup(
@@ -1248,12 +1312,7 @@ SblrExecutorAvailabilityLoadResult NativeExecutorAvailabilityLookup(
     return SameExecutorAvailabilityIdentity(allowed, exact_row_identity);
   }) != allow_list.end();
   if (!available || row_sha.empty()) {
-    result.diagnostic = MakeEngineApiDiagnostic("SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED",
-                                                "sblr.executor.native_not_implemented", {}, true);
-    result.diagnostic.fields.push_back({"opcode_code", std::to_string(exact_row_identity.opcode_code)});
-    result.diagnostic.fields.push_back({"row_identity_sha256", row_sha});
-    result.diagnostic.identity_fields.push_back({"availability_table_uuid", NativeExecutorAvailabilityTableUuid()});
-    result.diagnostic.identity_fields.push_back({"database_uuid", database_uuid});
+    result.diagnostic = NativeExecutorNotImplementedDiagnostic(database_uuid, exact_row_identity.opcode_code, row_sha);
     return result;
   }
   auto& snapshot = result.snapshot;
@@ -1283,6 +1342,13 @@ SblrExecutorAvailabilityLoadResult NativeLoad(const EngineRequestContext& contex
     result.diagnostic.identity_fields.push_back({"context_database_uuid", context.database_uuid});
     return result;
   }
+#if defined(SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM)
+  NativeRecorderLog(exact_row_identity);
+  if (NativeRecorderGrants()) {
+    const std::vector<SblrExecutorAvailabilityRowIdentity> granted{exact_row_identity};
+    return NativeExecutorAvailabilityLookup(context.database_uuid, exact_row_identity, granted);
+  }
+#endif
   return NativeExecutorAvailabilityLookup(context.database_uuid, exact_row_identity,
                                           NativeExecutorAvailabilityAllowList());
 }

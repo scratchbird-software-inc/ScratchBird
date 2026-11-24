@@ -86,6 +86,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <memory>
 #include <set>
 #include <source_location>
@@ -829,7 +830,15 @@ srv::SessionOperationResult ServerAcquire(Approved& a) {
 }
 
 // ---- the cases ---------------------------------------------------------------------------------------------------------------
+#if defined(SB_NATIVE_RECEIPT_FIXTURE_ONLY)
+// S4g part 2: native_select_one_test.cpp includes this file for its helpers (the serve process, the approved session, the public-ABI
+// session, the receipt acquire, the offline reader) and adds its own states here. Not defined for this test's own target.
+std::optional<int> ExtraReceiptStateForTest(const std::string& state, const Offline& offline);
+#endif
 int ReceiptState(const std::string& state, const Offline& offline) {
+#if defined(SB_NATIVE_RECEIPT_FIXTURE_ONLY)
+  if (const auto handled = ExtraReceiptStateForTest(state, offline)) return *handled;
+#endif
   const bool trace = state == "trace";
   const auto page_size = served.facts->page_size_bytes;
   const auto read = [&] { return off::ReadFile(served.path, page_size); };
@@ -1264,7 +1273,9 @@ int ReceiptState(const std::string& state, const Offline& offline) {
                 again.descriptor_sha256 == ack.descriptor_sha256,
             "a replay of the same bind returns the same acknowledgement");
     }
-    // DISPATCH: executing is S4g
+    // DISPATCH: S4g part 2 (owner Q302) lets a native receipt dispatch ONLY an envelope whose members are the dispatch roots (package begin/end and
+    // query.evaluate_projection); that path is native_select_one_test.cpp's. OLD: every native dispatch refused ENGINE.NATIVE.OPERATION_NOT_BUILT.
+    // NEW: a dispatch that carries NO envelope (bytes the gate cannot frame) still refuses it, which is what this request is.
     bridge::StatementContextDispatchRequest dispatch;
     dispatch.receipt = r1.receipt;
     result = nullptr;
@@ -1580,6 +1591,7 @@ void RunState(const std::string& self, const fs::path& root, std::uint32_t page_
 
 }  // namespace
 
+#if !defined(SB_NATIVE_RECEIPT_FIXTURE_ONLY)
 int main(int argc, char** argv) {
   if (argc == 7 && std::string(argv[1]) == "serve") {
     served.bootstrap = FromHex(argv[5]);
@@ -1612,3 +1624,4 @@ int main(int argc, char** argv) {
   }
   return 2;
 }
+#endif  // SB_NATIVE_RECEIPT_FIXTURE_ONLY

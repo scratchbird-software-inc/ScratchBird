@@ -4557,6 +4557,62 @@ endif()
 # adds 0 `.sb.*` syscalls and 0 data-file writes in the region; native_receipt_gate_coverage is the source-policy test (a new consumer
 # declared in statement_context.hpp that is not in the engine's table, the test's table or the gate fails it). NEW targets, one ctest
 # entry per page size.
+# SB_NATIVE_SELECT_ONE (S4g part 2; owner Q302 / Q310): `SELECT 1 AS one` (0x040E) runs natively, in process, through the real SBsql parser/lowering.
+# Includes native_receipt_test.cpp for its helpers (SB_NATIVE_RECEIPT_FIXTURE_ONLY hides that file's main). Compiles native_database_loop.cpp
+# (loop seams) and the availability registry (the recorder seam) itself, as native_receipt does for the loop: production libraries carry neither.
+add_executable(sbsql_sblr_alignment_native_select_one native_select_one_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api/sblr_executor_availability_registry.cpp)
+add_dependencies(sbsql_sblr_alignment_native_select_one sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)
+target_compile_definitions(sbsql_sblr_alignment_native_select_one PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1 SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM=1)
+target_compile_features(sbsql_sblr_alignment_native_select_one PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_select_one PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_select_one PRIVATE
+  sbl_sbsql_parser_worker_core sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_select_one PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"
+  SB_NATIVE_LOGIN_MATERIAL_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_login_material>")
+
+foreach(sb_n1_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_n1_parts "${sb_n1_size}")
+  list(GET sb_n1_parts 0 sb_n1_bytes)
+  list(GET sb_n1_parts 1 sb_n1_label)
+  add_test(NAME sbsql_sblr_alignment_native_select_one_${sb_n1_label}
+    COMMAND sbsql_sblr_alignment_native_select_one size ${sb_n1_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_select_one_${sb_n1_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_select_one;binary_uuid"
+    TIMEOUT 190)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  # the statements' region (`statement`) is read-only: 0 .sb.* syscalls and 0 data-file writes or fsyncs (shared detector: native_receipt_strace.py)
+  foreach(sb_n1_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_n1_parts "${sb_n1_size}")
+    list(GET sb_n1_parts 0 sb_n1_bytes)
+    list(GET sb_n1_parts 1 sb_n1_label)
+    add_test(NAME sbsql_sblr_alignment_native_select_one_strace_${sb_n1_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_receipt_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_select_one>
+        --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --size ${sb_n1_bytes} --region statement --label native_select_one_strace)
+    set_tests_properties(sbsql_sblr_alignment_native_select_one_strace_${sb_n1_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_select_one;strace"
+      TIMEOUT 190)
+  endforeach()
+endif()
+if(Python3_EXECUTABLE)
+  # the recorder seam is in no production library; the guarded test binary has it (so the check is not vacuous)
+  add_test(NAME sbsql_sblr_alignment_native_recorder_seam_symbols
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_seam_symbols.py"
+      --production $<TARGET_FILE:sb_server_core> $<TARGET_FILE:sb_server> $<TARGET_FILE:sb_engine> $<TARGET_FILE:sb_engine_internal_api>
+      --guarded $<TARGET_FILE:sbsql_sblr_alignment_native_select_one>
+      --symbols StartNativeExecutorRecordingForTest StopNativeExecutorRecordingForTest)
+  set_tests_properties(sbsql_sblr_alignment_native_recorder_seam_symbols PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_select_one;test_seam" TIMEOUT 600)
+endif()
+
 add_executable(sbsql_sblr_alignment_native_receipt_gate native_receipt_gate_test.cpp
   ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
 add_dependencies(sbsql_sblr_alignment_native_receipt_gate sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)

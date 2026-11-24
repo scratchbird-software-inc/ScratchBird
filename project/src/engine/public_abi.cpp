@@ -38,6 +38,7 @@
 #include "engine/functions/registry/function_seed_registry.hpp"
 #include "core/agents/resource_governance_admission.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "engine/internal_api/catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_operations.hpp"
 #include "executor_foundation.hpp"
@@ -4743,6 +4744,83 @@ std::string api_result_payload(const scratchbird::engine::internal_api::EngineAp
   return payload;
 }
 
+// SEARCH_KEY: SB_NATIVE_RESULT_MESSAGE_VECTOR (S4g part 2; owner Q310: "the engine returns a message vector (int64 value plus descriptor UUIDs) and
+// the parser builds the row"). The result of a query.evaluate_projection on a NATIVE context. It reuses the SBRES002 framing (the decoder the parser
+// already has) but carries NO column name, NO rendered row and NO text: the engine never picks a language. Fields, in order:
+//   operation_id      text      machine token "query.evaluate_projection"
+//   result_kind       text      machine token "native_scalar_projection_vector"
+//   column_count      unsigned  u64 LE8
+//   row_count         unsigned  u64 LE8
+//   per column c:  column_descriptor[c]      uuid  the result column's descriptor identity (the value descriptor's own uuid)
+//                  column_datatype[c]        uuid  the datatype identity (type_uuid of the datatype cohort)
+//                  column_datatype_descriptor[c] uuid  the cohort's datatype descriptor identity
+//                  column_datatype_generation[c] unsigned  u64 LE8, the cohort descriptor generation
+//   per row r, column c:  value[r.c]         signed_integer  int64 LE8 (the native carrier)
+// Only a non-null int64 is built in this slice; any other value is refused with ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT (before a byte of the
+// result exists), so no text carrier can reach a native client.
+std::optional<std::string> native_scalar_projection_vector(const scratchbird::engine::internal_api::EngineApiResult& api_result,
+                                                           const scratchbird::engine::internal_api::EngineRequestContext& context) {
+  const auto& rows = api_result.result_shape.rows;
+  if (rows.empty()) return std::nullopt;
+  const auto columns = rows.front().fields.size();
+  if (columns == 0) return std::nullopt;
+  const auto u64 = [](std::uint64_t value) {
+    std::string out(8, '\0');
+    for (unsigned i = 0; i < 8; ++i) out[i] = static_cast<char>(value >> (i * 8));
+    return out;
+  };
+  // The int64 identity of the datatype cohort the receipt is bound to (exact snapshot and generations; never a nearest match).
+  const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1* int64_identity = nullptr;
+  for (const auto& row3 : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = row3.legacy_fields;
+    if (row.canonical_name == "bigint" && row.codec_id == "datatype.int64.le.v1" && row.catalog_snapshot_uuid == context.datatype_catalog_snapshot_uuid &&
+        row.catalog_generation == context.datatype_catalog_generation && row.registry_generation == context.datatype_registry_generation) {
+      if (int64_identity != nullptr) return std::nullopt;  // ambiguous
+      int64_identity = &row;
+    }
+  }
+  if (int64_identity == nullptr) return std::nullopt;
+  std::vector<public_result::Field> fields;
+  fields.push_back({"operation_id", public_result::Kind::text, "query.evaluate_projection"});
+  fields.push_back({"result_kind", public_result::Kind::text, "native_scalar_projection_vector"});
+  fields.push_back({"column_count", public_result::Kind::unsigned_integer, u64(columns)});
+  fields.push_back({"row_count", public_result::Kind::unsigned_integer, u64(rows.size())});
+  for (std::size_t c = 0; c < columns; ++c) {
+    const auto minted = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    if (!minted) return std::nullopt;
+    const std::string index = std::to_string(c);
+    fields.push_back({"column_descriptor[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(*minted)});
+    fields.push_back({"column_datatype[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(int64_identity->type_uuid)});
+    fields.push_back({"column_datatype_descriptor[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(int64_identity->descriptor_uuid)});
+    fields.push_back({"column_datatype_generation[" + index + "]", public_result::Kind::unsigned_integer, u64(int64_identity->descriptor_generation)});
+  }
+  for (std::size_t r = 0; r < rows.size(); ++r) {
+    if (rows[r].fields.size() != columns) return std::nullopt;
+    for (std::size_t c = 0; c < columns; ++c) {
+      const auto& value = rows[r].fields[c].second;
+      const auto& type = value.descriptor.canonical_type_name;
+      if (value.is_null || value.state != scratchbird::engine::internal_api::EngineValueState::value) return std::nullopt;
+      std::string bytes;
+      if (scratchbird::engine::PublicInt64ScalarTypeV1(type) && value.encoded_value.empty() && value.binary_value.size() == 8) {
+        bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 8);  // the native carrier (an operator result)
+      } else if ((type == "bigint" || scratchbird::engine::PublicInt64ScalarTypeV1(type)) && !value.encoded_value.empty() && value.binary_value.empty()) {
+        // an integer LITERAL: the parser's text carrier, decoded here as DATA into the native int64 (strict decimal, no fallback)
+        std::int64_t number = 0;
+        const auto* first = value.encoded_value.data();
+        const auto parsed = std::from_chars(first, first + value.encoded_value.size(), number);
+        if (parsed.ec != std::errc{} || parsed.ptr != first + value.encoded_value.size()) return std::nullopt;
+        bytes = u64(static_cast<std::uint64_t>(number));
+      } else {
+        return std::nullopt;
+      }
+      fields.push_back({"value[" + std::to_string(r) + "." + std::to_string(c) + "]", public_result::Kind::signed_integer, std::move(bytes)});
+    }
+  }
+  std::string bytes;
+  if (!public_result::Encode(fields, &bytes)) return std::nullopt;
+  return bytes;
+}
+
 bool dispatch_has_diagnostic(const scratchbird::engine::sblr::SblrDispatchResult& result, std::string_view code) {
   for (const auto& diagnostic : result.diagnostics) {
     if (diagnostic.code == code) {
@@ -5276,7 +5354,10 @@ constexpr NativeReceiptConsumerRow kNativeReceiptConsumerTable[] = {
     {"ResolveStatementSourceArtifactV1", "source_artifact", "native_source_artifact_registry", kRefuse},
     {"IssueStatementSourceMapDescriptorV1", "sblr_descriptor_registries", "native_sblr_descriptor_registries", kRefuse},
     {"IssueStatementErrorVectorDescriptorV1", "sblr_descriptor_registries", "native_sblr_descriptor_registries", kRefuse},
-    {"AcquireStatementPackageAdmissionReservation", "package_admission", "native_package_admission_registry", kRefuse},
+    // S4g part 2 (owner Q2 2026-12-06): allowed (OLD: kRefuse, native_package_admission_registry). Audited end to end: the body reads only the
+    // receipt and the session's in-memory ResourceGovernanceReservationLedger (created by sb_engine_session_begin, descriptor generation set by the
+    // receipt acquire), hashes the payload and records the reservation in g_package_admission_reservations; no file, no registry, no storage.
+    {"AcquireStatementPackageAdmissionReservation", "package_admission", "", kAllowed},
     // a native SESSION (not a receipt) reaching the prepared-metadata binding: it would run the dispatch path past the handle's gate
     {"CreatePreparedMetadataBinding", "prepared_metadata_binding", "native_prepared_statement_registry", kRefuse},
     {"DispatchWithPreparedMetadataBinding", "prepared_metadata_binding", "native_executor_availability_s4g", kRefuse},
@@ -22176,6 +22257,52 @@ std::uint32_t ContextualTextPublicAbiCarrierProofMaskForTest() {
   return mask;
 }
 
+// SEARCH_KEY: SB_NATIVE_DISPATCH_MEMBER_OPCODES (S4g part 2). The member opcode codes of a native dispatch's operation bytes, read with the
+// same bounded framing checks as the routing probe below (an SBOP record: the u16 code at byte 16; an SBOS stream: the record count at 16,
+// then u64-size-prefixed records, the code at byte 16 of each). Reads only; false when the framing is not bounded.
+static bool native_dispatch_member_opcodes(const std::vector<std::uint8_t>& bytes, std::vector<std::uint16_t>* codes) {
+  codes->clear();
+  const auto u16 = [&](std::size_t offset, std::uint16_t* value) {
+    if (offset > bytes.size() || bytes.size() - offset < 2) return false;
+    *value = static_cast<std::uint16_t>(bytes[offset] | (bytes[offset + 1] << 8));
+    return true;
+  };
+  const auto u32 = [&](std::size_t offset, std::uint32_t* value) {
+    if (offset > bytes.size() || bytes.size() - offset < 4) return false;
+    *value = 0;
+    for (unsigned i = 0; i != 4; ++i) *value |= static_cast<std::uint32_t>(bytes[offset + i]) << (i * 8);
+    return true;
+  };
+  const auto u64 = [&](std::size_t offset, std::uint64_t* value) {
+    if (offset > bytes.size() || bytes.size() - offset < 8) return false;
+    *value = 0;
+    for (unsigned i = 0; i != 8; ++i) *value |= static_cast<std::uint64_t>(bytes[offset + i]) << (i * 8);
+    return true;
+  };
+  std::uint32_t magic = 0;
+  if (!u32(0, &magic)) return false;
+  if (magic == scratchbird::engine::sblr::kSblrOperationMagic) {
+    std::uint16_t code = 0;
+    if (!u16(16, &code)) return false;
+    codes->push_back(code);
+    return true;
+  }
+  if (magic != scratchbird::engine::sblr::kSblrOpcodeStreamMagic) return false;
+  std::uint32_t count = 0;
+  if (bytes.size() < scratchbird::engine::sblr::kSblrOpcodeStreamHeaderSize + scratchbird::engine::sblr::kSblrOpcodeStreamTrailerSize ||
+      !u32(16, &count) || count == 0 || count > scratchbird::engine::sblr::kSblrOperationMaximumOperands)
+    return false;
+  std::size_t offset = scratchbird::engine::sblr::kSblrOpcodeStreamHeaderSize;
+  for (std::uint32_t index = 0; index != count; ++index) {
+    std::uint64_t record_size = 0;
+    std::uint16_t code = 0;
+    if (!u64(offset, &record_size) || record_size < 18 || record_size > bytes.size() - offset - 8 || !u16(offset + 8 + 16, &code)) return false;
+    codes->push_back(code);
+    offset += 8 + static_cast<std::size_t>(record_size);
+  }
+  return true;
+}
+
 sb_engine_status_t DispatchStatementContextReceipt(
     const StatementContextDispatchRequest* request,
     sb_engine_result_t* out_result) {
@@ -22188,10 +22315,14 @@ sb_engine_status_t DispatchStatementContextReceipt(
         "ENGINE.STATEMENT_CONTEXT.DISPATCH_REQUEST_INVALID",
         "engine.statement_context.dispatch_request_invalid");
   }
-  // SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT_DISPATCH_GATE (thin-slice S4f). A native receipt exists (S4f) but EXECUTING SBLR
-  // natively is S4g (SELECT 1 and the executor allow-list, owner Q302): this body reaches ~80 legacy side-file families that
-  // only the receipt refusal used to keep away from a native file. So a native receipt dispatches nothing: the same specific
-  // code the handle's own dispatch refuses with (ENGINE.NATIVE.OPERATION_NOT_BUILT; the Q299 code on a restricted database).
+  // SEARCH_KEY: SB_NATIVE_STATEMENT_RECEIPT_DISPATCH_GATE (thin-slice S4f; S4g part 2 admits the allow-listed envelope).
+  // OLD (S4f): a native receipt dispatched NOTHING (ENGINE.NATIVE.OPERATION_NOT_BUILT, requires native_executor_availability_s4g), because
+  // the body below reaches ~80 legacy side-file families. NEW (owner Q302): a native receipt dispatches ONLY an envelope whose every
+  // member opcode belongs to a row of the native executor availability table (NativeExecutorOpcodeCodeAllowed: the table decides); the
+  // body below then runs with every lookup answered by the same table, so a row that is not listed refuses at its own lookup. Anything
+  // else refuses HERE, before any decode, hash, reservation consume or executor entry, with the table's own code
+  // SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (fields opcode_code; identities: the table and the database) and writes nothing. A restricted
+  // database keeps the Q299 code, a failed one the failed code, and bytes that are not a bounded SBOS/SBOP framing keep the not-built code.
   {
     sb_engine_session_t native_session = nullptr;
     {
@@ -22200,9 +22331,24 @@ sb_engine_status_t DispatchStatementContextReceipt(
       if (live != g_live_statement_context_receipts.end() && live->second->engine_context.native_served_facts)
         native_session = live->second->session;
     }
-    if (native_session != nullptr)
-      return native_operation_not_built(native_session, out_result, "dispatch_statement_context",
-                                        "native_executor_availability_s4g");
+    if (native_session != nullptr) {
+      const auto& native_facts = native_session->engine->native_served_facts;
+      const auto serving_state = native_facts ? native_facts->CurrentServingState()
+                                              : scratchbird::engine::internal_api::NativeServedServingState::serving;
+      if (serving_state == scratchbird::engine::internal_api::NativeServedServingState::failed)
+        return native_receipt_failed_refusal(*native_facts, out_result);
+      std::vector<std::uint16_t> member_codes;
+      if (serving_state != scratchbird::engine::internal_api::NativeServedServingState::serving ||
+          !native_dispatch_member_opcodes(request->canonical_operation_bytes, &member_codes))
+        return native_operation_not_built(native_session, out_result, "dispatch_statement_context",
+                                          "native_executor_availability_s4g");
+      for (const auto code : member_codes) {
+        if (scratchbird::engine::internal_api::NativeExecutorOpcodeCodeAllowed(code)) continue;
+        // the table's own code and fields (opcode_code); the dispatch gate knows the opcode, not a row, so there is no row_identity_sha256
+        return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED",
+                           "sblr.executor.native_not_implemented", {}, {{"opcode_code", std::to_string(code)}});
+      }
+    }
   }
   if (request->result_delivery_mode !=
           StatementContextResultDeliveryMode::kDirect &&
@@ -33654,6 +33800,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
   std::vector<std::uint8_t> database_deserialize_logical_snapshot_result_bytes;
   std::vector<std::uint8_t> ddl_drop_rewrite_rule_result_bytes;
   std::vector<std::uint8_t> ddl_validate_constraint_result_bytes;
+  std::optional<std::string> native_result_vector;  // S4g part 2: the native message vector (SB_NATIVE_RESULT_MESSAGE_VECTOR)
   auto* result = make_result(source_map_root ? SB_ENGINE_RESULT_COMMAND_COMPLETION
                                            : SB_ENGINE_RESULT_ROW_BATCH,
                              dispatched.api_result.operation_id);
@@ -33722,9 +33869,25 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     result->rows_produced = static_cast<std::uint64_t>(
         dispatched.api_result.result_shape.rows.size());
     try {
+      // S4g part 2 (owner Q310): a NATIVE context's query.evaluate_projection result is the message vector, not the legacy rendered rows
+      // (those carry the parser-supplied column names). The vector replaces row_values / row_metadata / evidence and, below, the payload.
+      if (receipt->engine_context.native_served_facts && dispatched.api_result.ok &&
+          dispatched.api_result.operation_id == "query.evaluate_projection") {
+        native_result_vector = native_scalar_projection_vector(dispatched.api_result, receipt->engine_context);
+        if (!native_result_vector) {
+          delete result;
+          auto refusal = scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+              "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT", "engine.native.result_vector_type_not_built", {}, true);
+          refusal.fields.push_back({"operation", "query.evaluate_projection"});
+          refusal.fields.push_back({"requires", "native_result_vector_types"});
+          return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT",
+                             "engine.native.result_vector_type_not_built", {}, {}, nullptr, &refusal);
+        }
+      } else {
       result->row_values = api_row_values(dispatched.api_result);
       result->row_metadata_values = api_row_metadata_values(dispatched.api_result);
       result->evidence_values = api_evidence_values(dispatched.api_result);
+      }
     } catch (const std::invalid_argument& error) {
       // A malformed internal result is not success and must not escape the
       // ABI into the server thread. This does not undo execution or claim
@@ -34143,6 +34306,8 @@ if(ddl_drop_timeseries_value_cache_root){/* SBLR_EXECUTOR_NOT_CONNECTED: no engi
 	      result->evidence_values,
 	      0,
 	      static_cast<std::uint64_t>(result->row_values.size()));
+		} else if (native_result_vector) {
+		  result->payload = std::move(*native_result_vector);
 		} else {
 		  result->payload = api_result_payload(dispatched.api_result);
 		}
