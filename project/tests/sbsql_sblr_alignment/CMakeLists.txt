@@ -4327,6 +4327,39 @@ endif()
 # APPROVED session (EXACT_TRANSACTION_REQUIRED / NATIVE_SESSION_NOT_OPEN), and a native receipt itself is native_receipt's.]
 # the receipt refuses SESSION_REQUIRED_NATIVE_S4. A NEW target (not native_serving, whose headroom against its 1800 s
 # timeout is the thing to watch). Five page sizes; one child process per served open.
+# SB_NATIVE_DIAGNOSTIC_REGISTRY_TEST (S4h part 1, owner option A, 2026-12-07): the native diagnostic identity registry is a per-build
+# derived constant table (no file). An independent oracle re-derives every identity; two separate processes dump the same table; the
+# visibility filter follows the context's authorization; no syscall names the database path (strace variant).
+add_executable(sbsql_sblr_alignment_native_diagnostic_registry native_diagnostic_registry_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_diagnostic_registry PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_diagnostic_registry PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_diagnostic_registry PRIVATE sb_engine_internal_api sb_core_diagnostic_catalog sb_sblr_parameter_wire_codec sb_core_uuid Threads::Threads)
+add_test(NAME sbsql_sblr_alignment_native_diagnostic_registry COMMAND sbsql_sblr_alignment_native_diagnostic_registry)
+set_tests_properties(sbsql_sblr_alignment_native_diagnostic_registry PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_handle;diagnostic_registry;binary_uuid" TIMEOUT 600)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_test(NAME sbsql_sblr_alignment_native_diagnostic_registry_strace
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_diagnostic_registry_strace.py"
+      $<TARGET_FILE:sbsql_sblr_alignment_native_diagnostic_registry>)
+  set_tests_properties(sbsql_sblr_alignment_native_diagnostic_registry_strace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_handle;diagnostic_registry;strace" TIMEOUT 600)
+endif()
+# SB_NATIVE_RESULT_VECTOR_PARSER_TEST (S4h part 1, owner Q310): the SBsql parser builds the client row from a native result vector (names
+# from its own aliases, the type from the descriptor UUIDs); refused shapes carry the parser's machine-token codes; legacy packets pass through.
+add_executable(sbsql_sblr_alignment_native_result_vector_parse native_result_vector_parse_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_result_vector_parse PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_result_vector_parse PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_native_result_vector_parse PRIVATE sbl_sbsql_parser_worker_core)
+add_test(NAME sbsql_sblr_alignment_native_result_vector_parse COMMAND sbsql_sblr_alignment_native_result_vector_parse)
+set_tests_properties(sbsql_sblr_alignment_native_result_vector_parse PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_result;binary_uuid" TIMEOUT 300)
+# SB_NATIVE_STATE_DUMP (S4h part 1): a read-only offline TIP/ledger viewer (tool, not a test) used to show what a real multi-process exchange left in the file.
+add_executable(sbsql_sblr_alignment_native_state_dump native_state_dump.cpp)
+target_compile_features(sbsql_sblr_alignment_native_state_dump PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_state_dump PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_state_dump PRIVATE sb_storage_database sb_core_uuid OpenSSL::Crypto)
 add_executable(sbsql_sblr_alignment_native_handle native_handle_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_handle PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_native_handle PRIVATE
@@ -4520,7 +4553,8 @@ target_include_directories(sbsql_sblr_alignment_native_receipt PRIVATE
   ${PROJECT_SOURCE_DIR}/src
   ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
 target_link_libraries(sbsql_sblr_alignment_native_receipt PRIVATE
-  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto
+  sbl_parser_server_ipc_client)  # S4h part 1: the parser's own V11 and AUTH-tail decoders (test exports) read the server's real payloads
 target_compile_definitions(sbsql_sblr_alignment_native_receipt PRIVATE
   SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
   SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"

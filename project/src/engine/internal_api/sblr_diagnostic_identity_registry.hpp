@@ -25,5 +25,9 @@ struct SblrDiagnosticIdentityResultV1 {bool ok=false;EngineApiDiagnostic diagnos
 // independent materialized-authorization tests. Internal bit 13 is always zero.
 std::uint16_t SblrDiagnosticIdentityVisibilityMaskV1(const EngineRequestContext&);
 SblrDiagnosticIdentityResultV1 LoadSblrDiagnosticIdentitySnapshotV1(const EngineRequestContext&);
+// SB_NATIVE_DIAGNOSTIC_REGISTRY (S4h part 1): the per-build constant table a NATIVE context is answered from (unfiltered, for the
+// given database identity). Pure and deterministic: no context, no file; equal in every process of the same build. An internal
+// inconsistency (never expected) returns an EMPTY snapshot (no rows), never a partial one; std::bad_alloc may propagate.
+SblrDiagnosticIdentitySnapshotV1 BuildNativeSblrDiagnosticIdentitySnapshotV1(const SblrDiagnosticIdentityUuidV1& database_uuid);
 SblrDiagnosticIdentityResultV1 LookupSblrDiagnosticIdentityV1(const EngineRequestContext&,const SblrDiagnosticIdentitySnapshotV1&,const SblrDiagnosticIdentityUuidV1&,std::uint64_t);
 }

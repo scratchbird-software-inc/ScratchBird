@@ -51,6 +51,7 @@
 #include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
+#include "wire/native_result_vector.hpp"
 #include "engine/sblr/sblr_variable_runtime.hpp"
 #include "engine/sblr/sblr_source_map_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
@@ -20802,6 +20803,26 @@ LoweredJsonBooleanField ReadLoweredJsonBooleanField(
   return field;
 }
 
+// SB_NATIVE_RESULT_VECTOR_PARSER (S4h part 1): the parser's OWN output names for a scalar projection, from the aliases it lowered
+// (projection_N_name). A native engine result carries no names; the parser builds them from here, never from the engine.
+// Empty when the statement carries no complete set of names (the conversion then refuses with the specific name-missing code).
+std::vector<std::string> LoweredProjectionNames(const SblrEnvelope& lowered) {
+  std::vector<std::string> names;
+  const auto count = ReadLoweredJsonStringField(lowered.payload, "projection_count");
+  if (!count.present || !count.valid || count.value.empty() || count.value.size() > 4) return names;
+  std::size_t n = 0;
+  for (const char ch : count.value) {
+    if (ch < '0' || ch > '9') return {};
+    n = n * 10 + static_cast<std::size_t>(ch - '0');
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto name = ReadLoweredJsonStringField(lowered.payload, "projection_" + std::to_string(i) + "_name");
+    if (!name.present || !name.valid || name.value.empty()) return {};
+    names.push_back(name.value);
+  }
+  return names;
+}
+
 struct ExactAnonymousParameterProjectionRoute {
   std::string output_name;
 };
@@ -28902,12 +28923,23 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           "sbp_sbsql.wire.literal_prebind"));
     }
   }
-  const bool requires_ordinary_literal_finalization = std::ranges::any_of(
+  // SB_NATIVE_SCALAR_PROJECTION_LITERALS (S4h part 1): a scalar projection (`SELECT 1 AS one`, lowered to query.evaluate_projection) carries its
+  // numeric literals as typed operands of the submission; the relational binder never recorded them (bound.native_relational is EMPTY for it), so
+  // ordinary literal negotiation and finalization could not succeed ("The bound literal occurrence inventory changed.") for ANY engine.
+  // Finalization is therefore not demanded when the statement is a scalar projection, the relational binder does not recognize it (so it records no literal inventory),
+  // and its only literals are numeric. Boolean and NULL literals, and every non-scalar-projection statement, keep the exact previous behavior.
+  const bool scalar_numeric_literals_ride_operands =
+      scalar_projection_demand && !ast.native_relational.recognized() &&
+      std::ranges::none_of(ast.native_relational.expressions, [](const auto& expression) {
+        return expression.expression_kind == NativeExpressionAstKind::kLiteral &&
+               expression.literal_kind == NativeLiteralAstKind::kBoolean;
+      });
+  const bool requires_ordinary_literal_finalization = (!scalar_numeric_literals_ride_operands && std::ranges::any_of(
       ast.native_relational.expressions, [](const auto& expression) {
         return expression.expression_kind == NativeExpressionAstKind::kLiteral &&
                (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
                 expression.literal_kind == NativeLiteralAstKind::kBoolean);
-      }) || (scalar_literal_demands && scalar_literal_demands->valid &&
+      })) || (scalar_literal_demands && scalar_literal_demands->valid &&
           std::ranges::any_of(scalar_literal_demands->entries, [](const auto& entry) {
             return entry.literal_kind == NativeLiteralAstKind::kNull &&
                 entry.is_null && entry.canonical_type_name == "boolean";
@@ -31273,14 +31305,23 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           ? native_submission->canonical_container_bytes.size()
           : execution_payload.size();
       mark_phase("prepare_execution_payload");
+      // SB_NATIVE_SCALAR_PROJECTION_CURSOR (S4h part 1): a NATIVE database answers a scalar projection with one message vector, which the parser
+      // turns into the row itself; a server cursor over that vector would stream nothing (the cursor machinery slices legacy `row[` records).
+      // A scalar projection is one row by construction, so the parser does not ask for a cursor on a native receipt. Legacy receipts keep the
+      // cursor request exactly as before.
+      const bool execute_cursor_requested =
+          cursor_requested &&
+          !(native_statement_context.has_value() &&
+            native_statement_context->preliminary_native_variant &&
+            lowered.operation_id == "query.evaluate_projection");
       const auto executed = native_submission.has_value()
           ? (config_.embedded_engine_direct && embedded_client_ != nullptr
                  ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
                        session_, *native_statement_context,
-                       *native_submission, {}, cursor_requested)
+                       *native_submission, {}, execute_cursor_requested)
                  : server_client_->ExecuteCanonicalSblrWithDataPacket(
                        session_, *native_statement_context,
-                       *native_submission, {}, cursor_requested))
+                       *native_submission, {}, execute_cursor_requested))
           : ExecuteSblrOnRoute(execution_payload, cursor_requested);
       mark_phase("execute_sblr_route");
       if (!executed.accepted) {
@@ -31318,6 +31359,23 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         result.server_affected_rows = executed.affected_rows;
         result.server_affected_rows_present = executed.affected_rows_present;
         result.server_result_payload = executed.row_packet;
+        // SB_NATIVE_RESULT_VECTOR_PARSER (S4h part 1): a native database answers a scalar projection with a message vector (values and
+        // descriptor UUIDs, no names). The parser builds the row: names from its own lowered aliases, the type from the descriptor UUIDs.
+        // A legacy packet is not a native vector and passes through byte for byte.
+        if (lowered.operation_id == "query.evaluate_projection") {
+          auto native_row = ConvertNativeScalarProjectionVector(result.server_result_payload, LoweredProjectionNames(lowered));
+          if (native_row.status == NativeVectorConversionStatus::refused) {
+            result.accepted = false;
+            result.server_result_payload.clear();
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                native_row.refusal_code, "ERROR",
+                "The native result could not be turned into a client row.",
+                "sbp_sbsql.wire", {{"detail", native_row.refusal_detail}}));
+            return result;
+          }
+          if (native_row.status == NativeVectorConversionStatus::converted)
+            result.server_result_payload = std::move(native_row.payload);
+        }
         const auto* canonical_result_bytes =
             reinterpret_cast<const std::uint8_t*>(executed.row_packet.data());
         if (lowered.operation_id == "engine.op.txn_begin") {

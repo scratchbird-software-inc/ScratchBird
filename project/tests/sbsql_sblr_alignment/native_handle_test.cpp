@@ -509,10 +509,20 @@ int HandleMode(const fs::path& path) {
   Check(!published.ok && published.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED" &&
             HasField(published.diagnostic, "registry_family", "prepared_statement_registry"),
         "prepared-statement publish refuses on native");
+  // S4h part 1 (OLD, S3e: "diagnostic identity registry refuses on native": ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED, registry_family
+  // diagnostic_identity_registry). NEW (owner option A, 2026-12-07): a native context is answered from the per-build derived constant
+  // table: ok, non-nil v7 snapshot uuid, generation != 0, rows equal to the table for the facts' database; a context WITHOUT a security
+  // context still refuses (SECURITY.ACCESS_DENIED, hidden). The full contract is native_diagnostic_registry's.
   const auto diagnostic_registry = api::LoadSblrDiagnosticIdentitySnapshotV1(registry);
-  Check(!diagnostic_registry.ok && diagnostic_registry.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED" &&
-            HasField(diagnostic_registry.diagnostic, "registry_family", "diagnostic_identity_registry"),
-        "diagnostic identity registry refuses on native");
+  Check(diagnostic_registry.ok && diagnostic_registry.snapshot.generation != 0 && !diagnostic_registry.snapshot.rows.empty() &&
+            diagnostic_registry.snapshot.snapshot_uuid == api::BuildNativeSblrDiagnosticIdentitySnapshotV1(facts->database_uuid.bytes).snapshot_uuid,
+        "diagnostic identity registry answers a native context from the per-build table: " + diagnostic_registry.diagnostic.code);
+  {
+    auto no_security = registry;
+    no_security.security_context_present = false;
+    const auto hidden = api::LoadSblrDiagnosticIdentitySnapshotV1(no_security);
+    Check(!hidden.ok && hidden.diagnostic.code == "SECURITY.ACCESS_DENIED", "a native context without a security context is refused (hidden)");
+  }
   // S4g part 1 (OLD, S3e: the begin authority refused on native, always). NEW: a native context answers from the served facts' begin
   // authority (the default isolation profile and transaction policy the open resolved) when the context names the facts' database and
   // carries a security context; facts without an authority, or a context that does not, keep the specific refusal.

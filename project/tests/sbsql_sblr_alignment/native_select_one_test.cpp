@@ -20,6 +20,7 @@
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "lowering/lowering.hpp"
 #include "server/sblr_admission.hpp"
+#include "wire/native_result_vector.hpp"
 #include "wire/public_result_packet.hpp"
 #include "wire/sbsql_test_wire.hpp"
 
@@ -67,6 +68,40 @@ ps::SblrEnvelope Lower(const ParserSide& side, const std::string& sql) {
   const auto cst = ps::BuildCst(sql);
   auto bound = ps::BindAst(ps::BuildAst(cst), cst, side.config, side.session, {});
   return ps::LowerToSblr(bound, cst, side.session);
+}
+
+// S4h part 1: the parser's own output names for a projection, from the aliases it lowered (projection_N_name), as the wire layer reads them.
+std::vector<std::string> ProjectionNames(const ps::SblrEnvelope& lowered) {
+  std::vector<std::string> names;
+  for (std::size_t i = 0;; ++i) {
+    const std::string key = "\"projection_" + std::to_string(i) + "_name\":\"";
+    const auto at = lowered.payload.find(key);
+    if (at == std::string::npos) break;
+    const auto start = at + key.size();
+    const auto end = lowered.payload.find('"', start);
+    if (end == std::string::npos) break;
+    names.push_back(lowered.payload.substr(start, end - start));
+  }
+  return names;
+}
+// The REAL engine vector through the SBsql parser's converter, then through the production row decoder the client path uses.
+struct ParserRows {
+  bool converted = false;
+  std::string code, detail;
+  std::vector<std::uint32_t> oids;
+  std::vector<std::vector<std::optional<std::string>>> rows;
+  std::vector<std::string> names;
+};
+ParserRows ParserBuildsRows(const ParserSide& side, const std::string& sql, const std::string& engine_payload) {
+  ParserRows out;
+  const auto lowered = Lower(side, sql);
+  out.names = ProjectionNames(lowered);
+  const auto conv = ps::ConvertNativeScalarProjectionVector(engine_payload, out.names);
+  out.converted = conv.status == ps::NativeVectorConversionStatus::converted;
+  out.code = conv.refusal_code;
+  out.detail = conv.refusal_detail;
+  if (out.converted) (void)ps::DecodePublicResultRowsForTest(conv.payload, &out.oids, &out.rows);
+  return out;
 }
 pipc::ParserStatementContext ParserContextFrom(const Acquired& r, const Approved& a) {
   pipc::ParserStatementContext context;
@@ -643,6 +678,13 @@ void SelectOneState() {
       Check(text_fields == 2, "exactly two text fields (operation_id, result_kind: machine tokens); no column name, no rendered value");
       Check(got.payload.find("one") == std::string::npos, "the parser's column name does not appear in the payload");
     }
+    // S4h part 1: the REAL engine vector, through the SBsql parser's converter: the parser builds the row and the name `one` from its own alias.
+    {
+      const auto rows = ParserBuildsRows(MakeParserSide(*s1), "SELECT 1 AS one", got.payload);
+      Check(rows.converted && rows.names == std::vector<std::string>{"one"} && rows.rows.size() == 1 && rows.rows[0].size() == 1 && rows.rows[0][0] &&
+                *rows.rows[0][0] == "1" && rows.oids.size() == 1,
+            "the parser builds the client row (one = 1) from the real engine vector: " + rows.code + " " + rows.detail);
+    }
   }
   // other values and shapes of the same row set
   {
@@ -656,6 +698,20 @@ void SelectOneState() {
     Check(pair.status == SB_ENGINE_STATUS_OK && pair.vector.ok && pair.vector.column_count == 2 && pair.vector.values == std::vector<std::int64_t>({1, 2}) &&
               pair.vector.column_descriptor[0] != pair.vector.column_descriptor[1],
           "two literal columns: two descriptors, values 1 and 2");
+    {
+      const auto rows2 = ParserBuildsRows(MakeParserSide(*s1), "SELECT 2 AS two", two.payload);
+      Check(rows2.converted && rows2.names == std::vector<std::string>{"two"} && rows2.rows.size() == 1 && rows2.rows[0][0] && *rows2.rows[0][0] == "2",
+            "the parser builds (two = 2) from the real engine vector: " + rows2.code);
+      const auto rows_pair = ParserBuildsRows(MakeParserSide(*s1), "SELECT 1 AS one, 2 AS two", pair.payload);
+      Check(rows_pair.converted && rows_pair.names == std::vector<std::string>({"one", "two"}) && rows_pair.rows.size() == 1 && rows_pair.rows[0].size() == 2 &&
+                *rows_pair.rows[0][0] == "1" && *rows_pair.rows[0][1] == "2",
+            "the parser builds (one = 1, two = 2) from the real two-column engine vector: " + rows_pair.code);
+      // the same engine bytes with another statement's alias: the NAME is the parser's, not the engine's
+      const auto renamed = ps::ConvertNativeScalarProjectionVector(two.payload, {"renamed"});
+      Check(renamed.status == ps::NativeVectorConversionStatus::converted && renamed.payload.find("renamed") != std::string::npos &&
+                renamed.payload.find("two") == std::string::npos,
+            "the column name is whatever the parser supplies");
+    }
   }
 
   // ---- refused shapes: the table's own code, the opcode field, nothing written --------------------------------------------------

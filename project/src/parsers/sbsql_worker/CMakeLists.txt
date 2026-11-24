@@ -89,6 +89,8 @@ set(SBSQL_PARSER_WORKER_CORE_SOURCES
   runtime/parser_runtime.cpp
   wire/sbsql_sbwp_wire.cpp
   wire/sbsql_test_wire.cpp
+  # SB_NATIVE_RESULT_VECTOR_PARSER (S4h part 1): the parser builds the client row from a native result vector.
+  wire/native_result_vector.cpp
   # The parser's canonical SHOW WAIT EVENTS fixture uses the frozen metrics
   # request codec to produce the exact operand bytes before SBPS handoff.  The
   # codec is transport-only and does not grant parser engine authority.

@@ -565,8 +565,8 @@ const std::vector<Gated>& GatedTable() {
     {"FinalizeStatementParameterBindingV1", "parameter_binding", "native_parameter_and_variable_registries", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { std::vector<std::uint8_t> a1{}; std::vector<std::uint8_t> a2{}; return bridge::FinalizeStatementParameterBindingV1(receipt, a1, &a2, out_result); }},
     {"FinalizeStatementVariableBindingV1", "parameter_binding", "native_parameter_and_variable_registries", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { std::vector<std::uint8_t> a1{}; std::vector<std::uint8_t> a2{}; return bridge::FinalizeStatementVariableBindingV1(receipt, a1, &a2, out_result); }},
     {"AssignStatementVariableValuesV1", "parameter_binding", "native_parameter_and_variable_registries", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { std::vector<std::uint8_t> a1{}; std::vector<std::uint8_t> a2{}; return bridge::AssignStatementVariableValuesV1(receipt, a1, &a2, out_result); }},
-    {"NegotiateStatementLiteralDescriptorsV1", "literal_descriptors", "native_literal_descriptor_registry", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { std::vector<std::uint8_t> a1{}; std::vector<std::uint8_t> a2{}; return bridge::NegotiateStatementLiteralDescriptorsV1(receipt, a1, &a2, out_result); }},
-    {"FinalizeStatementLiteralBindingV1", "literal_descriptors", "native_literal_descriptor_registry", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { std::vector<std::uint8_t> a1{}; std::vector<std::uint8_t> a2{}; return bridge::FinalizeStatementLiteralBindingV1(receipt, a1, &a2, out_result); }},
+    // S4h part 1 (OLD: a refused row here, native_literal_descriptor_registry): "NegotiateStatementLiteralDescriptorsV1" is now ALLOWED natively; see the allowed checks above.
+    // S4h part 1 (OLD: a refused row here, native_literal_descriptor_registry): "FinalizeStatementLiteralBindingV1" is now ALLOWED natively; see the allowed checks above.
     {"IssueStatementContextualTextLiteralProfilesV2", "literal_descriptors", "native_literal_descriptor_registry", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { std::vector<std::uint8_t> a1{}; std::vector<std::uint8_t> a2{}; return bridge::IssueStatementContextualTextLiteralProfilesV2(receipt, a1, &a2, out_result); }},
     {"PrepareStatementContextualTextLiteralExecutionV2", "literal_descriptors", "native_literal_descriptor_registry", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementContextualTextLiteralPrepareRequestV2 a0{}; a0.receipt = receipt; scratchbird::engine::internal_api::PreparedContextualTextLiteralSetV2 a1{}; return bridge::PrepareStatementContextualTextLiteralExecutionV2(&a0, &a1, out_result); }},
     {"JointConsumeStatementContextualTextLiteralExecutionV2", "literal_descriptors", "native_literal_descriptor_registry", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementContextualTextLiteralJointConsumeRequestV2 a0{}; a0.receipt = receipt; scratchbird::engine::internal_api:: ContextualTextExecutionAuthorityLeaseV2 a1{}; return bridge::JointConsumeStatementContextualTextLiteralExecutionV2(&a0, &a1, out_result); }},
@@ -680,6 +680,24 @@ int GateState(const std::string& state, const Offline& offline) {
     if (compare) {
       Check(Image(served.path) == before.image, "AcquireStatementPackageAdmissionReservation (allowed): the file's bytes are identical");
       Check(Listing(served.directory) == before.listing, "AcquireStatementPackageAdmissionReservation (allowed): no file or directory entry appeared");
+    }
+  }
+
+  // S4h part 1 (OLD: both refused, ENGINE.NATIVE.OPERATION_NOT_BUILT / native_literal_descriptor_registry): the literal-descriptor negotiation and
+  // finalize are allowed natively (in-memory receipt state and the compiled datatype table only). Empty requests pass the gate to their own
+  // structural validation (INVALID_ARGUMENT), never the native refusal, and write nothing.
+  for (const char* which : {"negotiate", "finalize"}) {
+    const auto before = Before(compare);
+    std::vector<std::uint8_t> request, produced;
+    sb_engine_result_t result = nullptr;
+    const auto status = std::string(which) == "negotiate" ? bridge::NegotiateStatementLiteralDescriptorsV1(receipt, request, &produced, &result)
+                                                          : bridge::FinalizeStatementLiteralBindingV1(receipt, request, &produced, &result);
+    const auto code = Code(result);
+    Check(status == SB_ENGINE_STATUS_INVALID_ARGUMENT && code != "ENGINE.NATIVE.OPERATION_NOT_BUILT" && produced.empty(),
+          std::string(which) + " literal descriptors (allowed): passes the gate to its own request validation: " + code);
+    if (compare) {
+      Check(Image(served.path) == before.image, std::string(which) + " literal descriptors (allowed): the file's bytes are identical");
+      Check(Listing(served.directory) == before.listing, std::string(which) + " literal descriptors (allowed): no file or directory entry appeared");
     }
   }
 

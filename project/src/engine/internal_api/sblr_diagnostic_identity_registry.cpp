@@ -288,6 +288,76 @@ Snapshot Load(const EngineRequestContext& c) {
   if(!file.Sync().ok() || !disk::SyncParentDirectoryPath(path).ok())IoFailure();
   return current;
 }
+// SB_NATIVE_DIAGNOSTIC_REGISTRY (S4h part 1, owner option A, 2026-12-07): the native registry is a PER-BUILD CONSTANT TABLE, like the
+// executor availability table. No file, no durable change, no process-local minting: every identity is DERIVED, so it is the same
+// after a restart and in every process of the same build. Derivation (domain-separated SHA-256, first 16 bytes, version nibble 7 and
+// variant 10 forced so the value is a well-formed v7 identity; the time field of such a value is hash bytes, not a clock):
+//   snapshot_uuid     = H("ScratchBird.NativeDiagnosticRegistry.Snapshot.V1" || source_sha256)
+//   generation        = little-endian u64 of source_sha256[0..8], top bit cleared, never zero (changes when the source changes;
+//                       it is NOT a counter: the table has no history)
+//   diagnostic_uuid   = H("ScratchBird.NativeDiagnosticRegistry.Code.V1" || canonical_code)   (the code only: a code keeps its
+//                       identity across builds, as the legacy registry guarantees; the source hash is not mixed in)
+//   diagnostic_generation = little-endian u64 (top bit cleared, never 0) of the first 8 bytes of H("ScratchBird.NativeDiagnosticRegistry.RowGeneration.V1" || severity || redaction || LE4 maximum_safe_field_count) (Q2: a hash of the row's metadata); the evidence hash = H(domain || source_sha256 || every row's identity hash).
+// The visibility filter is the SAME Filter() the legacy registry applies (the context's authorization decides the severities).
+Uuid DerivedUuid(std::string_view domain,const std::uint8_t* data,std::size_t size) {
+  Bytes material(domain.begin(),domain.end());material.insert(material.end(),data,data+size);
+  const auto digest=core::hash::ComputeSha256Digest(material);
+  if(!digest.ok() || digest.digest_bytes!=32)IoFailure();
+  Uuid id{};std::copy_n(digest.digest.begin(),16,id.begin());
+  id[6]=static_cast<std::uint8_t>((id[6]&0x0f)|0x70);id[8]=static_cast<std::uint8_t>((id[8]&0x3f)|0x80);
+  return id;
+}
+const Snapshot& NativeBaseSnapshot() {
+  // One immutable build-time table, built once per process (4096 rows at most); the database identity is stamped per call.
+  static const Snapshot table=[] {
+    const auto definitions=catalog::CanonicalDiagnosticCodeCatalog();
+    if(definitions.size==0 || definitions.size>4096)Limit();
+    Snapshot s;s.source_sha256=catalog::CanonicalDiagnosticCodeSourceSha256();
+    s.snapshot_uuid=DerivedUuid("ScratchBird.NativeDiagnosticRegistry.Snapshot.V1",s.source_sha256.data(),s.source_sha256.size());
+    s.generation=Get(s.source_sha256.data(),0,8)&0x7fffffffffffffffULL;
+    if(s.generation==0)s.generation=1;
+    Bytes evidence_material;
+    const std::string_view evidence_domain="ScratchBird.NativeDiagnosticRegistry.Evidence.V1";
+    evidence_material.insert(evidence_material.end(),evidence_domain.begin(),evidence_domain.end());
+    evidence_material.insert(evidence_material.end(),s.source_sha256.begin(),s.source_sha256.end());
+    s.rows.reserve(definitions.size);
+    for(std::size_t i=0;i<definitions.size;++i) {
+      const auto& definition=definitions.data[i];Row row;row.canonical_code=definition.code;
+      row.diagnostic_uuid=DerivedUuid("ScratchBird.NativeDiagnosticRegistry.Code.V1",
+          reinterpret_cast<const std::uint8_t*>(row.canonical_code.data()),row.canonical_code.size());
+      row.precedence_ordinal=static_cast<std::uint32_t>(i+1);
+      row.severity_code=static_cast<std::uint8_t>(definition.severity);row.redaction_class=Redaction(row.severity_code);
+      row.maximum_safe_field_count=145;
+      // Q2 (owner/controller 2026-12-07): the row generation is derived from a hash of the row's METADATA (severity, redaction class, maximum
+      // safe field count), so two builds that disagree about a code's metadata never present the same (uuid, generation); never 0.
+      {
+        const std::uint8_t metadata[6]={row.severity_code,row.redaction_class,
+          static_cast<std::uint8_t>(row.maximum_safe_field_count),static_cast<std::uint8_t>(row.maximum_safe_field_count>>8),
+          static_cast<std::uint8_t>(row.maximum_safe_field_count>>16),static_cast<std::uint8_t>(row.maximum_safe_field_count>>24)};
+        const auto id=DerivedUuid("ScratchBird.NativeDiagnosticRegistry.RowGeneration.V1",metadata,sizeof metadata);
+        row.diagnostic_generation=Get(id.data(),0,8)&0x7fffffffffffffffULL;
+        if(row.diagnostic_generation==0)row.diagnostic_generation=1;
+      }
+      wire::DiagnosticIdentityProjectionBytesV1 bytes{};
+      if(!wire::EncodeDiagnosticIdentityProjectionV1(&row,&bytes,true))IoFailure();
+      evidence_material.insert(evidence_material.end(),row.row_identity_sha256.begin(),row.row_identity_sha256.end());
+      s.rows.push_back(std::move(row));
+    }
+    const auto evidence=core::hash::ComputeSha256Digest(evidence_material);
+    if(!evidence.ok() || evidence.digest_bytes!=32)IoFailure();
+    s.evidence_sha256=evidence.digest;
+    // database_uuid is stamped per call; validate the rows against a placeholder that cannot collide with a row identity.
+    auto probe=s;probe.database_uuid=DerivedUuid("ScratchBird.NativeDiagnosticRegistry.Probe.V1",s.source_sha256.data(),s.source_sha256.size());
+    ValidateRows(probe);
+    return s;
+  }();
+  return table;
+}
+Snapshot NativeSnapshotFor(const Uuid& database) {
+  Snapshot s=NativeBaseSnapshot();s.database_uuid=database;
+  ValidateRows(s);  // the database identity is distinct from the snapshot and every row identity
+  return s;
+}
 SblrDiagnosticIdentityResultV1 Failure(const char* code,const char* key) {
   SblrDiagnosticIdentityResultV1 out;out.diagnostic=MakeEngineApiDiagnostic(code,key);return out;
 }
@@ -301,12 +371,29 @@ std::uint16_t SblrDiagnosticIdentityVisibilityMaskV1(const EngineRequestContext&
   }
   return mask;
 }
+SblrDiagnosticIdentitySnapshotV1 BuildNativeSblrDiagnosticIdentitySnapshotV1(const SblrDiagnosticIdentityUuidV1& database_uuid) {
+  try {return NativeSnapshotFor(database_uuid);}
+  catch(const RegistryFailure&) {return {};}  // an internal inconsistency: an empty snapshot (no rows), never a partial one
+}
 SblrDiagnosticIdentityResultV1 LoadSblrDiagnosticIdentitySnapshotV1(const EngineRequestContext& c) {
-  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e, plan 38 Q243 = 1): the registry's snapshot identities are minted at
-  // first load and persisted in a side file; a process-local copy would mint different identities after every
-  // restart, so a native context refuses (stable constants arrive with the native relation).
+  // SB_NATIVE_DIAGNOSTIC_REGISTRY (S4h part 1). OLD (S3e, plan 38 Q243 = 1): a native context REFUSED here
+  // (NativeLegacyRegistryRefusal "diagnostic_identity_registry"), because the legacy registry mints identities at first load and
+  // persists them in a side file, and a process-local copy would mint different identities after every restart. NEW (owner option A):
+  // a native context is answered from the per-build derived constant table (NativeBaseSnapshot): stable across restarts and equal in
+  // every process of the same build, no file read or written, the same visibility filter. The same context requirements as the
+  // legacy load apply (a security context, an engine-owned statement snapshot, valid database, principal and session identities),
+  // except the path.
   if(NativeServedContext(c)) {
-    SblrDiagnosticIdentityResultV1 refused;refused.diagnostic=NativeLegacyRegistryRefusal("diagnostic_identity_registry",c);return refused;
+    try {
+      try {
+        if(!c.security_context_present || !c.statement_metadata_snapshot_engine_owned)Hidden();
+        const auto database=ContextIdentity(c.database_uuid);
+        (void)ContextIdentity(c.principal_uuid);(void)ContextIdentity(c.session_uuid);
+        auto snapshot=NativeSnapshotFor(database);Filter(c,&snapshot);
+        SblrDiagnosticIdentityResultV1 out;out.snapshot=std::move(snapshot);out.diagnostic.error=false;out.ok=true;return out;
+      }catch(const RegistryFailure& failure) {return Failure(failure.code,failure.key);}
+    }catch(const std::bad_alloc&) {return Failure("RESOURCE.BUDGET_EXCEEDED","sblr.diagnostic_registry.allocation_failed");}
+     catch(const std::length_error&) {return Failure("RESOURCE.BUDGET_EXCEEDED","sblr.diagnostic_registry.extent_failed");}
   }
   try {
     try {

@@ -1639,6 +1639,15 @@ std::vector<std::uint8_t> EncodeAuthResultPayload(const std::string& outcome,
   PutU64(&out, session == nullptr ? 0 : session->security_epoch);
   PutString(&out, detail);
   PutString(&out, session == nullptr ? "" : session->database_engine_agent_health_json);
+  // SB_NATIVE_AUTH_RESULT_TRANSACTION (S4h part 1; owner, S4e answers item 3: "add the transaction id to the auth-result wire payload"; owner
+  // ruling "authentication gives session_id + txn_id"). For a NATIVE approval the session's first transaction trails the fields above:
+  // u64 transaction order (LE8), then the transaction UUID (16 bytes). The session id is the payload's own session_uuid field. The
+  // parser's decoder reads past the health string only when bytes remain, so a LEGACY payload (nothing appended) is byte-identical to
+  // before, and the parser cross-checks these against the attach result. The same ids also travel in the attach result (unchanged).
+  if (session != nullptr && session->native_session_approved) {
+    PutU64(&out, session->local_transaction_id);
+    PutUuid(&out, session->transaction_uuid.bytes);
+  }
   return out;
 }
 
@@ -3858,7 +3867,11 @@ SessionOperationResult HandleAcquireStatementContext(
     // Unified preliminary bootstrap extension v74.  Every field, including
     // the decoded MGA relation per-pass ceiling, comes only from the immutable
     // engine receipt view.
-    PutU16(&result.payload, 74);
+    // SB_NATIVE_V11_ADMISSION (S4h part 1, controller Q1 = (a)): a NATIVE session's receipt is announced as wire extension 75, the same
+    // layout as 74 with generation 0 admitted as "not installed natively" (S4f) in the executor-availability fields and the
+    // commit/rollback blocks; the values below are the receipt's, unchanged. A LEGACY session keeps extension 74 and the parser's strict
+    // checks. A parser build that does not know 75 refuses the payload (fail closed).
+    PutU16(&result.payload, session.native_session_approved ? 75 : 74);
     PutU16(&result.payload, 0);
     PutUuid(&result.payload, (view.receipt_uuid.bytes));
     PutUuid(&result.payload,

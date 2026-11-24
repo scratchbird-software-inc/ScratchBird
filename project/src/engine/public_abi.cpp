@@ -5344,8 +5344,13 @@ constexpr NativeReceiptConsumerRow kNativeReceiptConsumerTable[] = {
     {"FinalizeStatementParameterBindingV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
     {"FinalizeStatementVariableBindingV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
     {"AssignStatementVariableValuesV1", "parameter_binding", "native_parameter_and_variable_registries", kRefuse},
-    {"NegotiateStatementLiteralDescriptorsV1", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
-    {"FinalizeStatementLiteralBindingV1", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
+    // S4h part 1: Negotiate and Finalize are ALLOWED (OLD: kRefuse, native_literal_descriptor_registry). AUDIT: both read only the live receipt's
+    // in-memory state (its literal catalog snapshot/generations, epochs, retained demands and mappings) and the COMPILED datatype codec identity
+    // table (LookupDatatypeTypeCodecIdentityV3); no file, side file, registry store or storage page is read or written, and the only state they
+    // change is the receipt's own literal_* members. The real parser's route runs them for every statement that carries a literal, before the
+    // submission, so a native `SELECT 1 AS one` cannot reach the executor without them.
+    {"NegotiateStatementLiteralDescriptorsV1", "literal_descriptors", "", kAllowed},
+    {"FinalizeStatementLiteralBindingV1", "literal_descriptors", "", kAllowed},
     {"IssueStatementContextualTextLiteralProfilesV2", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
     {"PrepareStatementContextualTextLiteralExecutionV2", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
     {"JointConsumeStatementContextualTextLiteralExecutionV2", "literal_descriptors", "native_literal_descriptor_registry", kRefuse},
@@ -8795,10 +8800,12 @@ sb_engine_status_t AcquireStatementContextReceipt(
       datatype_cohort.catalog_generation;
   view.literal_registry_generation =
       datatype_cohort.registry_generation;
-  // SB_NATIVE_STATEMENT_RECEIPT (S4f): NO native source exists yet for the diagnostic identity registry (its legacy form is a
-  // side file; a process-local one would mint new identities at every restart, Q243/Q303). A native receipt carries no
-  // diagnostic registry snapshot (nil uuid, generation 0, no rows); a consumer that needs one refuses on its own.
-  if (!native_input) {
+  // SB_NATIVE_DIAGNOSTIC_REGISTRY (S4h part 1, owner option A). OLD (S4f): NO native source existed for the diagnostic identity
+  // registry, so a native receipt carried no snapshot (nil uuid, generation 0, no rows) and the parser's V11 acquire refused it
+  // (engine_diagnostic_projection_invalid). NEW: LoadSblrDiagnosticIdentitySnapshotV1 answers a native context from the per-build
+  // derived constant table (no file, no durable change; stable across restarts and equal in every process of the same build), so the
+  // native receipt carries the same kind of snapshot as a bridge-built one, filtered by the context's authorization.
+  {
     auto diagnostic_context = engine_context;
     diagnostic_context.statement_metadata_snapshot_engine_owned = true;
     const auto diagnostic_snapshot = scratchbird::engine::internal_api::

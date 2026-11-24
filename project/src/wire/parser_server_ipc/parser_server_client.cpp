@@ -2528,6 +2528,26 @@ bool DecodeAcquireStatementContextPayloadV10(
                                                      context);
 }
 
+// SB_NATIVE_AUTH_RESULT_TRANSACTION (S4h part 1): what follows the fixed fields of an AUTH result. A legacy payload ends after the security
+// epoch or after the detail and health strings (nothing remains: present=false). A native approval appends exactly u64 order + 16-byte
+// transaction UUID. Anything else, or an invalid identity, is malformed. `offset` is where the detail string starts.
+bool ParseAuthResultTail(const std::vector<std::uint8_t>& payload, std::size_t offset, bool* present,
+                         std::uint64_t* order, std::array<std::uint8_t, 16>* uuid) {
+  *present = false;
+  *order = 0;
+  *uuid = {};
+  if (offset >= payload.size()) return true;
+  std::string detail;
+  std::string health;
+  if (!ReadString(payload, &offset, &detail) || !ReadString(payload, &offset, &health)) return false;
+  if (offset >= payload.size()) return true;
+  if (payload.size() - offset != 8 + 16) return false;
+  *order = GetU64(payload, offset);
+  *uuid = GetUuid(payload, offset + 8);
+  *present = true;
+  return *order != 0 && EngineIdentityUuidValid(*uuid);
+}
+
 bool DecodeAcquireStatementContextPayloadV11(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
@@ -2539,7 +2559,13 @@ bool DecodeAcquireStatementContextPayloadV11(
       GetU16(payload, offset + 2) != 0) {
     return false;
   }
-  const auto wire_extension_version = GetU16(payload, offset);
+  // SB_NATIVE_V11_ADMISSION (S4h part 1, controller Q1 = (a)): wire extension 75 is the NATIVE variant of extension 74: the byte layout is
+  // identical, only a native receipt emits it, and it allows generation 0 ("not installed natively", S4f) in the executor-availability fields
+  // and in the commit/rollback authority blocks (all of mode/scope/wait/deadline then 0). The values are kept EXACTLY as the receipt carries
+  // them so a consumer refuses at use. Extension 74 and every older version keep the strict legacy checks, byte for byte.
+  const auto raw_wire_extension_version = GetU16(payload, offset);
+  const bool native_variant = raw_wire_extension_version == 75;
+  const auto wire_extension_version = native_variant ? std::uint16_t{74} : raw_wire_extension_version;
   const auto extension_version =
       wire_extension_version >= 27 && wire_extension_version <= 74
           ? static_cast<std::uint16_t>(26)
@@ -2575,6 +2601,7 @@ bool DecodeAcquireStatementContextPayloadV11(
   context->preliminary_maximum_mga_relation_decoded_bytes_per_pass = 0;
   context->preliminary_mga_snapshot_uuid = scratchbird::core::platform::Uuid{mga_snapshot_uuid};
   context->preliminary_extension_version = extension_version;
+  context->preliminary_native_variant = native_variant;
   context->preliminary_prepared_statement_uuid = {};
   context->preliminary_prepared_generation = 0;
   context->preliminary_batch_uuid = {};
@@ -2651,7 +2678,7 @@ bool DecodeAcquireStatementContextPayloadV11(
     if (!exact_pair(prepared_uuid, prepared_generation) ||
         !exact_pair(batch_uuid, batch_generation) ||
         !exact_pair(dynamic_uuid, dynamic_generation) ||
-        parameter_executor_availability_generation == 0) {
+        (parameter_executor_availability_generation == 0 && !native_variant)) {
       return false;
     }
     if (UuidPresent(prepared_uuid))
@@ -2788,9 +2815,11 @@ bool DecodeAcquireStatementContextPayloadV11(
         const auto commit_scope = payload[commit + 9];
         const auto commit_wait = payload[commit + 10];
         const auto commit_deadline = GetU64(payload, commit + 16);
-        if (commit_generation == 0 || commit_mode != 1 ||
+        // native variant (S4h): generation 0 = not installed natively is admitted; mode, scope and wait keep their legacy ranges (the receipt
+        // carries the begin-time authority values beside the 0 generation)
+        if (((commit_generation == 0 && !native_variant) || commit_mode != 1 ||
             commit_scope < 1 || commit_scope > 2 || commit_wait < 1 ||
-            commit_wait > 2 ||
+            commit_wait > 2) ||
             std::any_of(payload.begin() + static_cast<std::ptrdiff_t>(commit + 11),
                         payload.begin() + static_cast<std::ptrdiff_t>(commit + 16),
                         [](std::uint8_t value) { return value != 0; })) return false;
@@ -2807,9 +2836,11 @@ bool DecodeAcquireStatementContextPayloadV11(
         const auto rollback_scope = payload[rollback + 9];
         const auto rollback_wait = payload[rollback + 10];
         const auto rollback_deadline = GetU64(payload, rollback + 16);
-        if (rollback_generation == 0 || rollback_mode != 1 ||
+        // native variant (S4h): generation 0 = not installed natively is admitted; mode, scope and wait keep their legacy ranges (the receipt
+        // carries the begin-time authority values beside the 0 generation)
+        if (((rollback_generation == 0 && !native_variant) || rollback_mode != 1 ||
             rollback_scope < 1 || rollback_scope > 2 || rollback_wait < 1 ||
-            rollback_wait > 2 ||
+            rollback_wait > 2) ||
             std::any_of(payload.begin() + static_cast<std::ptrdiff_t>(rollback + 11),
                         payload.begin() + static_cast<std::ptrdiff_t>(rollback + 16),
                         [](std::uint8_t value) { return value != 0; })) return false;
@@ -2823,99 +2854,99 @@ bool DecodeAcquireStatementContextPayloadV11(
       }
       if (extension_version >= 9 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 128);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_transaction_release_savepoint_executor_availability_generation = generation;
       }
       if (extension_version >= 10 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 136);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_transaction_rollback_to_savepoint_executor_availability_generation = generation;
       }
       if (extension_version >= 11 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 144);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_psql_autonomous_frame_executor_availability_generation = generation;
       }
       if (extension_version >= 12 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 152);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_transaction_reservation_release_executor_availability_generation = generation;
       }
       if (extension_version >= 13 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 160);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_temporary_instance_cleanup_executor_availability_generation = generation;
       }
       if (extension_version >= 14 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 168);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_cursor_open_executor_availability_generation = generation;
       }
       if (extension_version >= 15 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 176);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_cursor_fetch_executor_availability_generation = generation;
       }
       if (extension_version >= 16 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 184);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_cursor_close_executor_availability_generation = generation;
       }
       if (extension_version >= 17 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 192);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_read_by_key_executor_availability_generation = generation;
       }
       if (extension_version >= 18 && extension_version <= 26) {
         const auto generation = GetU64(payload, trailer + 200);
-        if (generation == 0) return false;
+        if (generation == 0 && !native_variant) return false;
         context->preliminary_read_range_executor_availability_generation = generation;
       }
-      if (extension_version >= 19 && extension_version <= 26) { const auto stream_generation = GetU64(payload, trailer + 208); if (stream_generation == 0) return false; context->preliminary_read_stream_executor_availability_generation = stream_generation; }
-      if (extension_version >= 20 && extension_version <= 26) { const auto pass_generation = GetU64(payload, trailer + 216); if (pass_generation == 0) return false; context->preliminary_result_set_pass_executor_availability_generation = pass_generation; }
-      if (extension_version >= 21 && extension_version <= 26) { const auto access_generation = GetU64(payload, trailer + 224); if (access_generation == 0) return false; context->preliminary_access_cursor_open_executor_availability_generation = access_generation; }
-      if (extension_version >= 22 && extension_version <= 26) { const auto fetch_generation = GetU64(payload, trailer + 232); if (fetch_generation == 0) return false; context->preliminary_access_cursor_fetch_executor_availability_generation = fetch_generation; }
-      if (extension_version >= 23 && extension_version <= 26) { const auto close_generation = GetU64(payload, trailer + 240); if (close_generation == 0) return false; context->preliminary_access_cursor_close_executor_availability_generation = close_generation; }
-      if (extension_version >= 24 && extension_version <= 26) { const auto insert_generation = GetU64(payload, trailer + 248); if (insert_generation == 0) return false; context->preliminary_insert_executor_availability_generation = insert_generation; }
-      if (extension_version >= 25 && extension_version <= 26) { const auto update_generation = GetU64(payload, trailer + 256); if (update_generation == 0) return false; context->preliminary_update_executor_availability_generation = update_generation; }
-      if (extension_version == 26) { const auto delete_generation = GetU64(payload, trailer + 264); if (delete_generation == 0) return false; context->preliminary_delete_executor_availability_generation = delete_generation; }
-      if (wire_extension_version == 27) { const auto merge_generation = GetU64(payload, trailer + 272); if (merge_generation == 0) return false; context->preliminary_merge_executor_availability_generation = merge_generation; }
-      if (wire_extension_version == 28) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); if (merge_generation == 0 || truncate_generation == 0) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; }
-      if (wire_extension_version == 29) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); const auto analyze_generation = GetU64(payload, trailer + 288); if (merge_generation == 0 || truncate_generation == 0 || analyze_generation == 0) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; context->preliminary_table_analyze_executor_availability_generation = analyze_generation; }
-      if (wire_extension_version == 30) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); const auto analyze_generation = GetU64(payload, trailer + 288); const auto bulk_generation = GetU64(payload, trailer + 296); if (merge_generation == 0 || truncate_generation == 0 || analyze_generation == 0 || bulk_generation == 0) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; context->preliminary_table_analyze_executor_availability_generation = analyze_generation; context->preliminary_bulk_import_stream_executor_availability_generation = bulk_generation; }
-      if (wire_extension_version >= 31) { const auto merge_generation=GetU64(payload,trailer+272),truncate_generation=GetU64(payload,trailer+280),analyze_generation=GetU64(payload,trailer+288),import_generation=GetU64(payload,trailer+296),export_generation=GetU64(payload,trailer+304); if(!merge_generation||!truncate_generation||!analyze_generation||!import_generation||!export_generation)return false;context->preliminary_merge_executor_availability_generation=merge_generation;context->preliminary_table_truncate_executor_availability_generation=truncate_generation;context->preliminary_table_analyze_executor_availability_generation=analyze_generation;context->preliminary_bulk_import_stream_executor_availability_generation=import_generation;context->preliminary_bulk_export_stream_executor_availability_generation=export_generation; }
-      if (wire_extension_version >= 32) { const auto batch_generation=GetU64(payload,trailer+312); if(!batch_generation)return false; context->preliminary_statement_batch_executor_availability_generation=batch_generation; }
-      if (wire_extension_version >= 33) { const auto cas_generation=GetU64(payload,trailer+320); if(!cas_generation)return false; context->preliminary_atomic_cas_executor_availability_generation=cas_generation; }
-      if (wire_extension_version >= 34) { const auto rmw_generation=GetU64(payload,trailer+328); if(!rmw_generation)return false; context->preliminary_atomic_rmw_executor_availability_generation=rmw_generation; }
-      if (wire_extension_version >= 35) { const auto lock_generation=GetU64(payload,trailer+336); if(!lock_generation)return false; context->preliminary_advisory_lock_acquire_executor_availability_generation=lock_generation; }
-      if (wire_extension_version >= 36) { const auto release_generation=GetU64(payload,trailer+344); if(!release_generation)return false; context->preliminary_advisory_lock_release_executor_availability_generation=release_generation; }
-      if (wire_extension_version >= 37) { const auto function_generation=GetU64(payload,trailer+352); if(!function_generation)return false; context->preliminary_function_call_executor_availability_generation=function_generation; }
-      if (wire_extension_version >= 38) { const auto operator_generation=GetU64(payload,trailer+360); if(!operator_generation)return false; context->preliminary_operator_call_executor_availability_generation=operator_generation; }
-      if (wire_extension_version >= 39) { const auto cast_generation=GetU64(payload,trailer+368); if(!cast_generation)return false; context->preliminary_cast_executor_availability_generation=cast_generation; }
-      if (wire_extension_version >= 40) { const auto compare_generation=GetU64(payload,trailer+376); if(!compare_generation)return false; context->preliminary_compare_executor_availability_generation=compare_generation; }
-      if (wire_extension_version >= 41) { const auto domain_generation=GetU64(payload,trailer+384); if(!domain_generation)return false; context->preliminary_domain_operation_executor_availability_generation=domain_generation; }
-      if (wire_extension_version >= 42) { const auto udr_generation=GetU64(payload,trailer+392); if(!udr_generation)return false; context->preliminary_udr_invoke_executor_availability_generation=udr_generation; }
-      if (wire_extension_version >= 43) { const auto procedure_generation=GetU64(payload,trailer+400); if(!procedure_generation)return false; context->preliminary_procedure_invoke_executor_availability_generation=procedure_generation; }
-      if (wire_extension_version >= 44) { const auto function_generation=GetU64(payload,trailer+408); if(!function_generation)return false; context->preliminary_function_invoke_executor_availability_generation=function_generation; }
-      if (wire_extension_version >= 45) { const auto aggregate_generation=GetU64(payload,trailer+416); if(!aggregate_generation)return false; context->preliminary_aggregate_invoke_executor_availability_generation=aggregate_generation; }
-      if (wire_extension_version >= 46) { const auto nextval_generation=GetU64(payload,trailer+424); if(!nextval_generation)return false; context->preliminary_sequence_nextval_executor_availability_generation=nextval_generation; }
-      if (wire_extension_version >= 47) { const auto currval_generation=GetU64(payload,trailer+432); if(!currval_generation)return false; context->preliminary_sequence_currval_executor_availability_generation=currval_generation; }
-      if (wire_extension_version >= 48) { const auto setval_generation=GetU64(payload,trailer+440); if(!setval_generation)return false; context->preliminary_sequence_setval_executor_availability_generation=setval_generation; }
-      if (wire_extension_version >= 49) { const auto numeric_generation=GetU64(payload,trailer+448); if(!numeric_generation)return false; context->preliminary_query_numeric_executor_availability_generation=numeric_generation; }
-      if (wire_extension_version >= 50) { const auto family_generation=GetU64(payload,trailer+456); if(!family_generation)return false; context->preliminary_advanced_datatype_family_executor_availability_generation=family_generation; }
-      if (wire_extension_version >= 51) { const auto project_generation=GetU64(payload,trailer+464); if(!project_generation)return false; context->preliminary_project_executor_availability_generation=project_generation; }
-      if (wire_extension_version >= 52) { const auto aggregate_generation=GetU64(payload,trailer+472); if(!aggregate_generation)return false; context->preliminary_aggregate_executor_availability_generation=aggregate_generation; }
-      if (wire_extension_version >= 53) { const auto group_generation=GetU64(payload,trailer+480); if(!group_generation)return false; context->preliminary_group_executor_availability_generation=group_generation; }
-      if (wire_extension_version >= 54) { const auto sort_generation=GetU64(payload,trailer+488); if(!sort_generation)return false; context->preliminary_sort_executor_availability_generation=sort_generation; }
-      if (wire_extension_version >= 55) { const auto limit_generation=GetU64(payload,trailer+496); if(!limit_generation)return false; context->preliminary_limit_executor_availability_generation=limit_generation; }
-      if (wire_extension_version >= 56) { const auto window_generation=GetU64(payload,trailer+504); if(!window_generation)return false; context->preliminary_window_executor_availability_generation=window_generation; }
-      if (wire_extension_version >= 57) { const auto return_generation=GetU64(payload,trailer+512); if(!return_generation)return false; context->preliminary_return_result_set_executor_availability_generation=return_generation; }
+      if (extension_version >= 19 && extension_version <= 26) { const auto stream_generation = GetU64(payload, trailer + 208); if (stream_generation == 0 && !native_variant) return false; context->preliminary_read_stream_executor_availability_generation = stream_generation; }
+      if (extension_version >= 20 && extension_version <= 26) { const auto pass_generation = GetU64(payload, trailer + 216); if (pass_generation == 0 && !native_variant) return false; context->preliminary_result_set_pass_executor_availability_generation = pass_generation; }
+      if (extension_version >= 21 && extension_version <= 26) { const auto access_generation = GetU64(payload, trailer + 224); if (access_generation == 0 && !native_variant) return false; context->preliminary_access_cursor_open_executor_availability_generation = access_generation; }
+      if (extension_version >= 22 && extension_version <= 26) { const auto fetch_generation = GetU64(payload, trailer + 232); if (fetch_generation == 0 && !native_variant) return false; context->preliminary_access_cursor_fetch_executor_availability_generation = fetch_generation; }
+      if (extension_version >= 23 && extension_version <= 26) { const auto close_generation = GetU64(payload, trailer + 240); if (close_generation == 0 && !native_variant) return false; context->preliminary_access_cursor_close_executor_availability_generation = close_generation; }
+      if (extension_version >= 24 && extension_version <= 26) { const auto insert_generation = GetU64(payload, trailer + 248); if (insert_generation == 0 && !native_variant) return false; context->preliminary_insert_executor_availability_generation = insert_generation; }
+      if (extension_version >= 25 && extension_version <= 26) { const auto update_generation = GetU64(payload, trailer + 256); if (update_generation == 0 && !native_variant) return false; context->preliminary_update_executor_availability_generation = update_generation; }
+      if (extension_version == 26) { const auto delete_generation = GetU64(payload, trailer + 264); if (delete_generation == 0 && !native_variant) return false; context->preliminary_delete_executor_availability_generation = delete_generation; }
+      if (wire_extension_version == 27) { const auto merge_generation = GetU64(payload, trailer + 272); if (merge_generation == 0 && !native_variant) return false; context->preliminary_merge_executor_availability_generation = merge_generation; }
+      if (wire_extension_version == 28) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); if (!native_variant && (merge_generation == 0 || truncate_generation == 0)) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; }
+      if (wire_extension_version == 29) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); const auto analyze_generation = GetU64(payload, trailer + 288); if (!native_variant && (merge_generation == 0 || truncate_generation == 0 || analyze_generation == 0)) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; context->preliminary_table_analyze_executor_availability_generation = analyze_generation; }
+      if (wire_extension_version == 30) { const auto merge_generation = GetU64(payload, trailer + 272); const auto truncate_generation = GetU64(payload, trailer + 280); const auto analyze_generation = GetU64(payload, trailer + 288); const auto bulk_generation = GetU64(payload, trailer + 296); if (!native_variant && (merge_generation == 0 || truncate_generation == 0 || analyze_generation == 0 || bulk_generation == 0)) return false; context->preliminary_merge_executor_availability_generation = merge_generation; context->preliminary_table_truncate_executor_availability_generation = truncate_generation; context->preliminary_table_analyze_executor_availability_generation = analyze_generation; context->preliminary_bulk_import_stream_executor_availability_generation = bulk_generation; }
+      if (wire_extension_version >= 31) { const auto merge_generation=GetU64(payload,trailer+272),truncate_generation=GetU64(payload,trailer+280),analyze_generation=GetU64(payload,trailer+288),import_generation=GetU64(payload,trailer+296),export_generation=GetU64(payload,trailer+304); if (!native_variant && (!merge_generation||!truncate_generation||!analyze_generation||!import_generation||!export_generation)) return false;context->preliminary_merge_executor_availability_generation=merge_generation;context->preliminary_table_truncate_executor_availability_generation=truncate_generation;context->preliminary_table_analyze_executor_availability_generation=analyze_generation;context->preliminary_bulk_import_stream_executor_availability_generation=import_generation;context->preliminary_bulk_export_stream_executor_availability_generation=export_generation; }
+      if (wire_extension_version >= 32) { const auto batch_generation=GetU64(payload,trailer+312); if (!batch_generation && !native_variant) return false; context->preliminary_statement_batch_executor_availability_generation=batch_generation; }
+      if (wire_extension_version >= 33) { const auto cas_generation=GetU64(payload,trailer+320); if (!cas_generation && !native_variant) return false; context->preliminary_atomic_cas_executor_availability_generation=cas_generation; }
+      if (wire_extension_version >= 34) { const auto rmw_generation=GetU64(payload,trailer+328); if (!rmw_generation && !native_variant) return false; context->preliminary_atomic_rmw_executor_availability_generation=rmw_generation; }
+      if (wire_extension_version >= 35) { const auto lock_generation=GetU64(payload,trailer+336); if (!lock_generation && !native_variant) return false; context->preliminary_advisory_lock_acquire_executor_availability_generation=lock_generation; }
+      if (wire_extension_version >= 36) { const auto release_generation=GetU64(payload,trailer+344); if (!release_generation && !native_variant) return false; context->preliminary_advisory_lock_release_executor_availability_generation=release_generation; }
+      if (wire_extension_version >= 37) { const auto function_generation=GetU64(payload,trailer+352); if (!function_generation && !native_variant) return false; context->preliminary_function_call_executor_availability_generation=function_generation; }
+      if (wire_extension_version >= 38) { const auto operator_generation=GetU64(payload,trailer+360); if (!operator_generation && !native_variant) return false; context->preliminary_operator_call_executor_availability_generation=operator_generation; }
+      if (wire_extension_version >= 39) { const auto cast_generation=GetU64(payload,trailer+368); if (!cast_generation && !native_variant) return false; context->preliminary_cast_executor_availability_generation=cast_generation; }
+      if (wire_extension_version >= 40) { const auto compare_generation=GetU64(payload,trailer+376); if (!compare_generation && !native_variant) return false; context->preliminary_compare_executor_availability_generation=compare_generation; }
+      if (wire_extension_version >= 41) { const auto domain_generation=GetU64(payload,trailer+384); if (!domain_generation && !native_variant) return false; context->preliminary_domain_operation_executor_availability_generation=domain_generation; }
+      if (wire_extension_version >= 42) { const auto udr_generation=GetU64(payload,trailer+392); if (!udr_generation && !native_variant) return false; context->preliminary_udr_invoke_executor_availability_generation=udr_generation; }
+      if (wire_extension_version >= 43) { const auto procedure_generation=GetU64(payload,trailer+400); if (!procedure_generation && !native_variant) return false; context->preliminary_procedure_invoke_executor_availability_generation=procedure_generation; }
+      if (wire_extension_version >= 44) { const auto function_generation=GetU64(payload,trailer+408); if (!function_generation && !native_variant) return false; context->preliminary_function_invoke_executor_availability_generation=function_generation; }
+      if (wire_extension_version >= 45) { const auto aggregate_generation=GetU64(payload,trailer+416); if (!aggregate_generation && !native_variant) return false; context->preliminary_aggregate_invoke_executor_availability_generation=aggregate_generation; }
+      if (wire_extension_version >= 46) { const auto nextval_generation=GetU64(payload,trailer+424); if (!nextval_generation && !native_variant) return false; context->preliminary_sequence_nextval_executor_availability_generation=nextval_generation; }
+      if (wire_extension_version >= 47) { const auto currval_generation=GetU64(payload,trailer+432); if (!currval_generation && !native_variant) return false; context->preliminary_sequence_currval_executor_availability_generation=currval_generation; }
+      if (wire_extension_version >= 48) { const auto setval_generation=GetU64(payload,trailer+440); if (!setval_generation && !native_variant) return false; context->preliminary_sequence_setval_executor_availability_generation=setval_generation; }
+      if (wire_extension_version >= 49) { const auto numeric_generation=GetU64(payload,trailer+448); if (!numeric_generation && !native_variant) return false; context->preliminary_query_numeric_executor_availability_generation=numeric_generation; }
+      if (wire_extension_version >= 50) { const auto family_generation=GetU64(payload,trailer+456); if (!family_generation && !native_variant) return false; context->preliminary_advanced_datatype_family_executor_availability_generation=family_generation; }
+      if (wire_extension_version >= 51) { const auto project_generation=GetU64(payload,trailer+464); if (!project_generation && !native_variant) return false; context->preliminary_project_executor_availability_generation=project_generation; }
+      if (wire_extension_version >= 52) { const auto aggregate_generation=GetU64(payload,trailer+472); if (!aggregate_generation && !native_variant) return false; context->preliminary_aggregate_executor_availability_generation=aggregate_generation; }
+      if (wire_extension_version >= 53) { const auto group_generation=GetU64(payload,trailer+480); if (!group_generation && !native_variant) return false; context->preliminary_group_executor_availability_generation=group_generation; }
+      if (wire_extension_version >= 54) { const auto sort_generation=GetU64(payload,trailer+488); if (!sort_generation && !native_variant) return false; context->preliminary_sort_executor_availability_generation=sort_generation; }
+      if (wire_extension_version >= 55) { const auto limit_generation=GetU64(payload,trailer+496); if (!limit_generation && !native_variant) return false; context->preliminary_limit_executor_availability_generation=limit_generation; }
+      if (wire_extension_version >= 56) { const auto window_generation=GetU64(payload,trailer+504); if (!window_generation && !native_variant) return false; context->preliminary_window_executor_availability_generation=window_generation; }
+      if (wire_extension_version >= 57) { const auto return_generation=GetU64(payload,trailer+512); if (!return_generation && !native_variant) return false; context->preliminary_return_result_set_executor_availability_generation=return_generation; }
       const auto project_generation = [&](std::uint16_t version,
                                           std::size_t at,
                                           std::uint64_t* out) {
         if (wire_extension_version < version) return true;
         const auto generation = GetU64(payload, trailer + at);
-        if (generation == 0 || out == nullptr) return false;
+        if ((generation == 0 && !native_variant) || out == nullptr) return false;
         *out = generation;
         return true;
       };
@@ -3065,8 +3096,9 @@ bool DecodeAcquireStatementContextPayloadV11(
         const auto prepare_generation = GetU64(payload, trailer + 776);
         const auto execute_direct_generation = GetU64(payload, trailer + 784);
         const auto free_generation = GetU64(payload, trailer + 792);
-        if (prepare_generation == 0 || execute_direct_generation == 0 ||
-            free_generation == 0) {
+        if (!native_variant &&
+            (prepare_generation == 0 || execute_direct_generation == 0 ||
+             free_generation == 0)) {
           return false;
         }
         context->preliminary_stmt_prepare_executor_availability_generation =
@@ -3079,7 +3111,7 @@ bool DecodeAcquireStatementContextPayloadV11(
       if (wire_extension_version >= 73) {
         const auto statement_catalog_generation =
             GetU64(payload, trailer + 800);
-        if (statement_catalog_generation == 0) return false;
+        if (statement_catalog_generation == 0 && !native_variant) return false;
         context->preliminary_statement_catalog_generation =
             statement_catalog_generation;
       }
@@ -5245,6 +5277,17 @@ bool DecodeAcquireStatementContextResultPayloadV10ForTest(
   return DecodeAcquireStatementContextPayloadV10(payload, context);
 }
 
+bool DecodeAcquireStatementContextResultPayloadV11ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadV11(payload, context);
+}
+
+bool ParseAuthResultTailForTest(const std::vector<std::uint8_t>& payload, std::size_t offset, bool* present,
+                                std::uint64_t* order, std::array<std::uint8_t, 16>* uuid) {
+  return ParseAuthResultTail(payload, offset, present, order, uuid);
+}
+
 std::vector<std::uint8_t>
 EncodeAcquireStatementContextRequestPayloadV1ForTest(
     const ParserSessionContext& session,
@@ -5737,10 +5780,22 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
   const auto effective_user_uuid = GetUuid(auth_response.payload, offset);
   offset += 16;
   const auto security_epoch = GetU64(auth_response.payload, offset);
+  offset += 8;
   (void)auth_session_uuid;
   (void)principal_uuid;
   (void)effective_user_uuid;
   (void)security_epoch;
+  // SB_NATIVE_AUTH_RESULT_TRANSACTION (S4h part 1): a NATIVE approval appends the session's first transaction (u64 order, then the UUID)
+  // after the legacy detail and health strings. A legacy payload ends there (nothing remains) and is read exactly as before. Present
+  // trailing bytes must be exactly that trailer, else the result is malformed; the values are cross-checked against the attach result.
+  std::uint64_t auth_transaction_order = 0;
+  std::array<std::uint8_t, 16> auth_transaction_uuid{};
+  bool auth_transaction_present = false;
+  if (!ParseAuthResultTail(auth_response.payload, offset, &auth_transaction_present, &auth_transaction_order,
+                           &auth_transaction_uuid)) {
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.AUTH_RESULT_INVALID", "The server authentication result payload is malformed.");
+    return false;
+  }
 
   Frame attach_response;
   if (!SendRequest(endpoint_,
@@ -5894,6 +5949,15 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
     AddDiagnostic(messages,
                   "PARSER_SERVER_IPC.ATTACH_TRANSACTION_IDENTITY_INVALID",
                   "Accepted database attach did not publish a complete engine-issued transaction ID and UUID.");
+    return false;
+  }
+  if (auth_transaction_present &&
+      (auth_transaction_order != local_transaction_id ||
+       auth_transaction_uuid != transaction_uuid.bytes ||
+       auth_session_uuid != session_uuid)) {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.AUTH_ATTACH_IDENTITY_MISMATCH",
+                  "The authentication result and the attach result name different session or transaction identities.");
     return false;
   }
 

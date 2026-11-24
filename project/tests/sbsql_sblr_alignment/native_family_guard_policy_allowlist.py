@@ -8,6 +8,7 @@ FILE_ALLOW = {
     'engine/internal_api/transaction/local_publication_store.hpp': 'inline publication-store paths; the caller RunLocalCommitPageBarrier (local_commit_publication.cpp) holds the guard',
     # ---- native-aware: the family answers a native context without a side file ------------------------------------------------------
     'engine/internal_api/sblr_executor_availability_registry.cpp': 'native-aware (S3e): every load answers a native context from the single-file build table (NativeLoad), Set refuses; no side file is read',
+    'engine/internal_api/sblr_diagnostic_identity_registry.cpp': 'native-aware (S4h part 1, owner option A): LoadSblrDiagnosticIdentitySnapshotV1 answers a native context from the per-build derived constant table before any path or file (native_diagnostic_registry_strace proves 0 syscalls name the path); LookupSblrDiagnosticIdentityV1 works on that snapshot. OLD (S3e): a refusal guard, ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED',
     'engine/internal_api/observability/metrics_api.cpp': 'MetricHistoryPath returns the empty path for a native context (in-process history only); no side file is read or created',
     'engine/native_compile/native_compile.cpp': 'AOT artifact directory; its only caller (llvm_api.cpp BuildNativeCompileRequest) passes an EMPTY path for a native context, which ArtifactDirectory already treats as no location',
     # ---- dead code ---------------------------------------------------------------------------------------------------------------
@@ -41,7 +42,9 @@ FN_ALLOW = {
     'engine/internal_api/sblr_prepared_statement_registry.cpp::PublishSblrPreparedStatementExecutionV1': 'guarded (S3e) before the first write',
     'engine/internal_api/sblr_prepared_statement_registry.cpp::FreeSblrPreparedStatementV1': 'guarded (S3e) before the first write',
     'engine/internal_api/sblr_prepared_statement_registry.cpp::RevokeSblrPreparedStatementSessionV1': 'native-aware: LoadExact returns not-found for a native context, so the write is unreachable',
-    'engine/internal_api/sblr_diagnostic_identity_registry.cpp::LookupSblrDiagnosticIdentityV1': 'works on a frozen snapshot that LoadSblrDiagnosticIdentitySnapshotV1 (guarded) produced; no file',
+    # S4h part 1 (OLD: 'engine/internal_api/sblr_diagnostic_identity_registry.cpp::LookupSblrDiagnosticIdentityV1': 'works on a frozen snapshot that
+    # LoadSblrDiagnosticIdentitySnapshotV1 (guarded) produced; no file'): the load is no longer a refusal guard but native-aware, so the file is in FILE_ALLOW below and
+    # this function entry would be stale.
     'engine/internal_api/sblr_transaction_begin_authority.cpp::LoadSblrTransactionBeginAuthorityV1': 'guard follows the result declaration, before any path or file',
     'engine/internal_api/catalog/catalog_object_lifecycle.cpp::LoadCatalogObjectLifecycleState': 'guard follows the result declaration (S3e), before any path or file',
     'engine/internal_api/catalog/catalog_journal_publication.hpp::AppendSequencedCatalogJournalRecord': 'guard follows a message lambda (S3e), before any path or file',

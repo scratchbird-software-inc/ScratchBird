@@ -68,6 +68,7 @@
 #include "session_registry.hpp"
 #include "ipc_server.hpp"
 #include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
+#include "wire/parser_server_ipc/parser_server_client.hpp"
 #include "../support/catalog_change_event_fixture.hpp"
 #include "../support/native_offline_file_reader.hpp"
 #include "../support/owned_temp_directory.hpp"
@@ -848,6 +849,76 @@ int ReceiptState(const std::string& state, const Offline& offline) {
 
   if (trace) Mark("approve");
   auto s1 = Approve();
+  // SB_NATIVE_AUTH_RESULT_TRANSACTION (S4h part 1): the REAL auth-result payload of the approving HandleAuthHandoff, decoded here with the same
+  // field order the parser's decoder reads (outcome, auth context, session, principal, effective user, security epoch, detail, health), then the
+  // native trailer: the transaction order and UUID, which must equal the TIP header's (order and UUID) the approval wrote. A LEGACY payload
+  // is the same bytes WITHOUT the trailer: the trailer is the only difference (checked by stripping it and re-reading).
+  {
+    const auto& payload = s1->result.payload;
+    std::size_t at = 0;
+    const auto get_u16 = [&](std::size_t o) { return static_cast<std::size_t>(payload[o]) | (static_cast<std::size_t>(payload[o + 1]) << 8); };
+    const auto get_string = [&](std::string* out) {
+      if (at + 2 > payload.size()) return false;
+      const auto n = get_u16(at);
+      if (at + 2 + n > payload.size()) return false;
+      out->assign(reinterpret_cast<const char*>(payload.data()) + at + 2, n);
+      at += 2 + n;
+      return true;
+    };
+    std::string outcome, detail, health;
+    Check(get_string(&outcome) && outcome == "accepted", "the auth result payload decodes: outcome accepted");
+    std::array<std::uint8_t, 16> auth_context{}, session{}, principal{}, effective{};
+    const auto take16 = [&](std::array<std::uint8_t, 16>* out) { std::copy_n(payload.begin() + at, 16, out->begin()); at += 16; };
+    if (at + 16 * 4 + 8 <= payload.size()) {
+      take16(&auth_context); take16(&session); take16(&principal); take16(&effective);
+      at += 8;  // the security epoch
+    }
+    Check(get_string(&detail) && get_string(&health), "the legacy detail and health strings follow");
+    const auto legacy_size = at;
+    Check(session == s1->approval.session_uuid, "the auth result's session id is the approval's session");
+    Check(payload.size() == legacy_size + 8 + 16, "exactly 24 bytes trail the legacy fields: the transaction order and UUID");
+    if (payload.size() == legacy_size + 24) {
+      std::uint64_t order = 0;
+      for (unsigned i = 0; i < 8; ++i) order |= static_cast<std::uint64_t>(payload[legacy_size + i]) << (8 * i);
+      std::array<std::uint8_t, 16> uuid{};
+      std::copy_n(payload.begin() + legacy_size + 8, 16, uuid.begin());
+      Check(order == s1->approval.transaction_order && uuid == s1->approval.transaction_uuid.bytes,
+            "the auth result's transaction order and UUID are the approval's");
+      // The offline file read opens the data file by path: it is the TEST's read, so it runs only outside the strace variant's approve region
+      // (the strace variant would otherwise count it as an engine open). The non-strace run proves the equality with the TIP header.
+      if (!trace) {
+      const auto file = read();
+      const auto header = file.headers.find(order);
+      Check(header != file.headers.end() && header->second.transaction_uuid.bytes == uuid && file.words.at(order).state == pgs::TipStateCode::active &&
+                header->second.session_uuid == p::Uuid{session},
+            "and they equal the TIP header's (order, UUID, session) in the file, whose slot is active");
+      }
+    }
+    {
+      // the PARSER's own tail decoder on the real bytes: the trailer is read, the legacy prefix alone reads as "no trailer", garbage is refused
+      bool present = false;
+      std::uint64_t order = 0;
+      std::array<std::uint8_t, 16> uuid{};
+      const auto detail_at = std::size_t{2 + 8 + 16 * 4 + 8};  // after outcome "accepted" (2+8), four uuids, the security epoch
+      Check(scratchbird::parser::ipc::ParseAuthResultTailForTest(payload, detail_at, &present, &order, &uuid) && present &&
+                order == s1->approval.transaction_order && uuid == s1->approval.transaction_uuid.bytes,
+            "the parser's auth tail decoder reads the real trailer: the approval's transaction order and UUID");
+      std::vector<std::uint8_t> legacy_only(payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(legacy_size));
+      Check(scratchbird::parser::ipc::ParseAuthResultTailForTest(legacy_only, detail_at, &present, &order, &uuid) && !present && order == 0,
+            "TOLERANCE: a legacy payload (no trailer) is read exactly as before (nothing present)");
+      auto epoch_only = std::vector<std::uint8_t>(payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(detail_at));
+      Check(scratchbird::parser::ipc::ParseAuthResultTailForTest(epoch_only, detail_at, &present, &order, &uuid) && !present,
+            "TOLERANCE: a payload that ends after the security epoch is read as before");
+      auto short_tail = payload;
+      short_tail.pop_back();
+      Check(!scratchbird::parser::ipc::ParseAuthResultTailForTest(short_tail, detail_at, &present, &order, &uuid), "a truncated trailer is malformed");
+      auto zero_order = payload;
+      for (unsigned i = 0; i < 8; ++i) zero_order[legacy_size + i] = 0;
+      Check(!scratchbird::parser::ipc::ParseAuthResultTailForTest(zero_order, detail_at, &present, &order, &uuid), "a zero transaction order in the trailer is malformed");
+    }
+    // the decoder tolerance the parser relies on: the first legacy_size bytes alone are a complete legacy payload
+    Check(legacy_size >= 16 * 4 + 8 + 2 + 2, "the legacy prefix is a complete payload by itself (what a LEGACY server sends)");
+  }
   auto ps1 = OpenPublicFor(*s1);
   auto c1 = ContextFor(*s1, g0);
   std::vector<p::byte> image_before;
@@ -1125,8 +1196,10 @@ int ReceiptState(const std::string& state, const Offline& offline) {
             "and it is gone from the registry");
     }
     // The REAL parser acquires with schema V11, whose projection requires a diagnostic identity registry snapshot (non-nil v7 uuid, a non-zero
-    // generation, a valid row cohort). A native receipt has none yet (item 6 of S4g part 1), so the V11 route refuses with its specific
-    // detail, and the receipt it made is released. Pinned here so the S4h gap is a test, not only a note.
+    // generation, a valid row cohort). OLD (S4g part 1): a native receipt had none, so the V11 route REFUSED with the specific detail
+    // engine_diagnostic_projection_invalid, pinned here as the S4h gap. NEW (S4h part 1, owner option A): the native receipt carries the
+    // per-build derived registry, so the V11 route ACCEPTS; its projection's registry fields are compared with the bridge-built receipt's
+    // (equal snapshot uuid, generation and rows) and the statement is released.
     {
       sbps::Frame v11;
       v11.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kAcquireStatementContextRequest);
@@ -1138,15 +1211,79 @@ int ReceiptState(const std::string& state, const Offline& offline) {
       v11.payload.insert(v11.payload.end(), s1->approval.session_uuid.begin(), s1->approval.session_uuid.end());
       for (unsigned i = 0; i < 8; ++i) v11.payload.push_back(static_cast<std::uint8_t>((order1 >> (8 * i)) & 0xFF));
       v11.payload.insert(v11.payload.end(), s1->approval.transaction_uuid.bytes.begin(), s1->approval.transaction_uuid.bytes.end());
-      const auto refused = srv::HandleAcquireStatementContext(s1->registry.get(), served.started.state, v11);
-      bool pinned = !refused.accepted && !refused.diagnostics.empty() &&
-                    refused.diagnostics.front().code == "PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED";
+      const auto accepted = srv::HandleAcquireStatementContext(s1->registry.get(), served.started.state, v11);
       std::string detail_text;
-      if (!refused.diagnostics.empty())
-        for (const auto& field : refused.diagnostics.front().fields)
+      if (!accepted.diagnostics.empty())
+        for (const auto& field : accepted.diagnostics.front().fields)
           if (field.key == "detail") detail_text = field.value;
-      Check(pinned, "the V11 (parser) server route refuses a native receipt: " + (refused.diagnostics.empty() ? std::string("no diagnostic") : refused.diagnostics.front().code));
-      Check(detail_text == "engine_diagnostic_projection_invalid", "with the specific detail engine_diagnostic_projection_invalid (no native diagnostic identity registry): " + detail_text);
+      Check(accepted.accepted, "the V11 (parser) server route ACCEPTS a native receipt: " + (accepted.diagnostics.empty() ? std::string("no diagnostic") : accepted.diagnostics.front().code + " " + detail_text));
+      // SB_NATIVE_V11_ADMISSION (S4h part 1): the REAL native payload through the PARSER's own decoder (controller Q1 = (a)).
+      if (accepted.accepted) {
+        const auto& pl = accepted.payload;
+        std::size_t ext_at = 0;
+        for (std::size_t i = 43000; i + 4 < pl.size() && i < 50000; ++i)
+          if (pl[i] == 75 && pl[i + 1] == 0 && pl[i + 2] == 0 && pl[i + 3] == 0) { ext_at = i; break; }
+        Check(ext_at != 0, "a native session's V11 receipt is announced as wire extension 75");
+        std::string why;
+        scratchbird::parser::ipc::ParserStatementContext parsed;
+        Check(scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(pl, &parsed),
+              "the parser's V11 decoder ADMITS the native payload (extension 75)");
+        Check(parsed.preliminary_parameter_executor_availability_generation == 0 && parsed.preliminary_transaction_commit_executor_availability_generation == 0 &&
+                  parsed.preliminary_transaction_rollback_executor_availability_generation == 0 &&
+                  parsed.preliminary_transaction_isolation_profile_generation != 0 && parsed.preliminary_transaction_executor_availability_generation != 0 &&
+                  parsed.preliminary_diagnostic_identities.size() > 100 && parsed.preliminary_diagnostic_registry_generation != 0,
+              "the decoded values are the receipt's exactly: 0 where not installed (parameter, commit, rollback), the begin authority and the diagnostic registry non-zero");
+        if (ext_at != 0) {
+          // the legacy decoder stays strict: the SAME bytes announced as extension 74 are refused
+          auto legacy = pl;
+          legacy[ext_at] = 74;
+          scratchbird::parser::ipc::ParserStatementContext strict;
+          Check(!scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(legacy, &strict),
+                "the same bytes as extension 74 are REFUSED (the legacy decode is strict)");
+          // the commit block keeps its legacy mode range beside a zero generation: a mode of 7 is malformed even natively
+          const std::size_t rows = pl[ext_at + 252] | (pl[ext_at + 253] << 8) | (pl[ext_at + 254] << 16);
+          const std::size_t commit = ext_at + 260 + rows * 72 + 80;
+          auto torn = pl;
+          torn[commit + 8] = 7;
+          scratchbird::parser::ipc::ParserStatementContext torn_context;
+          Check(!scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(torn, &torn_context),
+                "a native commit block with an out-of-range mode is refused");
+          auto unknown = pl;
+          unknown[ext_at] = 76;
+          scratchbird::parser::ipc::ParserStatementContext unknown_context;
+          Check(!scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(unknown, &unknown_context), "an unknown extension (76) is refused");
+        }
+      }
+      if (accepted.accepted && accepted.payload.size() >= 19) {
+        std::array<std::uint8_t, 16> v11_statement{};
+        std::copy_n(accepted.payload.begin() + 3, 16, v11_statement.begin());
+        const auto v11_found = s1->registry->statement_contexts_by_statement_uuid.find(p::Uuid{v11_statement});
+        Check(v11_found != s1->registry->statement_contexts_by_statement_uuid.end(), "the server recorded the V11 statement context");
+        if (v11_found != s1->registry->statement_contexts_by_statement_uuid.end()) {
+          const auto& v = v11_found->second.view;
+          auto bridged = Acquire(*ps1, ContextFor(*s1, RootOf(read()).catalog_generation), s1->approval.transaction_uuid);
+          Check(bridged.ok(), "the bridge-built receipt for the registry comparison: " + bridged.code);
+          if (bridged.ok()) {
+            const auto& b = bridged.view;
+            Check(v.diagnostic_registry_snapshot_uuid == b.diagnostic_registry_snapshot_uuid && v.diagnostic_registry_generation == b.diagnostic_registry_generation &&
+                      v.diagnostic_registry_generation != 0 && !v.diagnostic_identity_rows.empty() &&
+                      v.diagnostic_identity_rows.size() == b.diagnostic_identity_rows.size(),
+                  "the V11 receipt's registry snapshot uuid, generation and row count equal the bridge-built receipt's");
+            bool rows_equal = v.diagnostic_identity_rows.size() == b.diagnostic_identity_rows.size();
+            for (std::size_t i = 0; rows_equal && i < v.diagnostic_identity_rows.size(); ++i) {
+              const auto& x = v.diagnostic_identity_rows[i];
+              const auto& y = b.diagnostic_identity_rows[i];
+              rows_equal = x.diagnostic_uuid == y.diagnostic_uuid && x.diagnostic_generation == y.diagnostic_generation &&
+                           x.precedence_ordinal == y.precedence_ordinal && x.severity_code == y.severity_code &&
+                           x.redaction_class == y.redaction_class && x.maximum_safe_field_count == y.maximum_safe_field_count &&
+                           x.row_identity_sha256 == y.row_identity_sha256;
+            }
+            Check(rows_equal, "every registry row of the V11 receipt equals the bridge-built receipt's row");
+            Release(bridged);
+          }
+          Check(srv::ReleaseServerStatementContext(s1->registry.get(), p::Uuid{v11_statement}), "the server releases the V11 statement context");
+        }
+      }
     }
     Check(Image(served.path) == before && directory() == directory_before, "the server route wrote nothing and created no file");
   }

@@ -35,8 +35,10 @@ ROOT = sys.argv[1] if len(sys.argv) > 1 else "."
 # S4g part 2 (owner decision 2026-12-06, after an end-to-end audit): AcquireStatementPackageAdmissionReservation joins the allowed set (OLD: refused,
 # native_package_admission_registry): its body reads only the receipt and the session's in-memory resource ledger and records the reservation in a
 # process-local map; no file, no registry, no storage. Dispatch of the allow-listed envelope needs it.
+# S4h part 1 (real parser route): NegotiateStatementLiteralDescriptorsV1 and FinalizeStatementLiteralBindingV1 join the allowed set (OLD: refused,
+# native_literal_descriptor_registry): they read only the receipt's in-memory state and the compiled datatype table; no file, no registry, no storage.
 PINNED_ALLOWED = {"AcquireStatementContextReceipt", "ReleaseStatementContextReceipt", "CopyStatementContextEngineContextV1", "CopyStatementNameResolveAuthorityV1",
-                  "AcquireStatementPackageAdmissionReservation"}
+                  "AcquireStatementPackageAdmissionReservation", "NegotiateStatementLiteralDescriptorsV1", "FinalizeStatementLiteralBindingV1"}
 PINNED_OWN_GATE = {
     "DispatchStatementContextReceipt": "native_operation_not_built(native_session, out_result, \"dispatch_statement_context\"",
     "BindStatementNameResolveAuthorityV1": "context.native_served_facts && view.name_resolve_executor_availability_generation == 0",

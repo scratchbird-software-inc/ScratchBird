@@ -327,6 +327,12 @@ bool DecodeAcquireStatementContextResultPayloadV9ForTest(
 bool DecodeAcquireStatementContextResultPayloadV10ForTest(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context);
+bool DecodeAcquireStatementContextResultPayloadV11ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context);
+// S4h part 1: the AUTH result tail (after the fixed fields) as AuthenticateAndAttach reads it; offset is where the detail string starts.
+bool ParseAuthResultTailForTest(const std::vector<std::uint8_t>& payload, std::size_t offset, bool* present,
+                                std::uint64_t* order, std::array<std::uint8_t, 16>* uuid);
 // Production-neutral codecs shared by socket SBPS and the authenticated
 // in-process embedded route.  Both routes use the same exact V11 statement
 // receipt and canonical execute request/result bytes.
