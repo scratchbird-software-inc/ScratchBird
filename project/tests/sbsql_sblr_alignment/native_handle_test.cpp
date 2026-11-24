@@ -459,7 +459,14 @@ int HandleMode(const fs::path& path) {
     Check(!set_result.ok && set_result.diagnostic.code == "SBLR.EXECUTOR.NATIVE_AVAILABILITY_IMMUTABLE" &&
               HasIdentity(set_result.diagnostic, "availability_table_uuid", api::NativeExecutorAvailabilityTableUuid()),
           "Set refuses on native with a specific code");
-    Check(api::NativeExecutorAvailabilityAllowList().empty(), "the native allow-list is empty in this build");
+    // S4g part 1 (OLD, S3e: the allow-list was empty): ONE row is listed, SBLR_NAME_RESOLVE, and no other (the literal row above is not).
+    {
+      const auto& allowed = api::NativeExecutorAvailabilityAllowList();
+      Check(allowed.size() == 1 && allowed.front().executor_id == api::kSblrNameResolveExecutorId &&
+                allowed.front().opcode_code == api::kSblrNameResolveOpcodeCode,
+            "the native allow-list holds exactly the SBLR_NAME_RESOLVE row in this build");
+      Check(!api::LoadSblrExecutorAvailabilitySnapshot(native, literal).ok, "and the literal row is still not installed natively");
+    }
     // A context for another database than the facts names is refused, not answered.
     auto crossed = native;
     crossed.database_uuid.bytes[15] ^= 1;
@@ -494,10 +501,34 @@ int HandleMode(const fs::path& path) {
   Check(!diagnostic_registry.ok && diagnostic_registry.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED" &&
             HasField(diagnostic_registry.diagnostic, "registry_family", "diagnostic_identity_registry"),
         "diagnostic identity registry refuses on native");
-  const auto begin_authority = api::LoadSblrTransactionBeginAuthorityV1(registry);
-  Check(!begin_authority.ok && begin_authority.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED" &&
-            HasField(begin_authority.diagnostic, "registry_family", "transaction_begin_authority"),
-        "transaction begin authority refuses on native");
+  // S4g part 1 (OLD, S3e: the begin authority refused on native, always). NEW: a native context answers from the served facts' begin
+  // authority (the default isolation profile and transaction policy the open resolved) when the context names the facts' database and
+  // carries a security context; facts without an authority, or a context that does not, keep the specific refusal.
+  {
+    auto native_context = registry;
+    native_context.database_uuid = api::EngineUuid{facts->database_uuid.bytes};
+    native_context.security_context_present = true;
+    const auto begin_authority = api::LoadSblrTransactionBeginAuthorityV1(native_context);
+    Check(facts->transaction_begin_authority_present && begin_authority.ok &&
+              begin_authority.authority.isolation_profile_uuid.bytes == facts->begin_isolation_profile_uuid.bytes &&
+              begin_authority.authority.isolation_profile_generation == facts->begin_isolation_profile_generation &&
+              begin_authority.authority.transaction_policy_snapshot_uuid.bytes == facts->begin_policy_snapshot_uuid.bytes &&
+              begin_authority.authority.transaction_policy_generation == facts->begin_policy_generation,
+          "transaction begin authority answers natively from the facts");
+    auto without = native_context;
+    auto bare = std::make_shared<api::NativeServedDatabaseFacts>(*facts);
+    bare->transaction_begin_authority_present = false;
+    without.native_served_facts = bare;
+    const auto refused = api::LoadSblrTransactionBeginAuthorityV1(without);
+    Check(!refused.ok && refused.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED" &&
+              HasField(refused.diagnostic, "registry_family", "transaction_begin_authority"),
+          "facts without a begin authority keep the specific refusal");
+    auto no_security_context = native_context;
+    no_security_context.security_context_present = false;
+    const auto no_security = api::LoadSblrTransactionBeginAuthorityV1(no_security_context);
+    Check(!no_security.ok && no_security.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED",
+          "a native context without a security context is refused");
+  }
   const auto events = api::LoadCatalogObjectLifecycleState(registry);
   Check(!events.ok && events.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED" &&
             HasField(events.diagnostic, "registry_family", "catalog_object_events"),

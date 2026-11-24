@@ -647,6 +647,10 @@ std::optional<ServerSessionRecord> FindServerSession(ServerSessionRegistry* regi
   return found->second;
 }
 
+}  // namespace
+
+// SB_NATIVE_FAMILY_GUARD (S4g part 1): the production builder of the parser event context, declared in ipc_server.hpp so a test can build the
+// context through the REAL path (it was file-local before; behaviour unchanged).
 ParserServerEventEngineContext EventEngineContextFromSession(
     const ServerSessionRecord& session,
     const HostedEngineState& engine_state,
@@ -679,6 +683,11 @@ ParserServerEventEngineContext EventEngineContextFromSession(
       }
     }
   }
+  // SB_NATIVE_FAMILY_GUARD (S4g part 1): the marker is the session's facts; when the context's database was chosen from the engine
+  // state (the session names no path) the facts of THAT served database are used, so a path-chosen database is marked too.
+  context.native_served_facts = session.native_served_facts != nullptr
+                                    ? session.native_served_facts
+                                    : ServedNativeFactsFor(engine_state, context.database_path);
   context.principal_uuid.bytes = session.effective_user_uuid;
   context.session_uuid.bytes = session.session_uuid;
   context.transaction_uuid = session.transaction_uuid;
@@ -718,6 +727,7 @@ ParserServerEventEngineContext EventEngineContextFromSession(
   authority.database_path = context.database_path;
   authority.served_route_owner = context.served_route_owner;
   authority.database_uuid = context.database_uuid;
+  authority.native_served_facts = context.native_served_facts;  // SB_NATIVE_FAMILY_GUARD (S4g part 1): no legacy bootstrap read
   authority.principal_uuid = context.principal_uuid;
   authority.session_uuid = context.session_uuid;
   authority.transaction_uuid = context.transaction_uuid;
@@ -732,6 +742,8 @@ ParserServerEventEngineContext EventEngineContextFromSession(
       MaterializeDurableManagementAuthorizationContext(session, authority));
   return context;
 }
+
+namespace {
 
 std::optional<ParserServerEventSession> EventSessionFromFrame(
     ServerSessionRegistry* registry,

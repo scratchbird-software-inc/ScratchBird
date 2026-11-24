@@ -17,6 +17,7 @@
 #include "session_registry.hpp"
 #include "sbps.hpp"
 #include "listener_orchestrator.hpp"
+#include "parser_server_event_ipc.hpp"
 #include "server_agent_runtime.hpp"
 #include "catalog/name_list_api.hpp"
 
@@ -121,5 +122,11 @@ bool ParserChannelHelloMayBeAdmittedForTest(
     bool capability_bitmap_unchanged,
     bool hello_identity_unchanged,
     bool connection_authenticated = false);
+
+// The parser event engine context a bound session produces (S4g part 1: it carries session.native_served_facts, or the facts of the served
+// database it chose from the engine state when the session names no path). Test seam as well as production helper.
+ParserServerEventEngineContext EventEngineContextFromSession(const ServerSessionRecord& session,
+                                                             const HostedEngineState& engine_state,
+                                                             const sbps::Frame& request);
 
 }  // namespace scratchbird::server

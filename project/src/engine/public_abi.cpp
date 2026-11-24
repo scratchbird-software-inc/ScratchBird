@@ -5227,7 +5227,9 @@ constexpr NativeReceiptConsumerRow kNativeReceiptConsumerTable[] = {
     {"CopyStatementExecuteDirectAuthorityV1", "execute_direct", "native_executor_availability_s4g", kRefuse},
     {"BindStatementQueryExplainAuthorityV1", "query_explain", "native_explain_message_vectors", kRefuse},
     {"CopyStatementQueryExplainAuthorityV1", "query_explain", "native_explain_message_vectors", kRefuse},
-    {"CopyStatementNameResolveAuthorityV1", "name_resolve", "native_executor_availability_s4g", kRefuse},
+    // S4g part 1: allowed (OLD: kRefuse, native_executor_availability_s4g). It reads only the receipt's in-memory bind authority, which now exists
+    // natively because the NAME_RESOLVE availability row is allow-listed and the bind issues a descriptor; no file, no registry.
+    {"CopyStatementNameResolveAuthorityV1", "name_resolve", "", kAllowed},
     {"BindStatementDdlCreateSchemaAuthorityV1", "ddl_create_schema", "native_ddl_execution_journal", kRefuse},
     {"CopyStatementDdlCreateSchemaAuthorityV1", "ddl_create_schema", "native_ddl_execution_journal", kRefuse},
     {"BindStatementSecurityAlterPolicyAuthorityV1", "security_policy", "native_security_catalog_writes", kRefuse},
@@ -7748,14 +7750,23 @@ sb_engine_status_t AcquireStatementContextReceipt(
     // STALE GENERATION: the generation is the catalog's as the transaction's snapshot sees it; the context and the materialized
     // authorization were built against a generation, and a different one is a stale (or forged) claim. The refusal carries the
     // current values (counters, not text) so the caller can rebuild its context from them.
+    // SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1): the context's and the authorization's security epoch and the context's resource
+    // epoch must equal the catalog root's too (OLD: only non-zero; the caller's values were never verified).
     if (engine_context.catalog_generation_id != input.catalog_generation_id ||
-        engine_context.authorization_context.catalog_generation_id != input.catalog_generation_id) {
+        engine_context.authorization_context.catalog_generation_id != input.catalog_generation_id ||
+        engine_context.security_epoch != input.security_epoch ||
+        engine_context.authorization_context.security_epoch != input.security_epoch ||
+        engine_context.resource_epoch != input.resource_epoch) {
       scratchbird::engine::internal_api::EngineApiDiagnostic stale =
           scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
               "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
               "engine.statement_context.native_catalog_generation_stale", {}, true);
       stale.fields.push_back({"current_catalog_generation_id", std::to_string(input.catalog_generation_id)});
       stale.fields.push_back({"current_name_resolution_epoch", std::to_string(input.name_resolution_epoch)});
+      stale.fields.push_back({"current_security_epoch", std::to_string(input.security_epoch)});
+      stale.fields.push_back({"current_resource_epoch", std::to_string(input.resource_epoch)});
+      stale.fields.push_back({"context_security_epoch", std::to_string(engine_context.security_epoch)});
+      stale.fields.push_back({"context_resource_epoch", std::to_string(engine_context.resource_epoch)});
       stale.fields.push_back({"context_catalog_generation_id", std::to_string(engine_context.catalog_generation_id)});
       stale.fields.push_back({"authorization_catalog_generation_id",
                               std::to_string(engine_context.authorization_context.catalog_generation_id)});
@@ -8745,9 +8756,77 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // bytes are not built natively. The statements that fill the same `view` fields are skipped as one block.
   scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot parameter_executor_snapshot;
   std::optional<scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot> variable_executor_snapshot;
+  bool native_begin_authority_applies = false;
   if (native_input) {
     view.parse_text_language_profile_generation =
         engine_context.language_context.language_resource_epoch;
+    // SB_NATIVE_TXN_BEGIN_AUTHORITY (S4g part 1): the transaction-begin authority from the served facts (the default isolation
+    // profile and transaction policy the open resolved; LoadSblrTransactionBeginAuthorityV1 answers natively from them, no side file)
+    // fills the same view fields the legacy block fills, so the TXBH handle below can be built. The TxnBegin executor generation is
+    // the native loop's begin generation (kNativeLoopBeginGeneration), not an availability-table row (the row stays off the
+    // allow-list). (OLD, S4f: no native source, the begin authority refused and the TXBH was not built.)
+    // The isolation profile is the one whose KIND is the transaction's own isolation (the TIP header's byte): the begin authority and the
+    // TXBH name the profile the transaction really runs under. The native sources are the profiles the open's declarations resolved (the
+    // default and the startup profile); a transaction under a kind with no resolved profile carries no begin authority and no TXBH
+    // (OWNER QUESTION: resolve the other profiles).
+    // The profile of the transaction's kind when the open resolved one; otherwise the database's DEFAULT profile (the begin authority the
+    // owner named: "the default isolation profile"). A freshly created database holds profile rows for the default (read_committed_
+    // statement) and the startup (maintenance_operation_isolation) profiles ONLY, while the loop begins a user's transaction under
+    // snapshot_stable: that TXBH therefore names the default profile although the TIP header says snapshot_stable (OWNER QUESTION, reported).
+    const scratchbird::engine::internal_api::NativeServedDatabaseFacts::IsolationProfile* native_profile = nullptr;
+    for (const auto& candidate : native_facts->begin_isolation_profiles)
+      if (candidate.kind == native_input->isolation_profile) {
+        native_profile = &candidate;
+        break;
+      }
+    scratchbird::engine::internal_api::NativeServedDatabaseFacts::IsolationProfile default_profile;
+    if (native_profile == nullptr && native_facts->transaction_begin_authority_present) {
+      default_profile.kind = native_facts->begin_isolation_profile_kind;
+      default_profile.profile_uuid = native_facts->begin_isolation_profile_uuid;
+      default_profile.generation = native_facts->begin_isolation_profile_generation;
+      native_profile = &default_profile;
+    }
+    native_begin_authority_applies = native_facts->transaction_begin_authority_present && native_profile != nullptr;
+    if (native_begin_authority_applies) {
+      auto transaction_context = engine_context;
+      transaction_context.statement_metadata_snapshot_engine_owned = true;
+      const auto authority = scratchbird::engine::internal_api::LoadSblrTransactionBeginAuthorityV1(transaction_context);
+      if (!authority.ok) {
+        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4047, authority.diagnostic.code,
+                           authority.diagnostic.message_key, authority.diagnostic.detail, {}, nullptr, &authority.diagnostic);
+      }
+      view.txn_begin_isolation_profile_uuid = scratchbird::engine::internal_api::EngineUuid{native_profile->profile_uuid.bytes};
+      view.txn_begin_isolation_profile_generation = native_profile->generation;
+      view.txn_begin_policy_snapshot_uuid = authority.authority.transaction_policy_snapshot_uuid;
+      view.txn_begin_policy_generation = authority.authority.transaction_policy_generation;
+      view.result_page_policy_snapshot_uuid = authority.authority.transaction_policy_snapshot_uuid;
+      view.result_page_policy_generation = authority.authority.transaction_policy_generation;
+      view.query_explain_policy_snapshot_uuid = authority.authority.transaction_policy_snapshot_uuid;
+      view.query_explain_policy_generation = authority.authority.transaction_policy_generation;
+      view.catalog_epoch_check_policy_snapshot_uuid = authority.authority.transaction_policy_snapshot_uuid;
+      view.catalog_epoch_check_policy_generation = authority.authority.transaction_policy_generation;
+      view.txn_begin_read_mode = authority.authority.read_mode;
+      view.txn_begin_authority_scope = authority.authority.authority_scope;
+      view.txn_begin_wait_policy = authority.authority.wait_policy;
+      view.txn_begin_deadline_monotonic_ns = authority.authority.deadline_monotonic_ns;
+      view.txn_begin_executor_availability_generation = scratchbird::engine::internal_api::kNativeLoopBeginGeneration;
+    }
+    // SB_NATIVE_ALLOW_LIST_NAME_RESOLVE (S4g part 1): the executor-availability generations of a native receipt come from the native
+    // table, which lists ONE row (SBLR_NAME_RESOLVE): that row's generation is looked up here (the bind needs it to issue a
+    // descriptor), every other executor generation stays 0 (not installed natively) and no lookup is made for it. A row added to the
+    // allow-list later sets its own field here.
+    {
+      auto availability_context = engine_context;
+      availability_context.statement_metadata_snapshot_engine_owned = true;
+      scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity name_resolve_row{
+          scratchbird::engine::internal_api::kSblrNameResolveExecutorId, scratchbird::engine::internal_api::kSblrNameResolveOpcodeCode,
+          scratchbird::engine::internal_api::kSblrNameResolveOpcodeVersion, scratchbird::engine::internal_api::kSblrNameResolveOperandDescriptorId,
+          scratchbird::engine::internal_api::kSblrNameResolveResultDescriptorId, scratchbird::engine::internal_api::kSblrNameResolveResultDescriptorVersion};
+      const auto availability = scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(availability_context, name_resolve_row);
+      if (availability.ok && availability.snapshot.installed) {
+        view.name_resolve_executor_availability_generation = availability.snapshot.generation;
+      }
+    }
   } else {
   using ExecutorRow = scratchbird::engine::internal_api::
       SblrExecutorAvailabilityRowIdentity;
@@ -9416,11 +9495,11 @@ sb_engine_status_t AcquireStatementContextReceipt(
   view.route_fence_present = engine_context.route_fence_present;
   mark_acquire_phase("receipt_binding_projection");
 
-  // SB_NATIVE_STATEMENT_RECEIPT (S4f): the published TXBH transaction handle is built from the transaction-begin authority
-  // (isolation profile uuid and generation, transaction policy snapshot uuid and generation) and the TxnBegin executor
-  // generation, none of which has a native source yet (no native begin authority, empty allow-list): a native receipt
-  // carries no TXBH bytes (empty), publishes no private transaction handle, and a statement that needs one refuses on its own.
-  if (!native_input) {
+  // SB_NATIVE_STATEMENT_RECEIPT (S4f, changed S4g part 1): the published TXBH transaction handle is built from the transaction-begin
+  // authority (isolation profile uuid and generation, transaction policy snapshot uuid and generation) and the TxnBegin generation.
+  // (OLD, S4f: none had a native source, so a native receipt carried no TXBH bytes and published no private transaction handle; the
+  // `if (!native_input)` guard that skipped this block is removed: the native begin authority above supplies them.)
+  if (!native_input || native_begin_authority_applies) {
   // The always-active transaction created during attach predates the private
   // public-ABI session.  Publish (or reuse) its exact engine-owned private
   // handle here, after the MGA inventory identity and all TXBH authority rows
@@ -9550,7 +9629,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
       }
     }
   }
-  }  // !native_input
+  }  // TXBH block (was skipped for native until S4g part 1)
 
   mark_acquire_phase("transaction_handle_projection");
 

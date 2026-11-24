@@ -758,4 +758,17 @@ struct CatalogRootAdvanceResult {
 CatalogRootAdvanceResult AdvanceCatalogRoot(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
                                             const CatalogRootAdvanceRequest& request) noexcept;
 
+// SEARCH_KEY: SB_CATALOG_ROOT_COUNTERS_READ (S4g part 1, owner agreed 2026-12-05). The catalog root's counters, read O(1): ONE page read
+// (the root page, whole-page seal and header binding verified, nothing else read), read-only (no plan, no write, no sync). They are the
+// root as it stands NOW (the latest committed advance, AdvanceCatalogRoot), not a view under any transaction's snapshot: the root keeps no
+// history. `resource_epoch` is the root's own value: ZERO means "no resource activation yet" (the native create writes the root at 0).
+struct CatalogRootCountersResult {
+  CatalogVersionWriteError error = CatalogVersionWriteError::invalid_request;
+  core::platform::u64 catalog_generation = 0, schema_epoch = 0, security_epoch = 0, resource_epoch = 0;
+  core::platform::u32 pages_read = 0;  // 1 on success: the contract the tests count
+  disk::BoundedIoResult io{};
+  bool ok() const noexcept { return error == CatalogVersionWriteError::none; }
+};
+CatalogRootCountersResult ReadCatalogRootCounters(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding) noexcept;
+
 }  // namespace scratchbird::storage::database

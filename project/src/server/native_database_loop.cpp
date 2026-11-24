@@ -28,6 +28,7 @@
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 #include "core/catalog/catalog_database_record_codec.hpp"
 #include "core/catalog/catalog_isolation_profile.hpp"
+#include "native_catalog_version_writer.hpp"
 #include "native_hosted_careful_write_sink.hpp"
 #include "node_uuid_issuer.hpp"
 #include "startup_credential_source_adapter.hpp"
@@ -416,6 +417,9 @@ struct NativeDatabaseLoop::Serving {
   // table: transaction order -> the opaque owner key and the transaction's UUID. Loop thread only; memory only.
   core::platform::Uuid filespace_uuid, page_profile_uuid;
   pg::TransactionWriterBinding txn_binding;  // for the snapshot-point capture (reads the chains through the sink)
+  // SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1): the catalog root (page-zero root kind 2) as the open verified it, what the receipt's
+  // epoch read addresses (one page read through the write door's sink, no write). Loop thread only.
+  std::optional<db::CatalogVersionWriterBinding> catalog_binding;
   // SB_NATIVE_BEGIN_VIEW_SNAPSHOT (S4f): beside the owner and the UUID the table keeps what a statement receipt needs of the
   // transaction: its stated identities and isolation (the durable header's own values), and the snapshot it SAW WHEN IT BEGAN
   // (a visibility value captured in memory just before the begin: the native TIP does not record it and cannot rebuild it
@@ -818,6 +822,7 @@ engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotN
     const engine::internal_api::NativeNamesReadFilter& filter) noexcept {
   using Error = engine::internal_api::NativeNamesSnapshotError;
   engine::internal_api::NativeNamesSnapshot result;
+  names_reads_.fetch_add(1, std::memory_order_relaxed);
   try {
     if (!serving_ || state() != NativeLoopState::serving) {
       result.error = Error::database_not_serving;
@@ -2031,32 +2036,20 @@ engine::internal_api::NativeReceiptInput NativeDatabaseLoop::LookupReceiptNow(
       out.error = E::isolation_unsupported;
       return out;
     }
-    // The catalog generation AS THIS SNAPSHOT SEES IT: the names reader under the snapshot's view, retaining no rows (the
-    // maxima, the entry count and the digest cover every visible row). The scope state is restored whatever happens.
+    // SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1): the catalog root's counters (one page read), mapped (NativeCatalogEpochs). (OLD, S4f:
+    // "the catalog generation AS THIS SNAPSHOT SEES IT": the names reader under the snapshot's view, a scan of the whole names relation
+    // per acquire, maxima over the visible rows.) NOT a snapshot read: the latest committed root; see native_served_database_facts.hpp.
     {
-      struct ScopeView {
-        std::optional<transaction::mga::VisibilitySnapshot>& slot;
-        std::optional<engine::internal_api::NativeNamesSnapshot>& names_slot;
-        std::optional<transaction::mga::VisibilitySnapshot> outer;
-        std::optional<engine::internal_api::NativeNamesSnapshot> outer_names;
-        ~ScopeView() {
-          slot = std::move(outer);
-          names_slot = std::move(outer_names);
-        }
-      } scope_view{scope_view_, scope_names_, std::move(scope_view_), std::move(scope_names_)};
-      scope_view_ = *view;
-      scope_names_.reset();
-      engine::internal_api::NativeNamesReadFilter retain_nothing;
-      retain_nothing.all_scopes = false;
-      const auto names = ReadNamesSnapshotNow(retain_nothing);
-      if (!names.ok()) {
-        out.error = E::names_unavailable;
+      const auto epochs = ReadCatalogEpochsNow();
+      if (!epochs.ok()) {
+        out.error = epochs.error;
         return out;
       }
-      out.catalog_generation_id = names.max_catalog_generation_id;
-      out.name_resolution_epoch = names.max_name_resolution_epoch;
-      out.names_digest = names.names_digest;
-      out.names_entry_count = names.visible_entry_count;
+      out.catalog_generation_id = epochs.catalog_generation_id;
+      out.name_resolution_epoch = epochs.name_resolution_epoch;
+      out.security_epoch = epochs.security_epoch;
+      out.resource_epoch = epochs.resource_epoch;
+      out.schema_epoch = epochs.schema_epoch;
     }
     const auto& record = session->second;
     out.session_uuid = session_uuid;
@@ -2079,6 +2072,86 @@ engine::internal_api::NativeReceiptInput NativeDatabaseLoop::LookupReceiptNow(
     out.error = E::inventory_unavailable;
     return out;
   }
+}
+
+engine::internal_api::NativeCatalogEpochs NativeDatabaseLoop::ReadCatalogEpochsNow() noexcept {
+  using E = engine::internal_api::NativeReceiptSourceError;
+  engine::internal_api::NativeCatalogEpochs out;
+  try {
+    if (!serving_ || state() != NativeLoopState::serving) {
+      out.error = E::database_not_serving;
+      return out;
+    }
+    switch (serving_state()) {
+      case NativeServingState::failed: out.error = E::database_failed; return out;
+      case NativeServingState::restricted: out.error = E::database_restricted; return out;
+      case NativeServingState::serving: break;
+    }
+    auto& serving = *serving_;
+    if (!serving.catalog_binding) {
+      out.error = E::names_unavailable;
+      return out;
+    }
+    NativeLoopTransactionResult door;
+    db::CatalogRootCountersResult root;
+    if (!WithTransactionSink(serving, door, [&](storage::disk::CarefulWriteSink& sink) {
+          root = db::ReadCatalogRootCounters(sink, *serving.catalog_binding);
+        })) {
+      out.error = E::inventory_unavailable;
+      return out;
+    }
+    if (!root.ok()) {
+      out.error = E::names_unavailable;
+      return out;
+    }
+    out.catalog_generation_id = root.catalog_generation;
+    out.name_resolution_epoch = root.catalog_generation;
+    out.security_epoch = root.security_epoch;
+    out.resource_epoch = engine::internal_api::NativeContextResourceEpoch(root.resource_epoch);
+    out.schema_epoch = root.schema_epoch;
+    out.root_pages_read = root.pages_read;
+    out.error = E::none;
+    return out;
+  } catch (...) {
+    out = {};
+    out.error = E::inventory_unavailable;
+    return out;
+  }
+}
+
+void NativeDatabaseLoop::HandleEpochs(EpochWork& work) noexcept { work.done.set_value(ReadCatalogEpochsNow()); }
+
+std::future<engine::internal_api::NativeCatalogEpochs> NativeDatabaseLoop::SubmitEpochRead() {
+  using E = engine::internal_api::NativeReceiptSourceError;
+  std::promise<engine::internal_api::NativeCatalogEpochs> refused;
+  const auto refuse = [&](E error) {
+    engine::internal_api::NativeCatalogEpochs result;
+    result.error = error;
+    refused.set_value(std::move(result));
+    return refused.get_future();
+  };
+  if (on_loop_thread()) return refuse(E::invalid_request);
+  EpochWork work;
+  auto future = work.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!accepting_ || state() != NativeLoopState::serving) return refuse(E::database_not_serving);
+    if (serving_state() == NativeServingState::failed) return refuse(E::database_failed);
+    if (serving_state() == NativeServingState::restricted) return refuse(E::database_restricted);
+    if (queue_.size() >= kQueueCapacity) return refuse(E::busy);
+    queue_.emplace_back(std::move(work));
+  }
+  wake_.notify_one();
+  return future;
+}
+
+engine::internal_api::NativeCatalogEpochs NativeDatabaseLoop::ReadEpochsOnLoopThread() noexcept {
+  if (!on_loop_thread()) {
+    engine::internal_api::NativeCatalogEpochs refused;
+    refused.error = engine::internal_api::NativeReceiptSourceError::invalid_request;
+    return refused;
+  }
+  return ReadCatalogEpochsNow();
 }
 
 void NativeDatabaseLoop::HandleReceipt(ReceiptWork& work) noexcept {
@@ -2126,6 +2199,27 @@ namespace {
 class NativeLoopReceiptSource final : public engine::internal_api::NativeReceiptSource {
  public:
   explicit NativeLoopReceiptSource(std::shared_ptr<NativeNamesBinding> binding) : binding_(std::move(binding)) {}
+  engine::internal_api::NativeCatalogEpochs ReadCatalogEpochs() const noexcept override {
+    using E = engine::internal_api::NativeReceiptSourceError;
+    engine::internal_api::NativeCatalogEpochs closed;
+    closed.error = E::closed;
+    try {
+      NativeDatabaseLoop* loop = nullptr;
+      std::future<engine::internal_api::NativeCatalogEpochs> future;
+      {
+        std::lock_guard<std::mutex> guard(binding_->mutex);
+        loop = binding_->loop;
+        if (loop == nullptr) return closed;
+        if (!loop->on_loop_thread()) future = loop->SubmitEpochRead();
+      }
+      if (!future.valid()) return loop->ReadEpochsOnLoopThread();
+      return future.get();
+    } catch (...) {
+      engine::internal_api::NativeCatalogEpochs failed;
+      failed.error = E::inventory_unavailable;
+      return failed;
+    }
+  }
   engine::internal_api::NativeReceiptInput Lookup(const core::platform::Uuid& session_uuid,
                                                   const core::platform::Uuid& transaction_uuid) const noexcept override {
     using E = engine::internal_api::NativeReceiptSourceError;
@@ -2256,6 +2350,10 @@ void NativeDatabaseLoop::Run() noexcept {
       HandleReceipt(*receipt);
       continue;
     }
+    if (auto* epochs = std::get_if<EpochWork>(&work)) {
+      HandleEpochs(*epochs);
+      continue;
+    }
     if (auto* test = std::get_if<TestWork>(&work)) {
       test->work();
       test->done.set_value();
@@ -2361,6 +2459,19 @@ bool NativeDatabaseLoop::RunRestart(const NativeLoopOpenRequest& request,
     if (serving.ledger->page_size() == 0) return reject("restart_binding", {{"error", "ledger_binding_invalid"}});
     binding.session_ledger = &*serving.ledger;
     serving.txn_binding = binding;
+    // SB_NATIVE_CATALOG_ROOT_COUNTERS: the catalog root (kind 2) and the state root name the root-counter read. An absent catalog root
+    // leaves the binding unset and the epoch read refuses (names_unavailable); the open verification already requires the root.
+    for (std::size_t i = 0; i < observed.identity.primary_root_count && i < observed.identity.primary_roots.size(); ++i) {
+      const auto& root = observed.identity.primary_roots[i];
+      if (root.kind != 2) continue;
+      db::CatalogVersionWriterBinding catalog_binding;
+      catalog_binding.database_uuid = request.database_uuid;
+      catalog_binding.catalog_root = root;
+      catalog_binding.state_root = *state_root;
+      catalog_binding.read_only_database = binding.read_only_database;
+      serving.catalog_binding = catalog_binding;
+      break;
+    }
     serving.writer.emplace(binding);
     if (serving.writer->page_size() == 0) return reject("restart_binding", {{"error", "writer_binding_invalid"}});
 
@@ -2857,6 +2968,36 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
       if (decoded.ok()) captured_cohort = decoded.record->datatype_cohort;
       break;
     }
+    // SB_NATIVE_TXN_BEGIN_AUTHORITY (S4g part 1): the begin authority from the declarations this open already resolved (the read's own
+    // `transaction_policies`, copied before the read is released).
+    struct BeginAuthority {
+      core::platform::Uuid isolation_profile_uuid, policy_uuid;
+      std::uint64_t isolation_profile_generation = 0, policy_generation = 0;
+      std::uint8_t isolation_profile_kind = 0;
+      std::vector<engine::internal_api::NativeServedDatabaseFacts::IsolationProfile> profiles;
+    };
+    std::optional<BeginAuthority> captured_begin;
+    {
+      const auto& policies = read.transaction_policies();
+      if (policies.ok() && !policies.default_isolation.profile_uuid.is_nil() && policies.default_isolation.generation != 0 &&
+          !policies.descriptor.policy_uuid.is_nil() && policies.descriptor.generation != 0) {
+        BeginAuthority begin;
+        begin.isolation_profile_kind = static_cast<std::uint8_t>(policies.default_isolation.profile_kind);
+        begin.isolation_profile_uuid = policies.default_isolation.profile_uuid;
+        begin.isolation_profile_generation = policies.default_isolation.generation;
+        begin.policy_uuid = policies.descriptor.policy_uuid;
+        begin.policy_generation = policies.descriptor.generation;
+        const auto add_profile = [&](const core::catalog::CatalogIsolationProfile& profile) {
+          if (profile.profile_uuid.is_nil() || profile.generation == 0) return;
+          for (const auto& known : begin.profiles)
+            if (known.profile_uuid == profile.profile_uuid) return;
+          begin.profiles.push_back({static_cast<std::uint8_t>(profile.profile_kind), profile.profile_uuid, profile.generation});
+        };
+        add_profile(policies.default_isolation);
+        add_profile(policies.startup_isolation);
+        captured_begin = begin;
+      }
+    }
     // SB_NATIVE_RESTART ordering (plan 38 risk "custody operation exclusivity"): the credential read
     // retains the custody's ONE operation until it is reset, and an owned-writer operation is
     // exclusive (a second TryBeginOperation is busy), so the read is released here, BEFORE the writer
@@ -2882,6 +3023,15 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
         marker->datatype_catalog_snapshot_uuid = captured_cohort->catalog_snapshot_uuid.value;
         marker->datatype_catalog_generation = captured_cohort->catalog_generation;
         marker->datatype_registry_generation = captured_cohort->registry_generation;
+      }
+      if (captured_begin) {
+        marker->transaction_begin_authority_present = true;
+        marker->begin_isolation_profile_kind = captured_begin->isolation_profile_kind;
+        marker->begin_isolation_profiles = captured_begin->profiles;
+        marker->begin_isolation_profile_uuid = captured_begin->isolation_profile_uuid;
+        marker->begin_isolation_profile_generation = captured_begin->isolation_profile_generation;
+        marker->begin_policy_snapshot_uuid = captured_begin->policy_uuid;
+        marker->begin_policy_generation = captured_begin->policy_generation;
       }
       const auto& restarted = serving.facts.restart;
       marker->tip_next_transaction = restarted.next_transaction;

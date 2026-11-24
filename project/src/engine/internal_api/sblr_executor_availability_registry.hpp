@@ -587,9 +587,10 @@ EngineApiDiagnostic RevalidateSblrExecutorAvailability(
 //
 // The table's identity (a build constant, published in the facts).
 const EngineUuid& NativeExecutorAvailabilityTableUuid();
-// The rows with a native implementation in this build. EMPTY today: no executor has been proven to run on a
-// native database yet (the constant-SELECT rows are added by S3f when they can be shown to; candidates are
-// literal 3, project 1280, return_result_set 1286 -- NOT enabled by S3e).
+// The rows with a native implementation in this build. (OLD, S3e: EMPTY, no executor proven to run on a native database yet;
+// candidates literal 3, project 1280, return_result_set 1286 were NOT enabled.) S4g part 1: ONE row, SBLR_NAME_RESOLVE, so the
+// bind can issue its descriptor; see SB_NATIVE_ALLOW_LIST_NAME_RESOLVE in the .cpp. The executor rows for SELECT 1 (opcode 0x040E
+// and what it traces) are the next step.
 const std::vector<SblrExecutorAvailabilityRowIdentity>& NativeExecutorAvailabilityAllowList();
 // The pure table logic, with the allow-list passed in (the entry points pass NativeExecutorAvailabilityAllowList()).
 SblrExecutorAvailabilityLoadResult NativeExecutorAvailabilityLookup(

@@ -4399,6 +4399,46 @@ CatalogRootAdvanceResult AdvanceCatalogRoot(disk::CarefulWriteSink& sink, const 
   }
 }
 
+CatalogRootCountersResult ReadCatalogRootCounters(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding) noexcept {
+  CatalogRootCountersResult result;
+  try {
+    const auto& croot = binding.catalog_root;
+    const auto* profile = disk::FindCanonicalFilespacePageProfile(croot.page_size_profile_uuid);
+    if (!V7(binding.database_uuid) || (croot.kind != 2 && croot.kind != 8) || !croot.page_number || !croot.page_generation || !profile) return result;
+    const u32 page_size = profile->page_size_bytes;
+    CatalogVersionWriteResult read;
+    std::vector<byte> image;
+    if (!ReadPage(sink, page_size, croot.page_number, image, read)) {
+      result.error = read.error;
+      result.io = read.io;
+      return result;
+    }
+    result.pages_read = 1;
+    const disk::NativePageReference ref{croot.filespace_uuid, croot.page_number, croot.page_generation, croot.page_size_profile_uuid};
+    if (!HeaderBinds(image, binding.database_uuid, ref, croot.page_type)) {
+      result.error = E::invalid_catalog;
+      return result;
+    }
+    const auto decoded = pg::DecodeNativeCatalogRoot(image);
+    if (!decoded.ok() || decoded.root->object_uuid != croot.object_uuid) {
+      result.error = E::invalid_catalog;
+      return result;
+    }
+    result.catalog_generation = decoded.root->catalog_generation;
+    result.schema_epoch = decoded.root->schema_epoch;
+    result.security_epoch = decoded.root->security_epoch;
+    result.resource_epoch = decoded.root->resource_epoch;
+    result.error = E::none;
+    return result;
+  } catch (const std::bad_alloc&) {
+    result.error = E::resource_exhausted;
+    return result;
+  } catch (...) {
+    result.error = E::invalid_request;
+    return result;
+  }
+}
+
 // SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): a transaction's event, built
 // from the create's construction intent row (owner, owning schema, parent)
 // and written through the insert path.

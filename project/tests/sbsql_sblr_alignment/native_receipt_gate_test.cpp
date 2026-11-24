@@ -249,6 +249,7 @@ struct PublicSession {
       sb_engine_session_end_params_v1_t end{};
       end.struct_size = sizeof(end);
       end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+      end.rollback_active_transactions = 1;  // S4g part 1: a native receipt now publishes the TXBH transaction handle, as the server's own session end does
       (void)sb_engine_session_end(session, &end, &ignored);
       if (ignored) (void)sb_engine_result_release(ignored);
     }
@@ -528,7 +529,6 @@ const std::vector<Gated>& GatedTable() {
     {"CopyStatementExecuteDirectAuthorityV1", "execute_direct", "native_executor_availability_s4g", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementExecuteDirectAuthorityV1 a2{}; return bridge::CopyStatementExecuteDirectAuthorityV1(receipt, 1, &a2, out_result); }},
     {"BindStatementQueryExplainAuthorityV1", "query_explain", "native_explain_message_vectors", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementQueryExplainBindRequestV1 a1{}; StatementQueryExplainBindAckV1 a2{}; return bridge::BindStatementQueryExplainAuthorityV1(receipt, &a1, &a2, out_result); }},
     {"CopyStatementQueryExplainAuthorityV1", "query_explain", "native_explain_message_vectors", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementQueryExplainAuthorityV1 a2{}; return bridge::CopyStatementQueryExplainAuthorityV1(receipt, 1, &a2, out_result); }},
-    {"CopyStatementNameResolveAuthorityV1", "name_resolve", "native_executor_availability_s4g", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementNameResolveAuthorityV1 a2{}; return bridge::CopyStatementNameResolveAuthorityV1(receipt, 1, &a2, out_result); }},
     {"BindStatementDdlCreateSchemaAuthorityV1", "ddl_create_schema", "native_ddl_execution_journal", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementDdlCreateSchemaBindRequestV1 a1{}; StatementDdlCreateSchemaAuthorityV1 a2{}; return bridge::BindStatementDdlCreateSchemaAuthorityV1(receipt, &a1, &a2, out_result); }},
     {"CopyStatementDdlCreateSchemaAuthorityV1", "ddl_create_schema", "native_ddl_execution_journal", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementDdlCreateSchemaAuthorityV1 a3{}; return bridge::CopyStatementDdlCreateSchemaAuthorityV1(receipt, 1, 1, &a3, out_result); }},
     {"BindStatementSecurityAlterPolicyAuthorityV1", "security_policy", "native_security_catalog_writes", [](bridge::StatementContextReceiptHandle receipt, sb_engine_result_t* out_result) { StatementSecurityAlterPolicyBindRequestV1 a1{}; StatementSecurityAlterPolicyAuthorityV1 a2{}; return bridge::BindStatementSecurityAlterPolicyAuthorityV1(receipt, &a1, &a2, out_result); }},
@@ -653,6 +653,16 @@ int GateState(const std::string& state, const Offline& offline) {
     const auto status = bridge::CopyStatementContextEngineContextV1(receipt, &copy, &result);
     Check(status == SB_ENGINE_STATUS_OK && Code(result).empty() && copy.native_served_facts == served.facts,
           "CopyStatementContextEngineContextV1 (allowed): the receipt's native context still copies");
+  }
+  // S4g part 1: CopyStatementNameResolveAuthorityV1 is allowed natively (it reads the receipt's in-memory bind authority); no occurrence
+  // was bound on this receipt, so it passes the gate to its own answer (authority hidden), not the native refusal.
+  {
+    bridge::StatementNameResolveAuthorityV1 authority;
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::CopyStatementNameResolveAuthorityV1(receipt, 1, &authority, &result);
+    const auto code = Code(result);
+    Check(status != SB_ENGINE_STATUS_OK && code == "SECURITY.ACCESS_DENIED",
+          "CopyStatementNameResolveAuthorityV1 (allowed): passes the gate to its own 'authority hidden' answer: " + code);
   }
 
   // ---- every refused consumer, on the native receipt ---------------------------------------------------------------------------

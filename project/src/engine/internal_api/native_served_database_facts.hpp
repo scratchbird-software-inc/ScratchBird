@@ -247,14 +247,45 @@ struct NativeReceiptInput {
   // the value from the inventory it just read (a statement's snapshot is taken at the statement).
   bool snapshot_is_begin_capture = false;
   std::shared_ptr<const transaction::mga::VisibilitySnapshot> snapshot;
-  // The catalog generation and name-resolution epoch as THAT snapshot sees the committed name rows (the maxima over the
-  // rows visible to it), and the digest of those rows (a change signal): the generation the receipt carries.
-  std::uint64_t catalog_generation_id = 0, name_resolution_epoch = 0, names_digest = 0, names_entry_count = 0;
+  // SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1). The epochs the receipt carries, from the catalog ROOT (one page read, O(1)):
+  // the root as it stands now (latest committed advance), NOT as this transaction's snapshot sees the committed names. (OLD, S4f: the
+  // maxima over the name rows visible to the snapshot, one scan of the names relation per acquire, with a digest and a count; the
+  // security and resource epochs had no native source and were whatever the caller supplied.) See NativeCatalogEpochs.
+  std::uint64_t catalog_generation_id = 0, name_resolution_epoch = 0, security_epoch = 0, resource_epoch = 0, schema_epoch = 0;
+  bool ok() const noexcept { return error == NativeReceiptSourceError::none; }
+};
+// SEARCH_KEY: SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1). What the catalog root says now, mapped to the values a statement context
+// carries. The root holds catalog_generation, schema_epoch, security_epoch and resource_epoch and NOTHING ELSE of the kind:
+//  * catalog_generation_id = root.catalog_generation (advances on every catalog commit that advances the root);
+//  * security_epoch = root.security_epoch;
+//  * resource_epoch = root.resource_epoch + 1: the root's own value is ZERO at create ("no resource activation yet", the spec), a
+//    statement context requires a non-zero resource epoch, so the context's epoch is the activation count plus one (1 = none yet);
+//    it changes exactly when the root's does (OWNER QUESTION, one place to change: NativeContextResourceEpoch);
+//  * name_resolution_epoch = root.catalog_generation: the root carries no separate name-registry epoch, and the generation changes
+//    on EVERY catalog commit, so it can only over-invalidate (never miss a name change) (OWNER QUESTION, one place to change).
+// These are "latest committed", not per snapshot: the root keeps no history. A snapshot_stable transaction that began before a catalog
+// commit and acquires a receipt after it carries the NEWER values: the receipt's generation is an invalidation counter (a change
+// signal), not a view stamp; which names the transaction sees is still decided by its snapshot when the names are read.
+// SEARCH_KEY: SB_NATIVE_TXN_BEGIN_GENERATION (S4g part 1). The "TxnBegin executor availability generation" a TXBH handle carries
+// (non-zero by the handle's encoding). A native transaction is begun by the database loop itself (S4d), not by an SBLR TXN_BEGIN
+// executor, so no availability-table row stands behind it and the table's TxnBegin row stays NOT allow-listed (this step enables
+// only NAME_RESOLVE). The generation a native handle carries is this constant: the begin of a loop-begun transaction, which equals
+// the generation an installed row of the native availability table reports (1), so the value does not change when the TxnBegin row is
+// allow-listed later. OWNER QUESTION: confirm, or name another source.
+inline constexpr std::uint64_t kNativeLoopBeginGeneration = 1;
+inline std::uint64_t NativeContextResourceEpoch(std::uint64_t root_resource_epoch) noexcept { return root_resource_epoch + 1; }
+struct NativeCatalogEpochs {
+  NativeReceiptSourceError error = NativeReceiptSourceError::invalid_request;  // names_unavailable: the root could not be read
+  std::uint64_t catalog_generation_id = 0, name_resolution_epoch = 0, security_epoch = 0, resource_epoch = 0, schema_epoch = 0;
+  std::uint32_t root_pages_read = 0;  // 1 on success; the test's O(1) evidence
   bool ok() const noexcept { return error == NativeReceiptSourceError::none; }
 };
 class NativeReceiptSource {
  public:
   virtual ~NativeReceiptSource() = default;
+  // The catalog root's counters mapped as above, from any thread (queued onto the loop thread when needed). No session, no
+  // transaction, no write.
+  virtual NativeCatalogEpochs ReadCatalogEpochs() const noexcept = 0;
   virtual NativeReceiptInput Lookup(const core::platform::Uuid& session_uuid,
                                     const core::platform::Uuid& transaction_uuid) const noexcept = 0;
 };
@@ -277,6 +308,30 @@ struct NativeServedDatabaseFacts {
   core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation = 0;
   std::uint64_t datatype_registry_generation = 0;
+  // SEARCH_KEY: SB_NATIVE_TXN_BEGIN_AUTHORITY (S4g part 1, owner agreed 2026-12-05). The transaction-begin authority a native receipt
+  // carries, copied by the loop from the NativeTransactionPolicyDeclarations the open ALREADY resolved from real selected rows
+  // (ResolveStartupTransactionPolicies): the database's DEFAULT isolation profile (its profile uuid and generation) and its
+  // transaction policy (the policy descriptor's policy uuid and generation: the pair that pins "the policy snapshot" the begin
+  // authority names; OWNER QUESTION: the descriptor's policy_version_uuid is the alternative identity). Absent when the declarations
+  // did not resolve (a database whose transaction policy rows are missing never serves, so this is false only for a marker built
+  // without a loop). Read mode, authority scope, wait policy and deadline keep the begin authority's defaults (read_write, local,
+  // fail, none); mapping the wait policy from the declarations' lock policies is a later owner item.
+  bool transaction_begin_authority_present = false;
+  // The kind (IsolationProfileKind) of that default profile: a TXBH handle names the profile the transaction really runs under, so a native
+  // receipt publishes the begin authority and the TXBH only for a transaction whose isolation byte is this kind (the header's own).
+  std::uint8_t begin_isolation_profile_kind = 0;
+  // Every isolation profile the declarations resolved (the DEFAULT profile and the STARTUP profile, one entry when they are the same row): a
+  // receipt picks the one whose kind is the transaction's own isolation byte, so the TXBH names the profile the transaction runs under
+  // (the database's default is read_committed_statement; the loop begins a user's first transaction under snapshot_stable, the startup
+  // profile's kind). A kind with no entry has no native source: no begin authority, no TXBH.
+  struct IsolationProfile {
+    std::uint8_t kind = 0;
+    core::platform::Uuid profile_uuid;
+    std::uint64_t generation = 0;
+  };
+  std::vector<IsolationProfile> begin_isolation_profiles;
+  core::platform::Uuid begin_isolation_profile_uuid, begin_policy_snapshot_uuid;
+  std::uint64_t begin_isolation_profile_generation = 0, begin_policy_generation = 0;
   // Transaction-inventory facts at open (after Restart): next transaction order and the six stored horizons.
   std::uint64_t tip_next_transaction = 0;
   std::uint64_t tip_horizon_oit = 0, tip_horizon_oat = 0, tip_horizon_ost = 0, tip_horizon_oct = 0,

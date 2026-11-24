@@ -57,6 +57,8 @@
 #include "server_engine_bridge/statement_context.hpp"
 #include "session_registry.hpp"
 #include "ipc_server.hpp"
+#include "event_notification_router.hpp"
+#include "parser_server_event_ipc.hpp"
 #include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
 #include "../support/catalog_change_event_fixture.hpp"
 #include "../support/native_offline_file_reader.hpp"
@@ -298,6 +300,7 @@ struct PublicSession {
       sb_engine_session_end_params_v1_t end{};
       end.struct_size = sizeof(end);
       end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+      end.rollback_active_transactions = 1;  // S4g part 1: a native receipt now publishes the TXBH transaction handle, as the server's own session end does
       (void)sb_engine_session_end(session, &end, &ignored);
       if (ignored) (void)sb_engine_result_release(ignored);
     }
@@ -1040,6 +1043,80 @@ int FamilyGuardState(const std::string& state, const Offline& offline) {
     }
   }
   close_family(previous_family);
+
+  // ---- S4g part 1: the contexts the PARSER EVENT path builds. (C) the production builder (EventEngineContextFromSession, the one
+  // HandleEventFrame / PumpEventNotifications / the disconnect notice use) from the approved session, driven through the REAL
+  // ParserServerEventIpcRuntime entry points (subscribe, unsubscribe, pump, ack, disconnect), each of which converts the event context
+  // with EngineContextFrom and calls a guarded notification entry; every answer must carry the family refusal. (D) the same builder from a
+  // session record that names NO database path and carries no facts: the context's database is chosen from the engine state, so the
+  // facts of THAT served database must be used (a path-chosen context is marked too). (OLD: ParserServerEventEngineContext had no marker
+  // slot, so the converted context looked legacy and every guard passed.)
+  {
+    const auto event_refusal = [&](const std::vector<srv::ParserServerMessageVector>& vectors) {
+      for (const auto& vector : vectors) {
+        if (vector.diagnostic_code == kRefusal) return true;
+      }
+      return false;
+    };
+    const auto before_event = Before(compare);
+    sbps::Frame event_frame;
+    event_frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+    event_frame.header.session_uuid = s1->approval.session_uuid;
+    event_frame.header.connection_uuid = s1->connection;
+    const auto event_context = srv::EventEngineContextFromSession(*s1->record, served.started.state, event_frame);
+    Check(event_context.native_served_facts == served.facts, "(C) the parser event context built from the session carries the native facts");
+    srv::ParserEventNotificationRouter router;
+    srv::ParserServerEventIpcRuntime runtime(&router);
+    const auto run_event_runtime = [&](const std::string& which, const srv::ParserServerEventEngineContext& engine_context) {
+      srv::ParserServerEventSession session;
+      session.parser_channel_uuid = srv::ParserServerEventUuidRef{s1->connection};
+      session.engine_context = engine_context;
+      session.session_bound = true;
+      const srv::ParserServerEventUuidRef channel{sbps::MakeUuidV7Bytes()};
+      srv::PsEventSubscribeRequest subscribe;
+      subscribe.request_uuid = srv::ParserServerEventUuidRef{sbps::MakeUuidV7Bytes()};
+      subscribe.session = session;
+      subscribe.channel_uuid = channel;
+      const auto subscribed = runtime.HandleSubscribe(subscribe);
+      Check(subscribed.outcome == "rejected" && event_refusal(subscribed.message_vector_set), which + ": subscribe is refused with the family refusal (outcome " + subscribed.outcome + ")");
+      srv::PsEventUnsubscribeRequest unsubscribe;
+      unsubscribe.request_uuid = srv::ParserServerEventUuidRef{sbps::MakeUuidV7Bytes()};
+      unsubscribe.session = session;
+      unsubscribe.channel_uuid = channel;
+      const auto unsubscribed = runtime.HandleUnsubscribe(unsubscribe);
+      Check(event_refusal(unsubscribed.message_vector_set), which + ": unsubscribe is refused with the family refusal");
+      srv::PsEventDeliveryPumpRequest pump;
+      pump.request_uuid = srv::ParserServerEventUuidRef{sbps::MakeUuidV7Bytes()};
+      pump.session = session;
+      const auto pumped = runtime.PumpCommittedEvents(pump);
+      Check(event_refusal(pumped.message_vector_set), which + ": the delivery pump is refused with the family refusal");
+      srv::PsEventAckRequest ack;
+      ack.request_uuid = srv::ParserServerEventUuidRef{sbps::MakeUuidV7Bytes()};
+      ack.session = session;
+      ack.subscription_uuid = srv::ParserServerEventUuidRef{sbps::MakeUuidV7Bytes()};
+      ack.event_uuid = srv::ParserServerEventUuidRef{sbps::MakeUuidV7Bytes()};
+      const auto acked = runtime.HandleAck(ack);
+      Check(event_refusal(acked.message_vector_set), which + ": the acknowledgement is refused with the family refusal");
+      srv::PsEventDisconnectRequest disconnect;
+      disconnect.session = session;
+      disconnect.disconnect_reason = "native_family_guard_test";
+      const auto disconnected = runtime.HandleDisconnect(disconnect);
+      Check(event_refusal(disconnected.message_vector_set), which + ": the disconnect cleanup is refused with the family refusal");
+    };
+    run_event_runtime("(C) event path from the session", event_context);
+    srv::ServerSessionRecord pathless = *s1->record;
+    pathless.database_path.clear();
+    pathless.native_served_facts.reset();
+    const auto path_chosen = srv::EventEngineContextFromSession(pathless, served.started.state, event_frame);
+    Check(!path_chosen.database_path.empty() && path_chosen.native_served_facts == served.facts,
+          "(D) a parser event context whose database was chosen from the engine state carries that database's native facts");
+    run_event_runtime("(D) event path chosen from the engine state", path_chosen);
+    if (compare) {
+      Check(Image(served.path) == before_event.image, "the parser event path wrote nothing to the data file");
+      Check(Listing(served.directory) == before_event.listing, "the parser event path created no file or directory entry");
+      Check(!AnySideFile(served.directory.parent_path()), "the parser event path left no .sb. file");
+    }
+  }
 
   if (trace) Mark("verify");
   Release(r1);

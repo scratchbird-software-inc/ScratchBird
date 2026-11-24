@@ -447,6 +447,9 @@ class NativeDatabaseLoop final {
   // when the loop is not accepting). It exists so the direct in-loop names path has a real caller before S4c's login
   // (the first real loop work that needs it) exists; S4c's own loop work replaces its use. `work` must not throw.
   bool RunOnLoopThreadForTest(std::function<void()> work);
+  // SB_NATIVE_CATALOG_ROOT_COUNTERS test evidence (S4g part 1): how many names-relation snapshot reads (ReadNamesSnapshotNow) this loop has
+  // run; a receipt acquire must add ZERO (it reads the catalog root's page, not the names). Any thread.
+  std::uint64_t NamesReadsForTest() const noexcept { return names_reads_.load(std::memory_order_relaxed); }
 #if defined(SB_NATIVE_LOOP_TEST_SEAMS)
   // SB_TEST_SEAM (snapshot view): from the loop thread only, run `body` with the careful-write sink every loop
   // transaction request writes through (the same write door and writer), so a test can make a real catalog change
@@ -491,6 +494,10 @@ class NativeDatabaseLoop final {
   // is refused with invalid_request anywhere else. The future is always satisfied.
   std::future<engine::internal_api::NativeReceiptInput> SubmitReceiptLookup(const core::platform::Uuid& session_uuid,
                                                                             const core::platform::Uuid& transaction_uuid);
+  // The epochs alone (no session, no transaction): the cross-thread submit (refused on the loop thread) and the loop-thread form
+  // (refused elsewhere), as the receipt lookup's pair.
+  std::future<engine::internal_api::NativeCatalogEpochs> SubmitEpochRead();
+  engine::internal_api::NativeCatalogEpochs ReadEpochsOnLoopThread() noexcept;
   engine::internal_api::NativeReceiptInput LookupReceiptOnLoopThread(const core::platform::Uuid& session_uuid,
                                                                      const core::platform::Uuid& transaction_uuid) noexcept;
   // Loop thread only: the sessions this loop has open (approved and not yet ended), ascending by UUID.
@@ -599,13 +606,16 @@ class NativeDatabaseLoop final {
     core::platform::Uuid session_uuid, transaction_uuid;
     std::promise<engine::internal_api::NativeReceiptInput> done;
   };
+  struct EpochWork {
+    std::promise<engine::internal_api::NativeCatalogEpochs> done;
+  };
   struct ReadScopeWork {
     std::function<void(const NativeLoopReadTransaction&)> work;
     NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::durable_transaction;
     std::promise<NativeLoopReadScopeResult> done;
   };
   using Work = std::variant<OpenWork, CloseWork, LoginWork, NamesWork, TestWork, BeginWork, CompleteWork,
-                            CompleteAndBeginWork, ReadScopeWork, LedgerWork, SessionOpenWork, SessionEndWork, ReceiptWork>;
+                            CompleteAndBeginWork, ReadScopeWork, LedgerWork, SessionOpenWork, SessionEndWork, ReceiptWork, EpochWork>;
   static constexpr std::size_t kQueueCapacity = 8;
 
   void Run() noexcept;
@@ -632,6 +642,9 @@ class NativeDatabaseLoop final {
   void HandleTransaction(CompleteAndBeginWork&) noexcept;
   void HandleReadScope(ReadScopeWork&) noexcept;
   void HandleReceipt(ReceiptWork&) noexcept;
+  void HandleEpochs(EpochWork&) noexcept;
+  // SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1): the catalog root's counters, mapped (loop thread only; one page read).
+  engine::internal_api::NativeCatalogEpochs ReadCatalogEpochsNow() noexcept;
   engine::internal_api::NativeReceiptInput LookupReceiptNow(const core::platform::Uuid& session_uuid,
                                                             const core::platform::Uuid& transaction_uuid) noexcept;
   void HandleLedger(LedgerWork&) noexcept;
@@ -679,6 +692,7 @@ class NativeDatabaseLoop final {
   // exactly the same rows; it is served from here instead of scanning the names relation again. Loop thread only; empty
   // outside a scope and at the start of every scope; a durable-transaction scope has no captured view and never fills it.
   std::optional<engine::internal_api::NativeNamesSnapshot> scope_names_;
+  std::atomic<std::uint64_t> names_reads_{0};  // see NamesReadsForTest
   // SB_NATIVE_NAMES_SOURCE: what the NativeNamesSource handed out in the served facts points at.
   std::shared_ptr<NativeNamesBinding> names_binding_ = std::make_shared<NativeNamesBinding>();
 };

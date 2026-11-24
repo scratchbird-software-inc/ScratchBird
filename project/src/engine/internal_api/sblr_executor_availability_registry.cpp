@@ -1226,8 +1226,16 @@ const EngineUuid& NativeExecutorAvailabilityTableUuid() {
 }
 
 const std::vector<SblrExecutorAvailabilityRowIdentity>& NativeExecutorAvailabilityAllowList() {
-  // EMPTY by design (see the header): an executor is listed only once it is shown to run natively.
-  static const std::vector<SblrExecutorAvailabilityRowIdentity> allowed;
+  // SEARCH_KEY: SB_NATIVE_ALLOW_LIST_NAME_RESOLVE (S4g part 1, owner agreed 2026-12-05). ONE row: SBLR_NAME_RESOLVE. (OLD: EMPTY by
+  // design; an executor is listed only once it is shown to run natively.) Why this row is safe to list before any other: the BIND
+  // (BindStatementNameResolveAuthorityV1) needs the row's generation to issue a descriptor, and a descriptor is only DATA (the
+  // atoms, the language, the generations); the native EXECUTION of a name resolve stops at the name-resolve JOURNAL, whose entry
+  // points refuse a native context with ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED (registry_family sblr_name_resolve_journal) before any
+  // file is touched, and the native dispatch gate (DispatchStatementContextReceipt) still refuses every native operation with
+  // ENGINE.NATIVE.OPERATION_NOT_BUILT. Every other row stays off the list until the executor runs natively end to end (S4g part 2).
+  static const std::vector<SblrExecutorAvailabilityRowIdentity> allowed{SblrExecutorAvailabilityRowIdentity{
+      kSblrNameResolveExecutorId, kSblrNameResolveOpcodeCode, kSblrNameResolveOpcodeVersion, kSblrNameResolveOperandDescriptorId,
+      kSblrNameResolveResultDescriptorId, kSblrNameResolveResultDescriptorVersion}};
   return allowed;
 }
 

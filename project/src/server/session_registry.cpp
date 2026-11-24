@@ -928,6 +928,9 @@ engine_api::EngineRequestContext EngineContextBase(const HostedEngineState& engi
       request.header.request_uuid.size());
   context.database_path = FirstOpenDatabasePath(engine_state);
   context.served_route_owner = ServedRouteOwnerFor(engine_state, context.database_path);
+  // SB_NATIVE_FAMILY_GUARD (S4g part 1): a context built from the engine state's first open database (a PATH, no session) carries
+  // the facts of THAT served database; null for a legacy database, so legacy behaviour is unchanged.
+  context.native_served_facts = ServedNativeFactsFor(engine_state, context.database_path);
   context.database_uuid = FirstOpenDatabaseUuid(engine_state);
   context.database_page_size_bytes = FirstOpenDatabasePageSizeBytes(engine_state);
   if (const auto* database = FirstOpenDatabase(engine_state)) {
@@ -1105,7 +1108,9 @@ engine_api::DurableAuthorizationMaterializeResult MaterializeDurableAuthorizatio
   const engine_api::EngineSecurityPrincipalLifecycleState* state = retained_state;
   // SB_NATIVE_AUTH_ADAPTER_DELETE_WHEN_NATIVE_AUTHORIZATION (S4c): a native session never loads legacy security state;
   // without a retained snapshot it uses the adapter state its login built (none: no durable authorization).
-  if (state == nullptr && session.native_served_facts != nullptr) {
+  // S4g part 1: the CONTEXT's marker counts too (a context whose database was chosen from the engine state while the session record
+  // carries no facts must not reach the legacy loader below; found by the parser event path test, a stat of .sb.security_principal_events).
+  if (state == nullptr && (session.native_served_facts != nullptr || context.native_served_facts != nullptr)) {
     state = session.native_login_security_state.get();
     if (state == nullptr) return result;
   }
@@ -3267,6 +3272,30 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
   return &cached_it->second;
 }
 
+// SEARCH_KEY: SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1). A NATIVE session's catalog generation, name-resolution epoch, security epoch
+// and resource epoch are the catalog ROOT's (one page read through the loop; mapped by NativeCatalogEpochs), not the legacy
+// LoadCatalogObjectLifecycleEpochState (which refuses a native context: it reads the .sb.catalog_object_events side file). The values
+// are SET, not max-merged: the root is the authority and a native receipt must carry exactly its values (a different one is stale).
+// A legacy session is untouched (returns true without reading anything).
+bool RefreshNativeSessionEpochs(ServerSessionRecord* session, std::string* detail) {
+  if (session == nullptr || session->native_served_facts == nullptr) return true;
+  const auto& facts = *session->native_served_facts;
+  if (!facts.receipt_source) {
+    if (detail) *detail = "native_catalog_epoch_source_missing";
+    return false;
+  }
+  const auto epochs = facts.receipt_source->ReadCatalogEpochs();
+  if (!epochs.ok()) {
+    if (detail) *detail = std::string("native_catalog_epochs_") + engine_api::NativeReceiptSourceErrorName(epochs.error);
+    return false;
+  }
+  session->catalog_generation = epochs.catalog_generation_id;
+  session->name_resolution_epoch = epochs.name_resolution_epoch;
+  session->security_epoch = epochs.security_epoch;
+  session->resource_epoch = epochs.resource_epoch;
+  return true;
+}
+
 bool AcquireServerMetadataContext(
     ServerSessionRegistry* registry, ServerSessionRecord session,
     const HostedEngineState& engine_state, const sbps::Frame& request,
@@ -3289,11 +3318,17 @@ bool AcquireServerMetadataContext(
       selected->second.transaction_uuid != session.transaction_uuid ||
       selected->second.lifecycle_state != ServerTransactionLifecycleState::kActive)
     return refuse("metadata_transaction_selector_invalid");
+  if (session.native_served_facts != nullptr) {
+    // S4g part 1: the native epoch source (the catalog root); OLD: LoadCatalogObjectLifecycleEpochState, refused on native.
+    std::string native_detail;
+    if (!RefreshNativeSessionEpochs(&session, &native_detail)) return refuse("metadata_catalog_unavailable");
+  } else {
   const auto catalog = engine_api::LoadCatalogObjectLifecycleEpochState(
       EngineCatalogEpochContextForSession(session, engine_state, request));
   if (!catalog.ok) return refuse("metadata_catalog_unavailable");
   session.catalog_generation = std::max(session.catalog_generation, catalog.state.metadata_epoch);
   session.name_resolution_epoch = std::max(session.name_resolution_epoch, catalog.state.name_resolution_epoch);
+  }
   std::string detail;
   auto* public_context = EnsureServerPublicAbiSessionForContext(registry, session, &detail);
   if (!public_context || !public_context->engine_session)
@@ -3495,6 +3530,23 @@ SessionOperationResult HandleAcquireStatementContext(
   // attach-time constant.  Ask the engine for its narrow epoch projection;
   // materializing the full catalog/CRUD state here made every statement scan
   // the database file when the legacy CRUD journal was absent.
+  if (session.native_served_facts != nullptr) {
+    // SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1): a native session's epochs come from the catalog root (RefreshNativeSessionEpochs);
+    // OLD: LoadCatalogObjectLifecycleEpochState, which refuses a native context, so no native receipt was reachable through this route.
+    std::string native_detail;
+    if (!RefreshNativeSessionEpochs(&session, &native_detail)) {
+      return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED", native_detail);
+    }
+    std::lock_guard<std::mutex> guard(*session.transaction_mutex);
+    const auto live = session.transactions_by_local_id.find(transaction.local_transaction_id);
+    if (live == session.transactions_by_local_id.end() ||
+        live->second.lifecycle_state != ServerTransactionLifecycleState::kActive ||
+        live->second.transaction_uuid != transaction.transaction_uuid) {
+      return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_TRANSACTION_INVALID",
+                    "transaction_changed_during_catalog_epoch_projection");
+    }
+    transaction = live->second;
+  } else
   {
     auto catalog_context =
         EngineCatalogEpochContextForSession(session, engine_state, request);

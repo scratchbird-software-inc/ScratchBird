@@ -89,6 +89,7 @@ api::EngineRequestContext EngineContextFrom(const ParserServerEventEngineContext
       context.language_context.resource_version_identity;
   out.trace_tags = context.trace_tags;
   if (context.authorization_context) out.authorization_context = *context.authorization_context;
+  out.native_served_facts = context.native_served_facts;  // SB_NATIVE_FAMILY_GUARD (S4g part 1): the marker survives the conversion
   return out;
 }
 

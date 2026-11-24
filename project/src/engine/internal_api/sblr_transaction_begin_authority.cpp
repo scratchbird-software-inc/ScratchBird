@@ -1,6 +1,7 @@
 #include "sblr_transaction_begin_authority.hpp"
 #include "api_diagnostics.hpp"
 #include "native_legacy_registry_refusal.hpp"
+#include "native_served_database_facts.hpp"
 #include "uuid.hpp"
 #include "hash_digest.hpp"
 #include "mga_relation_store/mga_binary_fields.hpp"
@@ -67,8 +68,22 @@ SblrTransactionBeginAuthorityResultV1 LoadSblrTransactionBeginAuthorityV1(const 
   SblrTransactionBeginAuthorityResultV1 result;
   // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e, plan 38 Q243 = 1): the begin authority lives in a side file; a native
   // context refuses (the native transaction-begin policy arrives with S4, not as a process-local invention).
+  // S4g part 1 (SB_NATIVE_TXN_BEGIN_AUTHORITY): a native context answers from the served facts' begin authority (the default
+  // isolation profile and transaction policy the open resolved), with no side file; a marker that carries none keeps the
+  // refusal. (OLD, S3e: always the refusal.) The identities are the facts' and the context's database must be the facts'.
   if (NativeServedContext(context)) {
-    result.diagnostic = NativeLegacyRegistryRefusal("transaction_begin_authority", context);
+    const auto& facts = *context.native_served_facts;
+    if (!facts.transaction_begin_authority_present || context.database_uuid.bytes != facts.database_uuid.bytes ||
+        !context.security_context_present) {
+      result.diagnostic = NativeLegacyRegistryRefusal("transaction_begin_authority", context);
+      return result;
+    }
+    result.authority.isolation_profile_uuid = EngineUuid{facts.begin_isolation_profile_uuid.bytes};
+    result.authority.isolation_profile_generation = facts.begin_isolation_profile_generation;
+    result.authority.transaction_policy_snapshot_uuid = EngineUuid{facts.begin_policy_snapshot_uuid.bytes};
+    result.authority.transaction_policy_generation = facts.begin_policy_generation;
+    result.ok = true;
+    result.diagnostic = Diagnostic("OK", "ok");
     return result;
   }
   if (!context.security_context_present || !context.statement_metadata_snapshot_engine_owned ||

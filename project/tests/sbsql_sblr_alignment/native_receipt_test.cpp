@@ -39,6 +39,9 @@
 #include "engine/internal_api/native_login_material.hpp"
 #include "engine/internal_api/native_served_database_facts.hpp"
 #include "engine/internal_api/sblr_name_resolve_journal.hpp"
+#include "engine/internal_api/sblr_transaction_begin_authority.hpp"
+#include "engine/sblr/sblr_transaction_begin_runtime.hpp"
+#include "engine/sblr/sblr_name_resolve_runtime.hpp"
 #include "security/authentication_api.hpp"
 #include "catalog_language.hpp"
 #include "catalog_records.hpp"
@@ -82,6 +85,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <set>
 #include <source_location>
@@ -254,6 +258,7 @@ struct PublicSession {
       sb_engine_session_end_params_v1_t end{};
       end.struct_size = sizeof(end);
       end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+      end.rollback_active_transactions = 1;  // S4g part 1: a native receipt now publishes the TXBH transaction handle, as the server's own session end does
       (void)sb_engine_session_end(session, &end, &ignored);
       if (ignored) (void)sb_engine_result_release(ignored);
     }
@@ -642,6 +647,71 @@ std::set<std::uint64_t> CommittedOrders(const off::FileView& f) {
 }
 std::set<std::uint64_t> AsSet(const std::vector<std::uint64_t>& v) { return {v.begin(), v.end()}; }
 
+// SB_NATIVE_CATALOG_ROOT_COUNTERS (S4g part 1): the catalog root's counters as the FILE has them now (offline ground truth: the page
+// is decoded by the test, not read through the engine).
+struct RootCounters {
+  p::u64 page_number = 0, catalog_generation = 0, schema_epoch = 0, security_epoch = 0, resource_epoch = 0;
+};
+RootCounters RootOf(const off::FileView& f) {
+  RootCounters out;
+  for (const auto& root : f.zero.record->roots)
+    if (root.kind == 2) out.page_number = root.page_number;
+  Check(out.page_number != 0, "page zero names the catalog root");
+  const auto begin = f.image.begin() + static_cast<std::ptrdiff_t>(out.page_number * f.page_size);
+  const auto decoded = pgs::DecodeNativeCatalogRoot(std::vector<p::byte>(begin, begin + f.page_size));
+  Check(decoded.ok(), "the catalog root decodes offline");
+  if (decoded.ok()) {
+    out.catalog_generation = decoded.root->catalog_generation;
+    out.schema_epoch = decoded.root->schema_epoch;
+    out.security_epoch = decoded.root->security_epoch;
+    out.resource_epoch = decoded.root->resource_epoch;
+  }
+  return out;
+}
+// Counts every ReadAt (offset, length) the loop's write door makes: the O(1) evidence for the root-counter read.
+std::mutex g_read_mutex;
+std::vector<std::pair<p::u64, std::size_t>> g_reads;
+class CountingReadSink final : public d::CarefulWriteSink {
+ public:
+  using D = d::BoundedIoResult;
+  explicit CountingReadSink(d::CarefulWriteSink& inner) : inner_(inner) {}
+  D WriteAt(p::u64 offset, std::span<const p::byte> bytes) override { return inner_.WriteAt(offset, bytes); }
+  D ReadAt(p::u64 offset, std::span<p::byte> bytes) override {
+    {
+      std::lock_guard<std::mutex> guard(g_read_mutex);
+      g_reads.emplace_back(offset, bytes.size());
+    }
+    return inner_.ReadAt(offset, bytes);
+  }
+  D Sync() override { return inner_.Sync(); }
+  bool forced_ordered() const noexcept override { return inner_.forced_ordered(); }
+
+ private:
+  d::CarefulWriteSink& inner_;
+};
+// A sink whose first write fails (a failed or crashed catalog-root advance): the old root stays.
+class FailWriteSink final : public d::CarefulWriteSink {
+ public:
+  using D = d::BoundedIoResult;
+  explicit FailWriteSink(d::CarefulWriteSink& inner) : inner_(inner) {}
+  D WriteAt(p::u64 offset, std::span<const p::byte> bytes) override {
+    D r;
+    r.operation = d::BoundedIoOperation::write;
+    r.error = d::BoundedIoError::native_failure;
+    r.offset = offset;
+    r.requested_bytes = bytes.size();
+    r.native_error = EIO;
+    r.native_attempted = true;
+    return r;
+  }
+  D ReadAt(p::u64 offset, std::span<p::byte> bytes) override { return inner_.ReadAt(offset, bytes); }
+  D Sync() override { return inner_.Sync(); }
+  bool forced_ordered() const noexcept override { return inner_.forced_ordered(); }
+
+ private:
+  d::CarefulWriteSink& inner_;
+};
+
 // What the receipt of `a` must say given the file (read now) and what the test KNOWS began before it: `expected_excluded` are the
 // orders active when the transaction began (plus itself), `boundary` is the begin's Next - 1 (the transaction's order - 1).
 void CheckReceiptAgainstFile(const std::string& what, const Approved& a, const Acquired& r, const off::FileView& f,
@@ -667,6 +737,18 @@ void CheckReceiptAgainstFile(const std::string& what, const Approved& a, const A
   Check(context.native_served_facts == served.facts, what + ": the receipt's marker is the handle's served facts (process-local)");
   Check(context.catalog_generation_id == generation && r.view.catalog_generation_id == generation,
         what + ": the catalog generation is " + std::to_string(generation));
+  // S4g part 1: the receipt's epochs ARE the catalog root's (decoded offline from the file): generation, security epoch, and the
+  // resource epoch as the context carries it (root + 1: the root's zero is "no resource activation yet"). (OLD, S4f: the generation
+  // was the maximum over the name rows the snapshot saw, and the security and resource epochs were whatever the caller supplied.)
+  {
+    const auto root = RootOf(f);
+    Check(generation == root.catalog_generation, what + ": the expected generation is the file root's (" + std::to_string(root.catalog_generation) + ")");
+    Check(context.security_epoch == root.security_epoch && r.view.security_epoch == root.security_epoch,
+          what + ": the security epoch is the file root's (" + std::to_string(root.security_epoch) + ")");
+    Check(context.resource_epoch == root.resource_epoch + 1 && r.view.resource_epoch == root.resource_epoch + 1,
+          what + ": the resource epoch is the file root's plus one (" + std::to_string(root.resource_epoch) + " + 1)");
+    Check(context.name_resolution_epoch == root.catalog_generation, what + ": the name-resolution epoch is the root's generation (the root has no separate name epoch)");
+  }
   // The cohort comes from the served facts, and those are what the loop captured from the database record.
   Check(v.literal_catalog_snapshot_uuid.bytes == served.facts->datatype_catalog_snapshot_uuid.bytes &&
             v.literal_catalog_generation == served.facts->datatype_catalog_generation &&
@@ -685,8 +767,65 @@ void CheckReceiptAgainstFile(const std::string& what, const Approved& a, const A
   Check(!active.empty() && v.oldest_active_local_transaction_id == *active.begin(), what + ": the oldest active is the file's");
   Check(r.view.statement_snapshot_uuid != r.view.receipt_uuid && !r.view.statement_snapshot_uuid.is_nil() && !r.view.receipt_uuid.is_nil(),
         what + ": the receipt and its snapshot have their own identities");
-  Check(r.view.active_transaction_handle_bytes.empty() && r.view.name_resolve_executor_availability_generation == 0,
-        what + ": no TXBH handle and no executor generation natively (no native begin authority, empty allow-list)");
+  // S4g part 1: the begin authority and the TXBH handle. (OLD, S4f: no native begin authority, so the TXBH bytes were empty.)
+  // The independent computation: the begin authority is the served facts' (the default isolation profile and transaction policy the
+  // open resolved), and the handle is the one the engine's own encoder makes from the TIP header's transaction, those identities and
+  // the native loop's begin generation: decode the receipt's bytes and compare every field, then re-encode and compare the bytes.
+  Check(served.facts->transaction_begin_authority_present && !served.facts->begin_isolation_profile_uuid.is_nil() &&
+            served.facts->begin_isolation_profile_generation != 0 && !served.facts->begin_policy_snapshot_uuid.is_nil() &&
+            served.facts->begin_policy_generation != 0,
+        what + ": the facts carry a complete begin authority");
+  // The profile the receipt names. A created database holds profile rows for the default (read_committed_statement) and the startup
+  // (maintenance_operation_isolation) profiles only, and the loop begins a user's transaction under snapshot_stable, so this transaction's
+  // TXBH names the DEFAULT profile although its TIP header states snapshot_stable. The mismatch is pinned here (OWNER QUESTION in the report).
+  api::NativeServedDatabaseFacts::IsolationProfile default_profile;
+  default_profile.kind = served.facts->begin_isolation_profile_kind;
+  default_profile.profile_uuid = served.facts->begin_isolation_profile_uuid;
+  default_profile.generation = served.facts->begin_isolation_profile_generation;
+  const auto* expected_profile = &default_profile;
+  Check(default_profile.kind == kReadCommittedStatement && h.isolation_profile == kSnapshotStable && served.facts->begin_isolation_profiles.size() == 2,
+        what + ": the default profile is read_committed_statement while the header states snapshot_stable (no snapshot_stable profile row exists); profiles resolved: " +
+            std::to_string(served.facts->begin_isolation_profiles.size()));
+  Check(v.txn_begin_isolation_profile_uuid.bytes == expected_profile->profile_uuid.bytes &&
+            v.txn_begin_isolation_profile_generation == expected_profile->generation &&
+            v.txn_begin_policy_snapshot_uuid.bytes == served.facts->begin_policy_snapshot_uuid.bytes &&
+            v.txn_begin_policy_generation == served.facts->begin_policy_generation &&
+            v.txn_begin_executor_availability_generation == api::kNativeLoopBeginGeneration,
+        what + ": the receipt's begin authority is the facts'");
+  {
+    const auto& bytes = v.active_transaction_handle_bytes;
+    Check(!bytes.empty(), what + ": the TXBH handle bytes are built natively");
+    scratchbird::engine::sblr::SblrTransactionHandleV1 handle;
+    std::string handle_detail;
+    const bool decoded = !bytes.empty() && scratchbird::engine::sblr::DecodeSblrTransactionHandleV1(bytes.data(), bytes.size(), &handle, &handle_detail);
+    Check(decoded, what + ": the TXBH bytes decode: " + handle_detail);
+    if (decoded) {
+      Check(handle.transaction_uuid == h.transaction_uuid.bytes && handle.local_transaction_id == order &&
+                handle.isolation_profile_uuid == expected_profile->profile_uuid.bytes &&
+                handle.isolation_profile_generation == expected_profile->generation &&
+                handle.transaction_policy_snapshot_uuid == served.facts->begin_policy_snapshot_uuid.bytes &&
+                handle.transaction_policy_generation == served.facts->begin_policy_generation &&
+                handle.executor_availability_generation == api::kNativeLoopBeginGeneration && handle.read_mode == 1 && handle.authority_scope == 1 &&
+                handle.lifecycle_state == 1,
+            what + ": the TXBH fields are the TIP header's transaction and the facts' authority");
+      Check(scratchbird::engine::sblr::EncodeSblrTransactionHandleV1(handle) == bytes, what + ": re-encoding the decoded handle reproduces the bytes (evidence included)");
+    }
+  }
+}
+
+// The parser-facing server acquire route for an approved session's own transaction (schema V1: the smallest projection).
+srv::SessionOperationResult ServerAcquire(Approved& a) {
+  sbps::Frame frame;
+  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kAcquireStatementContextRequest);
+  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.session_uuid = a.approval.session_uuid;
+  frame.header.connection_uuid = a.connection;
+  frame.header.payload_schema_id = sbps::kSchemaAcquireStatementContextRequestV1;
+  PutU16(&frame.payload, 1);
+  frame.payload.insert(frame.payload.end(), a.approval.session_uuid.begin(), a.approval.session_uuid.end());
+  for (unsigned i = 0; i < 8; ++i) frame.payload.push_back(static_cast<std::uint8_t>((a.approval.transaction_order >> (8 * i)) & 0xFF));
+  frame.payload.insert(frame.payload.end(), a.approval.transaction_uuid.bytes.begin(), a.approval.transaction_uuid.bytes.end());
+  return srv::HandleAcquireStatementContext(a.registry.get(), served.started.state, frame);
 }
 
 // ---- the cases ---------------------------------------------------------------------------------------------------------------
@@ -720,6 +859,16 @@ int ReceiptState(const std::string& state, const Offline& offline) {
     const auto refused = Acquire(*ps1, stale, s1->approval.transaction_uuid, false);
     Check(refused.code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE", "a stale generation refuses (traced)");
     Release(again);
+    // S4g part 1: the server acquire route is in the traced region too (reads only: the root page, the TIP, no write, no .sb. name)
+    {
+      const auto served_result = ServerAcquire(*s1);
+      Check(served_result.accepted && served_result.payload.size() >= 19, "the server acquire route (traced) acquires a native receipt");
+      if (served_result.accepted && served_result.payload.size() >= 19) {
+        std::array<std::uint8_t, 16> statement{};
+        std::copy_n(served_result.payload.begin() + 3, 16, statement.begin());
+        Check(srv::ReleaseServerStatementContext(s1->registry.get(), p::Uuid{statement}), "and the server releases it (traced)");
+      }
+    }
     Release(r1);
     Mark("verify");
     Check(Image(served.path) == image_before, "the receipts and the refusal wrote nothing: the file's bytes are identical");
@@ -760,25 +909,45 @@ int ReceiptState(const std::string& state, const Offline& offline) {
   {
     const auto f = read();
     Check(f.words.at(change_order).state == pgs::TipStateCode::committed, "the change is committed in the file");
-    auto r1b = Acquire(*ps1, c1, s1->approval.transaction_uuid);
-    Check(r1b.ok(), "session 1's receipt after the change: " + r1b.code);
-    CheckReceiptAgainstFile("session 1 after the change", *s1, r1b, f, {order1}, g0);
+    // S4g part 1 (OLD, S4f: session 1 acquired with the OLD generation g0, because the generation was the names its snapshot saw;
+    // a claim of g1 was stale). NEW: the generation is the catalog root's, the latest committed advance: session 1 (snapshot_stable,
+    // began before the change) acquires with g1, and a claim of g0 is stale. Its SNAPSHOT is unchanged (high-water mark below the
+    // change): the generation is an invalidation counter, not a view stamp.
+    auto c1_new = ContextFor(*s1, g1);
+    auto r1b = Acquire(*ps1, c1_new, s1->approval.transaction_uuid);
+    Check(r1b.ok(), "session 1's receipt after the change (the root's generation): " + r1b.code);
+    CheckReceiptAgainstFile("session 1 after the change", *s1, r1b, f, {order1}, g1);
     Check(r1b.view.visible_committed_high_watermark < change_order && r1b.view.publication_inventory_next_local_transaction_id > change_order,
           "the change is below the publication's Next but invisible to session 1's snapshot (high-water mark below it)");
     Release(r1b);
-    // a claim of the NEW generation is stale for session 1 (its snapshot sees the old one), in the context or the authorization
-    auto claim_new = ContextFor(*s1, g1);
-    Check(Acquire(*ps1, claim_new, s1->approval.transaction_uuid).code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
-          "session 1 claiming the new generation: stale (its snapshot predates the commit)");
-    auto claim_auth = c1;
-    claim_auth.authorization_context.catalog_generation_id = g1;
+    // the OLD generation is stale for session 1 now, in the context or the authorization
+    Check(Acquire(*ps1, c1, s1->approval.transaction_uuid).code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
+          "session 1 claiming the OLD generation after the change: stale (the root advanced)");
+    auto claim_auth = c1_new;
+    claim_auth.authorization_context.catalog_generation_id = g0;
     Check(Acquire(*ps1, claim_auth, s1->approval.transaction_uuid).code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
           "a stale generation in the materialized AUTHORIZATION refuses too");
-    auto claim_zero = c1;
+    auto claim_zero = c1_new;
     claim_zero.catalog_generation_id = 0;
     claim_zero.authorization_context.catalog_generation_id = 0;
     Check(Acquire(*ps1, claim_zero, s1->approval.transaction_uuid).code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
           "a context that states no generation is not a current one: refused, never filled in");
+    // The security and resource epochs are verified against the root too (OLD: only required non-zero), each by its own stale refusal
+    // that carries the current values as structured fields.
+    {
+      auto wrong_security = c1_new;
+      wrong_security.security_epoch = 2;
+      auto refused = Acquire(*ps1, wrong_security, s1->approval.transaction_uuid);
+      Check(refused.code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE", "a security epoch that is not the root's: stale");
+      auto wrong_auth_security = c1_new;
+      wrong_auth_security.authorization_context.security_epoch = 2;
+      Check(Acquire(*ps1, wrong_auth_security, s1->approval.transaction_uuid).code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
+            "an authorization security epoch that is not the root's: stale");
+      auto wrong_resource = c1_new;
+      wrong_resource.resource_epoch = 2;
+      Check(Acquire(*ps1, wrong_resource, s1->approval.transaction_uuid).code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
+            "a resource epoch that is not the root's (+1): stale");
+    }
   }
   // A session approved AFTER the commit sees it.
   auto s3 = Approve();
@@ -817,6 +986,12 @@ int ReceiptState(const std::string& state, const Offline& offline) {
     Check(got.ok(), "a read_committed_statement transaction's receipt: " + got.code);
     Check(got.view.visible_committed_high_watermark == change_order && CopyContext(got).catalog_generation_id == g1,
           "taken at acquire: it sees the change (high-water mark and generation)");
+    // This transaction runs under read_committed_statement, the DEFAULT profile's kind: its begin authority and TXBH name that profile
+    // (the same profile the snapshot_stable transaction's TXBH names, for want of a snapshot_stable profile row).
+    Check(got.view.txn_begin_isolation_profile_uuid.bytes == served.facts->begin_isolation_profile_uuid.bytes &&
+              got.view.txn_begin_isolation_profile_generation == served.facts->begin_isolation_profile_generation &&
+              !got.view.active_transaction_handle_bytes.empty(),
+          "a read_committed_statement transaction's receipt names the default (read_committed_statement) profile in its begin authority and TXBH");
     Release(got);
     const auto rr = begin_owned(kRepeatableRead);
     auto crr = ContextFor(s1->record->database_path, s1->record->effective_user_uuid, s1->record->session_uuid, rr.begun_uuid, rr.begun_order, g1);
@@ -862,7 +1037,7 @@ int ReceiptState(const std::string& state, const Offline& offline) {
       auto forged = std::make_shared<api::NativeServedDatabaseFacts>(*served.facts);
       forged->serving_state = api::NativeServedServingState::failed;
       forged->serving_state_cell.reset();
-      auto liar = c1;
+      auto liar = ContextFor(*s1, g1);  // (S4g part 1: the current generation; OLD: c1 at g0, which was current under the names source)
       liar.native_served_facts = forged;
       auto ok = Acquire(*ps1, liar, s1->approval.transaction_uuid);
       Check(ok.ok(), "a caller-supplied facts pointer is replaced by the handle's: " + ok.code);
@@ -883,16 +1058,145 @@ int ReceiptState(const std::string& state, const Offline& offline) {
     }
   }
 
+  // S4g part 1: the SERVER acquire route (HandleAcquireStatementContext, the parser-facing route) for the same approved session and
+  // transaction. OLD (S4f): it called LoadCatalogObjectLifecycleEpochState, which refuses a native context, so a native receipt was not
+  // reachable through the server; the S4f tests called the bridge function with a context built like EngineContextForSessionProjection.
+  // NEW: a native session takes its epochs from the catalog root and the route acquires a native receipt, which is compared with the
+  // one the bridge built, then released through the server's own release.
+  {
+    const auto before = Image(served.path);
+    const auto directory = [&] {
+      std::set<std::string> names;
+      for (const auto& entry : fs::directory_iterator(served.directory)) names.insert(entry.path().filename().string());
+      return names;
+    };
+    const auto directory_before = directory();
+    auto served_result = ServerAcquire(*s1);
+    std::string diagnostic_text;
+    for (const auto& diagnostic : served_result.diagnostics) diagnostic_text += diagnostic.code + " ";
+    Check(served_result.accepted && served_result.payload.size() >= 115, "the server route acquires a native receipt for the approved session: " + diagnostic_text);
+    if (served_result.accepted && served_result.payload.size() >= 115) {
+      std::array<std::uint8_t, 16> statement{};
+      std::copy_n(served_result.payload.begin() + 3, 16, statement.begin());
+      const auto key = p::Uuid{statement};
+      const auto found = s1->registry->statement_contexts_by_statement_uuid.find(key);
+      Check(found != s1->registry->statement_contexts_by_statement_uuid.end(), "the server recorded the statement context");
+      if (found != s1->registry->statement_contexts_by_statement_uuid.end()) {
+        const auto& view = found->second.view;
+        // the bridge-built receipt for the same session and transaction (r1, acquired at the current root's generation by the test)
+        auto bridged = Acquire(*ps1, ContextFor(*s1, RootOf(read()).catalog_generation), s1->approval.transaction_uuid);
+        Check(bridged.ok(), "the bridge-built receipt for comparison: " + bridged.code);
+        if (bridged.ok()) {
+          const auto& b = bridged.view;
+          Check(view.owning_local_transaction_id == order1 && view.owning_transaction_uuid.bytes == s1->approval.transaction_uuid.bytes &&
+                    view.catalog_generation_id == b.catalog_generation_id && view.security_epoch == b.security_epoch &&
+                    view.resource_epoch == b.resource_epoch && view.visible_committed_high_watermark == b.visible_committed_high_watermark &&
+                    view.oldest_active_local_transaction_id == b.oldest_active_local_transaction_id &&
+                    view.publication_inventory_next_local_transaction_id == b.publication_inventory_next_local_transaction_id &&
+                    view.active_excluded_local_transaction_ids == b.active_excluded_local_transaction_ids &&
+                    view.txn_begin_isolation_profile_uuid == b.txn_begin_isolation_profile_uuid &&
+                    view.txn_begin_isolation_profile_generation == b.txn_begin_isolation_profile_generation &&
+                    view.txn_begin_policy_snapshot_uuid == b.txn_begin_policy_snapshot_uuid &&
+                    view.txn_begin_policy_generation == b.txn_begin_policy_generation &&
+                    view.name_resolve_executor_availability_generation == b.name_resolve_executor_availability_generation &&
+                    view.literal_catalog_generation == b.literal_catalog_generation,
+                "the server-route receipt carries the same epochs, snapshot and begin authority as the bridge-built one");
+          Check(!view.active_transaction_handle_bytes.empty() && !b.active_transaction_handle_bytes.empty(),
+                "both carry TXBH bytes");
+          Check(view.receipt_uuid != b.receipt_uuid && view.statement_uuid != b.statement_uuid, "and they are two distinct receipts");
+          Release(bridged);
+        }
+        const auto root = RootOf(read());
+        Check(view.catalog_generation_id == root.catalog_generation && view.security_epoch == root.security_epoch &&
+                  view.resource_epoch == root.resource_epoch + 1,
+              "the server-route receipt's epochs are the file root's");
+      }
+      Check(srv::ReleaseServerStatementContext(s1->registry.get(), key), "the server releases the statement context");
+      Check(s1->registry->statement_contexts_by_statement_uuid.find(key) == s1->registry->statement_contexts_by_statement_uuid.end(),
+            "and it is gone from the registry");
+    }
+    // The REAL parser acquires with schema V11, whose projection requires a diagnostic identity registry snapshot (non-nil v7 uuid, a non-zero
+    // generation, a valid row cohort). A native receipt has none yet (item 6 of S4g part 1), so the V11 route refuses with its specific
+    // detail, and the receipt it made is released. Pinned here so the S4h gap is a test, not only a note.
+    {
+      sbps::Frame v11;
+      v11.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kAcquireStatementContextRequest);
+      v11.header.request_uuid = sbps::MakeUuidV7Bytes();
+      v11.header.session_uuid = s1->approval.session_uuid;
+      v11.header.connection_uuid = s1->connection;
+      v11.header.payload_schema_id = sbps::kSchemaAcquireStatementContextRequestV11;
+      PutU16(&v11.payload, 11);
+      v11.payload.insert(v11.payload.end(), s1->approval.session_uuid.begin(), s1->approval.session_uuid.end());
+      for (unsigned i = 0; i < 8; ++i) v11.payload.push_back(static_cast<std::uint8_t>((order1 >> (8 * i)) & 0xFF));
+      v11.payload.insert(v11.payload.end(), s1->approval.transaction_uuid.bytes.begin(), s1->approval.transaction_uuid.bytes.end());
+      const auto refused = srv::HandleAcquireStatementContext(s1->registry.get(), served.started.state, v11);
+      bool pinned = !refused.accepted && !refused.diagnostics.empty() &&
+                    refused.diagnostics.front().code == "PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED";
+      std::string detail_text;
+      if (!refused.diagnostics.empty())
+        for (const auto& field : refused.diagnostics.front().fields)
+          if (field.key == "detail") detail_text = field.value;
+      Check(pinned, "the V11 (parser) server route refuses a native receipt: " + (refused.diagnostics.empty() ? std::string("no diagnostic") : refused.diagnostics.front().code));
+      Check(detail_text == "engine_diagnostic_projection_invalid", "with the specific detail engine_diagnostic_projection_invalid (no native diagnostic identity registry): " + detail_text);
+    }
+    Check(Image(served.path) == before && directory() == directory_before, "the server route wrote nothing and created no file");
+  }
+
+  // S4g part 1: the begin authority loader, directly. A native context answers from the facts (no side file, no refusal); a native
+  // context whose facts carry no authority keeps the specific refusal; a LEGACY context is untouched (it never reaches the native branch).
+  {
+    const auto before = Image(served.path);
+    const auto listing = [&] {
+      std::set<std::string> names;
+      for (const auto& entry : fs::directory_iterator(served.directory)) names.insert(entry.path().filename().string());
+      return names;
+    };
+    const auto listing_before = listing();
+    auto context = CopyContext(r1);
+    context.statement_metadata_snapshot_engine_owned = true;
+    const auto native = api::LoadSblrTransactionBeginAuthorityV1(context);
+    Check(native.ok && native.authority.isolation_profile_uuid.bytes == served.facts->begin_isolation_profile_uuid.bytes &&
+              native.authority.isolation_profile_generation == served.facts->begin_isolation_profile_generation &&
+              native.authority.transaction_policy_snapshot_uuid.bytes == served.facts->begin_policy_snapshot_uuid.bytes &&
+              native.authority.transaction_policy_generation == served.facts->begin_policy_generation,
+          "a native context's begin authority is the facts' (no refusal): " + native.diagnostic.code);
+    auto without = std::make_shared<api::NativeServedDatabaseFacts>(*served.facts);
+    without->transaction_begin_authority_present = false;
+    auto none_context = context;
+    none_context.native_served_facts = without;
+    const auto none = api::LoadSblrTransactionBeginAuthorityV1(none_context);
+    Check(!none.ok && none.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED" &&
+              std::any_of(none.diagnostic.fields.begin(), none.diagnostic.fields.end(),
+                          [](const auto& f) { return f.key == "registry_family" && f.value == "transaction_begin_authority"; }),
+          "facts without an authority keep the specific refusal with the registry family");
+    scratchbird::tests::OwnedTempDirectory legacy_dir;
+    api::EngineRequestContext legacy;
+    legacy.database_path = (legacy_dir.path() / "legacy.sdb").string();
+    legacy.security_context_present = false;
+    const auto old = api::LoadSblrTransactionBeginAuthorityV1(legacy);
+    Check(!old.ok && old.diagnostic.code == "SECURITY.ACCESS_DENIED", "a LEGACY context is unchanged (its own hidden-authority answer, not the native branch): " + old.diagnostic.code);
+    Check(!fs::exists(legacy.database_path + ".sb.sblr_txn_begin_authority.v2"), "and the legacy refusal created no file");
+    legacy_dir.Cleanup();
+    Check(Image(served.path) == before && listing() == listing_before, "none of it touched the native file or its directory");
+  }
+
   // BIND / DISPATCH / JOURNAL with a native receipt (session 1's, still live).
   {
-    // BIND: the receipt's NAME_RESOLVE executor generation is 0 (not on the native allow-list), and the bind says so with the
-    // availability table's OWN code, not as a stale epoch.
+    // BIND (S4g part 1, OLD: the receipt's NAME_RESOLVE executor generation was 0, not on the native allow-list, and the bind refused with
+    // the availability table's own SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED). NEW: the SBLR_NAME_RESOLVE row is the ONE allow-listed row, the
+    // receipt carries its generation (1, the table's), and the bind issues its descriptor. Atoms are sent with a multi-byte UTF-8 name, an
+    // empty step and a quoted step; the descriptor carries exactly those steps (S3 layout: length-prefixed, no fold, no split).
+    Check(r1.view.name_resolve_executor_availability_generation == 1, "the receipt's NAME_RESOLVE generation is the native table's (1)");
+    Check(r1.view.parse_text_executor_availability_generation == 0 && r1.view.parameter_bind_executor_availability_generation == 0 &&
+              r1.view.txn_commit_executor_availability_generation == 0 && r1.view.query_explain_executor_availability_generation == 0,
+          "and the other executor rows are still not allow-listed (their generations stay 0)");
     bind::NameResolveBindRequestV1 public_bind;
     public_bind.authenticated_receipt_uuid = r1.view.receipt_uuid.bytes;
     public_bind.occurrence = 1;
     public_bind.resolution_mode = 2;
     public_bind.object_class = 2;
-    public_bind.target_name_atoms = {{"definitely_absent_name", false}};
+    const std::vector<std::pair<std::string, bool>> sent_atoms{{"sch\xC3\xA9ma_\xE2\x82\xAC", false}, {"", true}, {"definitely_absent_name", false}};
+    for (const auto& [text, quoted] : sent_atoms) public_bind.target_name_atoms.push_back({text, quoted});
     std::vector<std::uint8_t> exact_bind;
     std::string detail;
     Check(bind::EncodeNameResolveBindRequestV1(public_bind, &exact_bind, &detail), "the canonical bind request encodes: " + detail);
@@ -911,11 +1215,55 @@ int ReceiptState(const std::string& state, const Offline& offline) {
     bridge::StatementNameResolveBindAckV1 ack;
     sb_engine_result_t result = nullptr;
     const auto before = Image(served.path);
+    const auto listing_before = [&] {
+      std::set<std::string> names;
+      for (const auto& entry : fs::directory_iterator(served.directory)) names.insert(entry.path().filename().string());
+      return names;
+    };
+    const auto directory_before = listing_before();
     const auto status = bridge::BindStatementNameResolveAuthorityV1(r1.receipt, &request, &ack, &result);
     const auto code = Code(result);
-    Check(status == SB_ENGINE_STATUS_UNSUPPORTED && code == "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED" && ack.failure_code == code,
-          "the name-resolve bind with a native receipt refuses with the availability table's own code: " + code);
-    Check(Image(served.path) == before, "and wrote nothing");
+    Check(status == SB_ENGINE_STATUS_OK && code.empty() && ack.failure_code.empty(), "the name-resolve bind with a native receipt succeeds: " + code + " " + ack.failure_code);
+    Check(!ack.binding_uuid.is_nil() && !ack.resolution_uuid.is_nil() && ack.binding_generation != 0 && ack.request_evidence_sha256 == decoded.request_evidence_sha256,
+          "the acknowledgement carries a binding, a resolution and the request's evidence");
+    Check(Image(served.path) == before && listing_before() == directory_before, "and the bind wrote nothing and created no file");
+    // the descriptor, read back through the allowed Copy
+    bridge::StatementNameResolveAuthorityV1 authority;
+    result = nullptr;
+    Check(bridge::CopyStatementNameResolveAuthorityV1(r1.receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK, "the bound authority copies back natively: " + Code(result));
+    scratchbird::engine::sblr::SblrNameResolveDescriptorV1 descriptor;
+    std::string descriptor_detail;
+    const bool descriptor_ok = scratchbird::engine::sblr::DecodeSblrNameResolveDescriptorV1(
+        authority.canonical_descriptor_bytes.data(), authority.canonical_descriptor_bytes.size(), &descriptor, &descriptor_detail);
+    Check(descriptor_ok, "the descriptor decodes: " + descriptor_detail);
+    if (descriptor_ok) {
+      Check(descriptor.name_atoms.size() == sent_atoms.size() && std::equal(descriptor.name_atoms.begin(), descriptor.name_atoms.end(), sent_atoms.begin(),
+                                                                          [](const auto& got, const auto& sent) { return got == sent.first; }),
+            "the descriptor's name steps are exactly the ones sent (UTF-8, the empty step, no fold, no split)");
+      // S3 layout: the atom block hash is the SHA-256 of each atom as u32 little-endian length then its bytes
+      std::vector<p::byte> block;
+      for (const auto& [text, quoted] : sent_atoms) {
+        for (unsigned i = 0; i < 4; ++i) block.push_back(static_cast<p::byte>((static_cast<std::uint32_t>(text.size()) >> (8 * i)) & 0xFF));
+        block.insert(block.end(), text.begin(), text.end());
+      }
+      const auto expected = scratchbird::core::hash::ComputeSha256Digest(block.data(), block.size());
+      Check(expected.ok() && std::equal(expected.digest.begin(), expected.digest.end(), descriptor.name_atoms_sha256.begin()),
+            "the atom block hash is the S3 length-prefixed layout's SHA-256");
+      Check(descriptor.name_language_uuid == BaseName(offline, served.bootstrap).language.bytes, "the name language is the language of the offline file's name entries (the session's)");
+      Check(descriptor.statement_receipt_uuid == r1.view.receipt_uuid.bytes && descriptor.catalog_generation == r1.view.catalog_generation_id &&
+                descriptor.security_epoch == r1.view.security_epoch && descriptor.resource_epoch == r1.view.resource_epoch &&
+                descriptor.executor_availability_generation == r1.view.name_resolve_executor_availability_generation &&
+                descriptor.resolution_uuid == ack.resolution_uuid.bytes && descriptor.descriptor_sha256 == ack.descriptor_sha256,
+            "the descriptor carries the receipt's generations, epochs and the ack's resolution and hash");
+    }
+    // a second bind of the same request replays the same acknowledgement
+    {
+      bridge::StatementNameResolveBindAckV1 again;
+      result = nullptr;
+      Check(bridge::BindStatementNameResolveAuthorityV1(r1.receipt, &request, &again, &result) == SB_ENGINE_STATUS_OK && again.binding_uuid == ack.binding_uuid &&
+                again.descriptor_sha256 == ack.descriptor_sha256,
+            "a replay of the same bind returns the same acknowledgement");
+    }
     // DISPATCH: executing is S4g
     bridge::StatementContextDispatchRequest dispatch;
     dispatch.receipt = r1.receipt;
@@ -935,17 +1283,147 @@ int ReceiptState(const std::string& state, const Offline& offline) {
     key.catalog_generation = g0;
     key.security_epoch = 1;
     key.resource_epoch = 1;
-    for (const auto& looked : {api::LookupSblrNameResolveJournalV1(journal_context, key), api::EnsureSblrNameResolveJournalV1(journal_context, key)}) {
+    const auto journal_results = {api::LookupSblrNameResolveJournalV1(journal_context, key), api::EnsureSblrNameResolveJournalV1(journal_context, key)};
+    // the file evidence FIRST, so a removed guard is reported as "a file appeared", not only as a wrong code
+    Check(listing_before() == directory_before, "the journal created no file beside the database (the directory listing is unchanged)");
+    Check(Image(served.path) == before, "and the journal wrote nothing to the data file");
+    for (const auto& looked : journal_results) {
       Check(!looked.ok && looked.diagnostic.code == "ENGINE.NATIVE.LEGACY_REGISTRY_REFUSED", "the name-resolve journal refuses a native receipt's context");
       Check(std::any_of(looked.diagnostic.fields.begin(), looked.diagnostic.fields.end(),
                         [](const auto& f) { return f.key == "registry_family" && f.value == "sblr_name_resolve_journal"; }),
             "with the registry family as a structured field");
     }
-    Check(Image(served.path) == before, "and the journal wrote nothing");
   }
   Release(r2);
   Release(r3);
   Release(r1);
+
+  // S4g part 1: O(1) EPOCHS. One acquire reads the TIP (state and header pages) and the catalog root page EXACTLY ONCE, and no page of
+  // the names relation or any other catalog page (OLD, S4f: the whole names relation was scanned per acquire). Counted at the loop's
+  // write door through a counting sink.
+  {
+    const auto f = read();
+    const auto root = RootOf(f);
+    std::set<p::u64> allowed(f.state_pages.begin(), f.state_pages.end());
+    allowed.insert(f.header_pages.begin(), f.header_pages.end());
+    allowed.insert(root.page_number);
+    {
+      std::lock_guard<std::mutex> guard(g_read_mutex);
+      g_reads.clear();
+    }
+    srv::SetNativeTransactionSinkWrapperForTest([](d::CarefulWriteSink& inner) -> std::unique_ptr<d::CarefulWriteSink> {
+      return std::make_unique<CountingReadSink>(inner);
+    });
+    const auto names_reads_before = served.loop->NamesReadsForTest();
+    auto counted = Acquire(*ps1, ContextFor(*s1, g1), s1->approval.transaction_uuid);
+    const auto names_reads_after = served.loop->NamesReadsForTest();
+    srv::SetNativeTransactionSinkWrapperForTest(nullptr);
+    // The names relation is read through the runtime's lease reader, NOT the write door's sink counted above, so the loop counts its own
+    // names reads (a test seam): an acquire adds none. (OLD, S4f: one whole-relation scan per acquire.)
+    Check(names_reads_after == names_reads_before, "an acquire runs no names-relation scan (the loop's names-read counter did not move: " +
+                                                       std::to_string(names_reads_before) + " -> " + std::to_string(names_reads_after) + ")");
+    Check(counted.ok(), "the counted acquire succeeds: " + counted.code);
+    std::vector<std::pair<p::u64, std::size_t>> reads;
+    {
+      std::lock_guard<std::mutex> guard(g_read_mutex);
+      reads = g_reads;
+    }
+    std::size_t root_reads = 0, outside = 0;
+    for (const auto& [offset, size] : reads) {
+      const auto page = offset / f.page_size;
+      if (size != f.page_size || offset % f.page_size != 0) ++outside;
+      else if (page == root.page_number) ++root_reads;
+      else if (allowed.count(page) == 0) ++outside;
+    }
+    Check(!reads.empty() && root_reads == 1, "the catalog root page is read exactly once per acquire (" + std::to_string(root_reads) + " of " + std::to_string(reads.size()) + " page reads)");
+    Check(outside == 0, "no page other than the TIP state/header pages and the catalog root is read (" + std::to_string(outside) + " outside)");
+    Release(counted);
+  }
+  // S4g part 1: A TORN catalog root (the seal fails) refuses the receipt with the generation-unavailable code and writes nothing; the
+  // root restored, the receipt is acquired again. The tear is made through the loop's own write door (a changed byte inside the root's
+  // first 512-byte unit, where AdvanceCatalogRoot writes).
+  {
+    const auto f = read();
+    const auto root = RootOf(f);
+    std::vector<p::byte> original(f.image.begin() + static_cast<std::ptrdiff_t>(root.page_number * f.page_size),
+                                  f.image.begin() + static_cast<std::ptrdiff_t>((root.page_number + 1) * f.page_size));
+    auto torn = original;
+    torn[300] = static_cast<p::byte>(torn[300] ^ 0xFF);  // the seal's bytes
+    const auto write_root = [&](const std::vector<p::byte>& bytes) {
+      Check(served.loop->RunOnLoopThreadForTest([&] { Check(served.loop->RunWithTransactionSinkOnLoopThreadForTest([&](d::CarefulWriteSink& sink) {
+              const auto done = sink.WriteAt(root.page_number * f.page_size, std::span<const p::byte>(bytes));
+              Check(done.ok(), "the test's own write of the root page");
+              Check(sink.Sync().ok(), "and its sync");
+            }), "the loop's write door opened"); }),
+            "the loop's write door opened for the root tear");
+    };
+    write_root(torn);
+    Check(Acquire(*ps1, ContextFor(*s1, g1), s1->approval.transaction_uuid).code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_UNAVAILABLE",
+          "a torn catalog root: the receipt refuses NATIVE_CATALOG_GENERATION_UNAVAILABLE");
+    write_root(original);
+    auto healed = Acquire(*ps1, ContextFor(*s1, g1), s1->approval.transaction_uuid);
+    Check(healed.ok(), "the root restored, the receipt is acquired again: " + healed.code);
+    Release(healed);
+  }
+  // S4g part 1: A FAILED root advance (the first write fails: the crash case) leaves the OLD root: receipts keep the old generation,
+  // and a context built for the next generation is stale. Then a good advance moves it and the OLD generation is stale.
+  {
+    const auto f = read();
+    const auto root = RootOf(f);
+    const auto committed = CommittedOrders(f);
+    Check(!committed.empty(), "a committed transaction to name");
+    const auto named = *committed.begin();
+    db::CatalogRootAdvanceRequest advance;
+    advance.transaction_order = named;
+    advance.transaction_uuid = f.headers.at(named).transaction_uuid;
+    advance.catalog_generation = root.catalog_generation + 1;
+    advance.schema_epoch = root.schema_epoch;
+    advance.security_epoch = root.security_epoch;
+    advance.resource_epoch = root.resource_epoch;
+    Check(served.loop->RunOnLoopThreadForTest([&] { Check(served.loop->RunWithTransactionSinkOnLoopThreadForTest([&](d::CarefulWriteSink& sink) {
+            FailWriteSink failing(sink);
+            const auto failed = db::AdvanceCatalogRoot(failing, BindingOf(offline), advance);
+            Check(!failed.ok() && failed.error == db::CatalogVersionWriteError::write_failed, "the root advance whose write fails reports write_failed");
+          }), "the loop's write door opened"); }),
+          "the loop's write door opened for the failed advance");
+    Check(RootOf(read()).catalog_generation == root.catalog_generation, "the failed advance left the old root");
+    auto still = Acquire(*ps1, ContextFor(*s1, root.catalog_generation), s1->approval.transaction_uuid);
+    Check(still.ok(), "a receipt after the failed advance carries the old generation: " + still.code);
+    Release(still);
+    Check(Acquire(*ps1, ContextFor(*s1, root.catalog_generation + 1), s1->approval.transaction_uuid).code ==
+              "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
+          "a context built for the generation that did not publish is stale");
+    // the advance that works, with a security epoch raise: the receipt requires the new generation AND the new security epoch
+    Check(served.loop->RunOnLoopThreadForTest([&] { Check(served.loop->RunWithTransactionSinkOnLoopThreadForTest([&](d::CarefulWriteSink& sink) {
+            auto raised = advance;
+            raised.security_epoch = root.security_epoch + 1;
+            // (the resource epoch is NOT raised: a public-ABI session pins the resource epoch of its first receipt and refuses a different
+            // one with RESOURCE.BUDGET_EXCEEDED / resource_epoch_stale; that existing rule is reported, not changed)
+            const auto done = db::AdvanceCatalogRoot(sink, BindingOf(offline), raised);
+            Check(done.ok(), "the root advances with a raised security epoch");
+          }), "the loop's write door opened"); }),
+          "the loop's write door opened for the good advance");
+    const auto after = RootOf(read());
+    Check(after.catalog_generation == root.catalog_generation + 1 && after.security_epoch == root.security_epoch + 1 &&
+              after.resource_epoch == root.resource_epoch,
+          "the root now carries the raised values");
+    auto old_context = ContextFor(*s1, root.catalog_generation);
+    Check(Acquire(*ps1, old_context, s1->approval.transaction_uuid).code == "ENGINE.STATEMENT_CONTEXT.NATIVE_CATALOG_GENERATION_STALE",
+          "the old generation is stale after the advance");
+    auto fresh = ContextFor(*s1, after.catalog_generation);
+    fresh.security_epoch = after.security_epoch;
+    fresh.authorization_context.security_epoch = after.security_epoch;
+    fresh.resource_epoch = after.resource_epoch + 1;
+    auto got = Acquire(*ps1, fresh, s1->approval.transaction_uuid);
+    Check(got.ok(), "a context carrying the new generation and security epoch acquires: " + got.code);
+    if (got.ok()) {
+      const auto copied = CopyContext(got);
+      Check(copied.security_epoch == after.security_epoch && copied.resource_epoch == after.resource_epoch + 1 &&
+                copied.catalog_generation_id == after.catalog_generation,
+            "the receipt's context carries them");
+    }
+    Release(got);
+  }
 
   // FAILED: the loop's writer fails on the next write; the database becomes `failed`; a receipt is refused (nothing written).
   {
@@ -991,6 +1469,7 @@ int ReceiptState(const std::string& state, const Offline& offline) {
   ps3.reset();
   ps2.reset();
   ps1.reset();
+  Disconnect(*s1);  // S4g part 1: the server acquire route made a public-ABI session in s1's registry; the server's disconnect ends it
   Disconnect(*s3);
   std::printf("RECEIPT g0=%llu change_order=%llu order1=%llu order2=%llu order3=%llu\n", static_cast<unsigned long long>(g0),
               static_cast<unsigned long long>(change_order), static_cast<unsigned long long>(order1), static_cast<unsigned long long>(order2),

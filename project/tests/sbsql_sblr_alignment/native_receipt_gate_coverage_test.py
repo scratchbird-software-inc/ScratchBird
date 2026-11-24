@@ -30,7 +30,9 @@ import sys
 ROOT = sys.argv[1] if len(sys.argv) > 1 else "."
 
 # ---- pinned data ------------------------------------------------------------------------------------------------------------
-PINNED_ALLOWED = {"AcquireStatementContextReceipt", "ReleaseStatementContextReceipt", "CopyStatementContextEngineContextV1"}
+# S4g part 1: CopyStatementNameResolveAuthorityV1 joins the allowed set (it reads the receipt's in-memory bind authority; no file, no registry),
+# beside the NAME_RESOLVE availability row, so the bound descriptor can be read back natively.
+PINNED_ALLOWED = {"AcquireStatementContextReceipt", "ReleaseStatementContextReceipt", "CopyStatementContextEngineContextV1", "CopyStatementNameResolveAuthorityV1"}
 PINNED_OWN_GATE = {
     "DispatchStatementContextReceipt": "native_operation_not_built(native_session, out_result, \"dispatch_statement_context\"",
     "BindStatementNameResolveAuthorityV1": "context.native_served_facts && view.name_resolve_executor_availability_generation == 0",

@@ -21,7 +21,7 @@ namespace scratchbird::storage::disk {
 class RouteOwnershipLease;
 }
 
-namespace scratchbird::engine::internal_api { struct EngineMaterializedAuthorizationContext; }
+namespace scratchbird::engine::internal_api { struct EngineMaterializedAuthorizationContext; struct NativeServedDatabaseFacts; }
 
 namespace scratchbird::server {
 
@@ -102,6 +102,10 @@ struct ParserServerEventEngineContext {
   // native context is not accepted from, or serialized onto, parser IPC.
   std::shared_ptr<const engine::internal_api::EngineMaterializedAuthorizationContext>
       authorization_context;
+  // SB_NATIVE_FAMILY_GUARD (S4g part 1): the native-database marker. A parser event on a native session carries the SAME facts the
+  // session holds, so EngineContextFrom yields a native-marked EngineRequestContext and every legacy side-file family guard refuses.
+  // (OLD: no slot; a parser event converted to a legacy-looking context and the guards passed.)
+  std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> native_served_facts;
 };
 
 struct ParserServerEventSession {
