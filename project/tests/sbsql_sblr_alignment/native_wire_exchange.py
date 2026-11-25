@@ -17,10 +17,15 @@ Steps and assertions:
   1. SBsrv serves (lifecycle service_ready=true), then SBgate (TCP port chosen by bind(0)), each with a readiness
      wait, never a sleep. Control directories are short (the listener refuses MANAGEMENT_SOCKET_PATH_TOO_LONG).
   2. SBsql: `SELECT 1 AS one` prints the table with `one | 1`; `-q -A -t` prints `1`; `SELECT 2 AS two`;
-     `SELECT 1 AS one, 2 AS two`. Refused shapes keep their machine tokens: `SELECT 1 + 0 AS s` is
-     SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, `SELECT 'a' AS t` is ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT, and bare
-     `SELECT 1` is SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED TODAY (route B is the next slice and WILL flip this
-     assertion to `1`; when it does, change that one expectation, nothing else). A WRONG password gives the generic
+     `SELECT 1 AS one, 2 AS two`. ROUTE B (2026-12-11; OLD: bare `SELECT 1` was SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, route B "WILL flip
+     this assertion"): bare `SELECT 1` (also `select 1`, `SELECT 1;`, `SELECT 2`, `VALUES (1)`, the int64 maximum) prints the table whose
+     column carries the PARSER's current default name (`key_a`: the name the parser's own binding gives the one column of a literal
+     VALUES relation; the engine sends none) and the value; `-q -A -t` prints `1`. Refused shapes keep their machine tokens:
+     `SELECT 1 + 0 AS s` and bare `SELECT 1 + 0`, `SELECT -1`, `VALUES (1), (2)` and CREATE TABLE are
+     SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, `SELECT 'a' AS t` is ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT, `SELECT 1 FROM t` is
+     ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5 (the parser's own refusal), `SELECT 1.5` is QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1 (refused by the
+     executor after the gate). Inside ONE open line-protocol session every statement, accepted or refused, leaves the data file byte-identical
+     (route B check). A WRONG password gives the generic
      SECURITY.AUTHENTICATION.LOGIN_FAILED and the database file is byte-identical before and after it.
      The line client (AUTH / EXECUTE over the same TCP port) gets RESULT query.evaluate_projection with row one = 1.
   3. SIGTERM, listener first then server: SBsrv exits 0; no SBgate / SBParser / SBsrv process of this run is left;
@@ -201,9 +206,9 @@ def sbsql(args, work, port, label, sql, user=USER, password=PASSWORD, extra=()):
     return done
 
 
-def line_client(port, lines, expect):
+def line_client(port, lines, expect, after=None):
     """The line protocol of the parser (greeting, then AUTH / EXECUTE / QUIT). Each reply is read until its terminal
-    line, with a deadline: no sleeps."""
+    line, with a deadline: no sleeps. `after(index, reply)` (optional) runs once each reply of lines[index] has been read."""
     conn = socket.create_connection(("127.0.0.1", port), timeout=30)
     conn.settimeout(30)
     buffer = b""
@@ -223,9 +228,11 @@ def line_client(port, lines, expect):
         raise Fail(f"line client: no terminal line {markers} in {buffer.decode('utf-8', errors='replace')[-800:]!r}")
 
     transcript = [read_until([r"parser ready"])]
-    for line, terminal in zip(lines, expect):
+    for index, (line, terminal) in enumerate(zip(lines, expect)):
         conn.sendall((line + "\n").encode())
         transcript.append(read_until(terminal))
+        if after is not None:
+            after(index, transcript[-1])
     conn.close()
     return transcript
 
@@ -397,11 +404,32 @@ def run(args, work):
     check(both.returncode == 0 and re.search(r"^\|\s*one\s*\|\s*two\s*\|\s*$", both.stdout, re.M)
           and re.search(r"^\|\s*1\s*\|\s*2\s*\|\s*$", both.stdout, re.M), f"SELECT 1 AS one, 2 AS two: {both.stdout!r} {both.stderr!r}")
 
+    # --- ROUTE B: bare `SELECT 1` (the object-free literal VALUES relation, query.execute) runs natively. The column name is the PARSER's
+    # current default for the one column of a literal VALUES relation (`key_a`, from its own binding context); the engine sends no name. ---
+    for label, sql, value in (("bare1", "SELECT 1", "1"), ("bare-lower", "select 1", "1"), ("bare-semi", "SELECT 1;", "1"),
+                              ("bare2", "SELECT 2", "2"), ("values1", "VALUES (1)", "1"),
+                              ("bare-max", "SELECT 9223372036854775807", "9223372036854775807")):
+        bare = sbsql(args, work, port, label, sql); logins += 1
+        check(bare.returncode == 0 and re.search(r"^\|\s*key_a\s*\|\s*$", bare.stdout, re.M) and re.search(r"^\|\s*" + value + r"\s*\|\s*$", bare.stdout, re.M)
+              and "(1 row)" in bare.stdout, f"{sql!r}: rc={bare.returncode} {bare.stdout!r} {bare.stderr!r}")
+    quiet_bare = sbsql(args, work, port, "quiet-bare", "SELECT 1", extra=("-q", "-A", "-t")); logins += 1
+    check(quiet_bare.returncode == 0 and quiet_bare.stdout.strip() == "1", f"bare SELECT 1 with -q -A -t: {quiet_bare.stdout!r} {quiet_bare.stderr!r}")
+    # two statements in one call: each runs on its own (one login, two executions)
+    pair = sbsql(args, work, port, "bare-pair", "SELECT 1; SELECT 2"); logins += 1
+    check(pair.returncode == 0 and re.search(r"^\|\s*1\s*\|\s*$", pair.stdout, re.M) and re.search(r"^\|\s*2\s*\|\s*$", pair.stdout, re.M)
+          and "(2 rows)" in pair.stdout, f"SELECT 1; SELECT 2: rc={pair.returncode} {pair.stdout!r} {pair.stderr!r}")
+
     # --- the refused shapes: machine tokens, a failed exit ---
     for label, sql, token in (("plus", "SELECT 1 + 0 AS s", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
                               ("text", "SELECT 'a' AS t", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
-                              # ROUTE B: bare `SELECT 1` is refused TODAY. The route-B slice flips this line to `1` (see the docstring).
-                              ("bare", "SELECT 1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED")):
+                              # ROUTE B (2026-12-11). OLD: ("bare", "SELECT 1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED") -- bare SELECT 1 now RUNS (above).
+                              ("bare-plus", "SELECT 1 + 0", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+                              ("bare-neg", "SELECT -1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+                              ("values2", "VALUES (1), (2)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+                              ("bare-text", "SELECT 'a'", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
+                              ("bare-dec", "SELECT 1.5", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"),
+                              ("bare-from", "SELECT 1 FROM t", "ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5"),
+                              ("ddl", "CREATE TABLE x (a int)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED")):
         refused = sbsql(args, work, port, label, sql); logins += 1
         check(refused.returncode != 0 and token in refused.stdout + refused.stderr,
               f"{sql!r}: expected {token}, rc={refused.returncode}: {refused.stdout!r} {refused.stderr!r}")
@@ -445,6 +473,29 @@ def run(args, work):
           f"line client result payload is not the one-column scalar projection: {payload[:200]!r}")
     check(payload.endswith(b"one:int64:not_null"), "line client payload: the column meta is not last")
     check(re.search(rb"row\[0\]\x04\x24\x00{7}SBRES002", payload) is not None, "line client payload: row[0] is not an SBRES002 row")
+
+    # --- ROUTE B, one OPEN line-protocol session: after the login the data file is not touched by ANY statement, accepted or refused ---
+    held = {}
+    def untouched(index, reply):
+        if index == 0:
+            held["image"] = sha256(database)            # after AUTH: the approval and the first transaction are written
+        elif index in (1, 2, 3, 4, 5, 6):
+            check(sha256(database) == held["image"], f"route B: statement {index} changed the data file (reply {reply[-200:]!r})")
+    routeb_lines = [f"AUTH {USER} {PASSWORD}", "EXECUTE SELECT 1", "EXECUTE SELECT 2", "EXECUTE SELECT 1 + 0",
+                    "EXECUTE SELECT -1", "EXECUTE VALUES (1), (2)", "EXECUTE SELECT 1.5", "QUIT"]
+    routeb = line_client(port, routeb_lines,
+                         [[r"^OK AUTHENTICATED"]] + [[r"^RESULT \S+ \d+ \S+", r"^MESSAGE ERROR"]] * 6 + [[r"^OK BYE"]], after=untouched); logins += 1
+    results = [[l for l in t.splitlines() if l.startswith(("RESULT ", "MESSAGE ERROR"))] for t in routeb[2:8]]
+    check(all(r for r in results), f"route B line session: a statement gave neither RESULT nor MESSAGE ERROR: {routeb!r}")
+    check(results[0][0].startswith("RESULT query.execute 1 canonical_binary_payload_hex="), f"route B line SELECT 1: {results[0][0][:200]!r}")
+    payload_b = bytes.fromhex(results[0][0].split("canonical_binary_payload_hex=", 1)[1].strip())
+    check(payload_b.startswith(b"SBRES002") and b"scalar_projection_rows" in payload_b and payload_b.endswith(b"key_a:int64:not_null"),
+          f"route B line SELECT 1 payload is not the one-column row built by the parser: {payload_b[:120]!r}")
+    check(re.search(rb"row\[0\][\x00-\xff]{1,16}SBRES002", payload_b, re.S) is not None, f"route B line payload: row[0] is not an SBRES002 row: {payload_b[-120:]!r}")
+    check(results[1][0].startswith("RESULT query.execute 1 "), f"route B line SELECT 2: {results[1][0][:200]!r}")
+    for index, token in ((2, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"), (3, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+                         (4, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"), (5, "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1")):
+        check(any(token in line for line in results[index]), f"route B line statement {index + 1}: expected {token}, got {results[index]!r}")
 
     # --- shutdown, listener first, then the server ---
     listener_process = listener

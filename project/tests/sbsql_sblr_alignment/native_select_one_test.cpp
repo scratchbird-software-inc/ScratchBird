@@ -737,6 +737,10 @@ void SelectOneState() {
   {
     // the bare form is the NEXT slice (route B): the parser lowers it to query.execute with a refusal of its own (no engine binding context), and the
     // gate refuses a hand-framed query.execute envelope. Nothing is written.
+    // ROUTE B (2026-12-11), annotation only: the assertions below stay TRUE (no cohort: the lowering refuses; a hand-framed query.execute that is not the
+    // exact literal-VALUES template is refused at the gate with opcode_code 4615). What changed is the REAL route: with the engine cohort the production
+    // pipeline now produces the exact template and the gate ADMITS it (native_dispatch_is_exact_literal_values_query); native_wire_exchange.py carries the
+    // flipped pins (OLD: bare `SELECT 1` = SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED; NEW: the table with the parser's default column name and the value).
     const auto side = MakeParserSide(*s1);
     const auto bare = Lower(side, "SELECT 1");
     Check(bare.operation_id == "query.execute" && bare.messages.has_errors(), "bare SELECT 1 lowers to query.execute (typed VALUES DAG), refused without an engine binding cohort: route B, not this slice");

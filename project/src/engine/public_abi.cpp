@@ -4744,6 +4744,8 @@ std::string api_result_payload(const scratchbird::engine::internal_api::EngineAp
   return payload;
 }
 
+// SEARCH_KEY: SB_NATIVE_RESULT_VECTOR_ROUTE_B (2026-12-11): the same encoder now also answers query.execute for the one admitted object-free shape
+// (SB_NATIVE_QUERY_EXECUTE_LITERAL_VALUES at the dispatch gate): its operation_id field is the producing operation's token. Layout unchanged.
 // SEARCH_KEY: SB_NATIVE_RESULT_MESSAGE_VECTOR (S4g part 2; owner Q310: "the engine returns a message vector (int64 value plus descriptor UUIDs) and
 // the parser builds the row"). The result of a query.evaluate_projection on a NATIVE context. It reuses the SBRES002 framing (the decoder the parser
 // already has) but carries NO column name, NO rendered row and NO text: the engine never picks a language. Fields, in order:
@@ -4781,7 +4783,9 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
   }
   if (int64_identity == nullptr) return std::nullopt;
   std::vector<public_result::Field> fields;
-  fields.push_back({"operation_id", public_result::Kind::text, "query.evaluate_projection"});
+  // Route B (2026-12-11): the SAME vector serves the object-free literal VALUES relation (query.execute); operation_id names the operation that
+  // produced it, as a machine token (never a name): query.evaluate_projection (route A) or query.execute (route B).
+  fields.push_back({"operation_id", public_result::Kind::text, api_result.operation_id});
   fields.push_back({"result_kind", public_result::Kind::text, "native_scalar_projection_vector"});
   fields.push_back({"column_count", public_result::Kind::unsigned_integer, u64(columns)});
   fields.push_back({"row_count", public_result::Kind::unsigned_integer, u64(rows.size())});
@@ -22310,6 +22314,22 @@ static bool native_dispatch_member_opcodes(const std::vector<std::uint8_t>& byte
   return true;
 }
 
+// SEARCH_KEY: SB_NATIVE_QUERY_EXECUTE_LITERAL_VALUES (route B, 2026-12-11). The ONE query.execute shape a native dispatch admits: the exact
+// three-member stream [package begin, query.execute, package end] whose query.execute member is, operand for operand, the object-free
+// literal VALUES template the engine already recognizes (ValidatePreparedRelationalQueryV1, profile kLiteralValues): 18 operands, one typed
+// descriptor, one literal expression, one values row, root node 1 bound as values.literal-table.v1, no object, no property, no parameter.
+// It is not a row of the availability table: the opcode is not a row, the literal it evaluates asks engine.op.literal inside the executor
+// (the recorded row, already allow-listed). Anything else carrying 0x1207 (a FROM clause, a join, an aggregate, a function, a second
+// literal, any other operand count) fails this check and is refused at the gate with SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, writing nothing.
+static bool native_dispatch_is_exact_literal_values_query(const std::vector<std::uint8_t>& bytes, const std::vector<std::uint16_t>& codes) {
+  if (codes != std::vector<std::uint16_t>{1, 0x1207, 2}) return false;
+  const auto decoded = scratchbird::engine::sblr::DecodeSblrOpcodeStream(
+      std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+  if (!decoded.ok || decoded.stream.operations.size() != 3) return false;
+  return scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
+      decoded.stream.operations[1], scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kLiteralValues);
+}
+
 sb_engine_status_t DispatchStatementContextReceipt(
     const StatementContextDispatchRequest* request,
     sb_engine_result_t* out_result) {
@@ -22351,6 +22371,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                                           "native_executor_availability_s4g");
       for (const auto code : member_codes) {
         if (scratchbird::engine::internal_api::NativeExecutorOpcodeCodeAllowed(code)) continue;
+        if (code == 0x1207 && native_dispatch_is_exact_literal_values_query(request->canonical_operation_bytes, member_codes)) continue;
         // the table's own code and fields (opcode_code); the dispatch gate knows the opcode, not a row, so there is no row_identity_sha256
         return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED",
                            "sblr.executor.native_not_implemented", {}, {{"opcode_code", std::to_string(code)}});
@@ -33879,13 +33900,14 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       // S4g part 2 (owner Q310): a NATIVE context's query.evaluate_projection result is the message vector, not the legacy rendered rows
       // (those carry the parser-supplied column names). The vector replaces row_values / row_metadata / evidence and, below, the payload.
       if (receipt->engine_context.native_served_facts && dispatched.api_result.ok &&
-          dispatched.api_result.operation_id == "query.evaluate_projection") {
+          (dispatched.api_result.operation_id == "query.evaluate_projection" ||
+           dispatched.api_result.operation_id == "query.execute")) {
         native_result_vector = native_scalar_projection_vector(dispatched.api_result, receipt->engine_context);
         if (!native_result_vector) {
           delete result;
           auto refusal = scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
               "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT", "engine.native.result_vector_type_not_built", {}, true);
-          refusal.fields.push_back({"operation", "query.evaluate_projection"});
+          refusal.fields.push_back({"operation", dispatched.api_result.operation_id});
           refusal.fields.push_back({"requires", "native_result_vector_types"});
           return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT",
                              "engine.native.result_vector_type_not_built", {}, {}, nullptr, &refusal);

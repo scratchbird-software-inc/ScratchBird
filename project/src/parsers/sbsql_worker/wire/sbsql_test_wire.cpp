@@ -20825,6 +20825,24 @@ std::vector<std::string> LoweredProjectionNames(const SblrEnvelope& lowered) {
   return names;
 }
 
+// SEARCH_KEY: SB_NATIVE_RESULT_VECTOR_ROUTE_B (2026-12-11). The parser's OWN output names for the root relation of a typed relational query
+// (bare `SELECT 1`, the object-free literal VALUES relation), in ordinal order, from the binding context the parser itself built and sent
+// to the engine (the same names it lowered into the statement's output operands). A native engine result carries no names; the parser builds
+// them from here, never from the engine. Empty when the root has no complete visible name set (the conversion then refuses with the
+// specific name-missing code).
+std::vector<std::string> NativeRootOutputNames(const NativeRelationalBindingContext& context, std::uint32_t root_relation_id) {
+  std::vector<const NativeOutputBindingInput*> roots;
+  for (const auto& output : context.outputs)
+    if (output.relation_id == root_relation_id && output.visible) roots.push_back(&output);
+  std::ranges::sort(roots, [](const auto* a, const auto* b) { return a->ordinal < b->ordinal; });
+  std::vector<std::string> names;
+  for (std::size_t i = 0; i < roots.size(); ++i) {
+    if (roots[i]->ordinal != i || roots[i]->output_name_utf8.empty()) return {};
+    names.push_back(roots[i]->output_name_utf8);
+  }
+  return names;
+}
+
 struct ExactAnonymousParameterProjectionRoute {
   std::string output_name;
 };
@@ -31315,7 +31333,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           cursor_requested &&
           !(native_statement_context.has_value() &&
             native_statement_context->preliminary_native_variant &&
-            lowered.operation_id == "query.evaluate_projection");
+            (lowered.operation_id == "query.evaluate_projection" ||
+             // Route B (2026-12-11): the object-free literal VALUES relation (bare `SELECT 1`) answers with the same one-row vector.
+             lowered.operation_id == "query.execute"));
       const auto executed = native_submission.has_value()
           ? (config_.embedded_engine_direct && embedded_client_ != nullptr
                  ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
@@ -31364,8 +31384,16 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         // SB_NATIVE_RESULT_VECTOR_PARSER (S4h part 1): a native database answers a scalar projection with a message vector (values and
         // descriptor UUIDs, no names). The parser builds the row: names from its own lowered aliases, the type from the descriptor UUIDs.
         // A legacy packet is not a native vector and passes through byte for byte.
-        if (lowered.operation_id == "query.evaluate_projection") {
-          auto native_row = ConvertNativeScalarProjectionVector(result.server_result_payload, LoweredProjectionNames(lowered));
+        // Route B (2026-12-11): the object-free literal VALUES relation (bare `SELECT 1`, query.execute) answers with the SAME vector; the
+        // names come from the parser's own binding context. A legacy engine's packet is not a native vector and passes through unchanged.
+        if (lowered.operation_id == "query.evaluate_projection" || lowered.operation_id == "query.execute") {
+          auto native_row = ConvertNativeScalarProjectionVector(
+              result.server_result_payload,
+              lowered.operation_id == "query.evaluate_projection"
+                  ? LoweredProjectionNames(lowered)
+                  : (native_binding_context.has_value()
+                         ? NativeRootOutputNames(*native_binding_context, ast.native_relational.root_relation_id)
+                         : std::vector<std::string>{}));
           if (native_row.status == NativeVectorConversionStatus::refused) {
             result.accepted = false;
             result.server_result_payload.clear();
