@@ -22,8 +22,10 @@ Steps and assertions:
      column carries the PARSER's default name `column1` (2026-12-12; OLD: `key_a`, a fixture-list name the parser's own binding gave the one
      column of a literal VALUES relation and that leaked into the user-visible result; NEW: the same rule as the unaliased scalar-projection
      route, column1, column2, ... by position; the engine sends no name) and the value; `-q -A -t` prints `1`. Refused shapes keep their machine tokens:
-     `SELECT 1 + 0 AS s` and bare `SELECT 1 + 0`, `SELECT -1`, `VALUES (1), (2)` and CREATE TABLE are
-     SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, `SELECT 'a' AS t` is ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT, `SELECT 1 FROM t` is
+     `SELECT 1 + 0 AS s` and bare `SELECT 1 + 0`, `SELECT -1` and CREATE TABLE are
+     SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (OLD, 2026-12-13: `VALUES (1), (2)` was in this list; WIDER LITERALS: a literal VALUES TABLE now runs: ONE vector of R rows by
+     C columns, the parser prints columns column1..columnC and the rows in the order written, no server cursor; the bound is 16 rows by 16 columns, no streaming exists,
+     above it ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED; BOOLEAN literals in a VALUES table run too (the vector carries one byte per boolean, the parser prints true / false; a bare `SELECT TRUE` is a scalar projection and still stops in the parser); more than 32 literals in one statement stops in the PARSER (the statement cohort's 32 numeric slots)), `SELECT 'a' AS t` is ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT, `SELECT 1 FROM t` is
      ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5 (the parser's own refusal), `SELECT 1.5` is QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1 (refused by the
      executor after the gate). Inside ONE open line-protocol session every statement, accepted or refused, leaves the data file byte-identical
      (route B check). A WRONG password gives the generic
@@ -421,13 +423,49 @@ def run(args, work):
     check(pair.returncode == 0 and re.search(r"^\|\s*1\s*\|\s*$", pair.stdout, re.M) and re.search(r"^\|\s*2\s*\|\s*$", pair.stdout, re.M)
           and "(2 rows)" in pair.stdout, f"SELECT 1; SELECT 2: rc={pair.returncode} {pair.stdout!r} {pair.stderr!r}")
 
+    # --- WIDER LITERALS (2026-12-13): literal VALUES TABLES. OLD: `VALUES (1), (2)` was SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (below). NEW: the engine answers with ONE
+    # vector of R rows by C columns; the parser builds the table (columns column1..columnC, rows in the order written; no server cursor over a native vector). ---
+    def column_values(output, index):
+        return [cells[index] for cells in (re.findall(r"\|\s*([^|\s]+)\s*", line) for line in output.splitlines() if re.match(r"^\|\s*-?\d", line))]
+    tbl = sbsql(args, work, port, "tbl-2x1", "VALUES (1), (2)"); logins += 1
+    check(tbl.returncode == 0 and re.search(r"^\|\s*column1\s*\|\s*$", tbl.stdout, re.M) and column_values(tbl.stdout, 0) == ["1", "2"]
+          and "(2 rows)" in tbl.stdout, f"VALUES (1), (2): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    tbl = sbsql(args, work, port, "tbl-order", "VALUES (3), (1), (2)"); logins += 1
+    check(tbl.returncode == 0 and column_values(tbl.stdout, 0) == ["3", "1", "2"] and "(3 rows)" in tbl.stdout,
+          f"VALUES (3), (1), (2) must print the rows in the order written, not sorted: rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    tbl = sbsql(args, work, port, "tbl-2x2", "VALUES (1, 2), (3, 4)"); logins += 1
+    check(tbl.returncode == 0 and re.search(r"^\|\s*column1\s*\|\s*column2\s*\|\s*$", tbl.stdout, re.M)
+          and column_values(tbl.stdout, 0) == ["1", "3"] and column_values(tbl.stdout, 1) == ["2", "4"] and "(2 rows)" in tbl.stdout,
+          f"VALUES (1, 2), (3, 4): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    tbl = sbsql(args, work, port, "tbl-quiet", "VALUES (3, 4), (1, 2)", extra=("-q", "-A", "-t")); logins += 1
+    check(tbl.returncode == 0 and [line.strip() for line in tbl.stdout.strip().splitlines()] == ["3|4", "1|2"],
+          f"VALUES (3, 4), (1, 2) with -q -A -t: {tbl.stdout!r} {tbl.stderr!r}")
+    sixteen = "VALUES " + ", ".join(f"({i})" for i in range(1, 17))
+    tbl = sbsql(args, work, port, "tbl-16", sixteen); logins += 1
+    check(tbl.returncode == 0 and column_values(tbl.stdout, 0) == [str(i) for i in range(1, 17)] and "(16 rows)" in tbl.stdout,
+          f"the 16-row bound itself runs: rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    # BOOLEAN literals in a VALUES table (2026-12-13; OLD: `VALUES (TRUE)` failed in the PARSER's binding context). The engine's vector carries ONE byte per boolean
+    # (the cohort's boolean identity); the PARSER renders the client text true / false.
+    def table_rows(output):
+        lines = [l for l in output.splitlines() if l.startswith("|")]
+        return [[c.strip() for c in l.strip().strip("|").split("|")] for l in lines[1:]]
+    tbl = sbsql(args, work, port, "tbl-bool", "VALUES (TRUE), (FALSE)"); logins += 1
+    check(tbl.returncode == 0 and re.search(r"^\|\s*column1\s*\|\s*$", tbl.stdout, re.M) and table_rows(tbl.stdout) == [["true"], ["false"]] and "(2 rows)" in tbl.stdout,
+          f"VALUES (TRUE), (FALSE): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    tbl = sbsql(args, work, port, "tbl-mixed-cols", "VALUES (1, TRUE), (2, FALSE)"); logins += 1
+    check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["1", "true"], ["2", "false"]] and "(2 rows)" in tbl.stdout,
+          f"VALUES (1, TRUE), (2, FALSE): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+
     # --- the refused shapes: machine tokens, a failed exit ---
     for label, sql, token in (("plus", "SELECT 1 + 0 AS s", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
                               ("text", "SELECT 'a' AS t", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
                               # ROUTE B (2026-12-11). OLD: ("bare", "SELECT 1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED") -- bare SELECT 1 now RUNS (above).
                               ("bare-plus", "SELECT 1 + 0", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
                               ("bare-neg", "SELECT -1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
-                              ("values2", "VALUES (1), (2)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+                              # WIDER LITERALS (2026-12-13). OLD: ("values2", "VALUES (1), (2)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"). NEW: it runs (above); the bound is pinned instead.
+                              ("values17", "VALUES " + ", ".join(f"({i})" for i in range(1, 18)), "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED"),
+                              ("values-17col", "VALUES (" + ", ".join(str(i) for i in range(1, 18)) + ")", "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED"),
+                              ("values33", "VALUES " + ", ".join(f"({i})" for i in range(1, 34)), "DATATYPE.DESCRIPTOR.INVALID"),
                               ("bare-text", "SELECT 'a'", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
                               ("bare-dec", "SELECT 1.5", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"),
                               ("bare-from", "SELECT 1 FROM t", "ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5"),
@@ -484,7 +522,7 @@ def run(args, work):
         elif index in (1, 2, 3, 4, 5, 6):
             check(sha256(database) == held["image"], f"route B: statement {index} changed the data file (reply {reply[-200:]!r})")
     routeb_lines = [f"AUTH {USER} {PASSWORD}", "EXECUTE SELECT 1", "EXECUTE SELECT 2", "EXECUTE SELECT 1 + 0",
-                    "EXECUTE SELECT -1", "EXECUTE VALUES (1), (2)", "EXECUTE SELECT 1.5", "QUIT"]
+                    "EXECUTE SELECT -1", "EXECUTE VALUES (1), (2)", "EXECUTE SELECT 1.5", "QUIT"]  # WIDER LITERALS: statement 5 (VALUES (1), (2)) now RUNS
     routeb = line_client(port, routeb_lines,
                          [[r"^OK AUTHENTICATED"]] + [[r"^RESULT \S+ \d+ \S+", r"^MESSAGE ERROR"]] * 6 + [[r"^OK BYE"]], after=untouched); logins += 1
     results = [[l for l in t.splitlines() if l.startswith(("RESULT ", "MESSAGE ERROR"))] for t in routeb[2:8]]
@@ -495,8 +533,13 @@ def run(args, work):
           f"route B line SELECT 1 payload is not the one-column row built by the parser: {payload_b[:120]!r}")
     check(re.search(rb"row\[0\][\x00-\xff]{1,16}SBRES002", payload_b, re.S) is not None, f"route B line payload: row[0] is not an SBRES002 row: {payload_b[-120:]!r}")
     check(results[1][0].startswith("RESULT query.execute 1 "), f"route B line SELECT 2: {results[1][0][:200]!r}")
+    # OLD: statement 5 `VALUES (1), (2)` was SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED. NEW (2026-12-13): it answers RESULT query.execute with a two-row payload.
+    check(results[4][0].startswith("RESULT query.execute "), f"route B line statement 5 (VALUES (1), (2)): {results[4]!r}")
+    payload_t = bytes.fromhex(results[4][0].split("canonical_binary_payload_hex=", 1)[1].strip())
+    check(payload_t.startswith(b"SBRES002") and b"scalar_projection_rows" in payload_t and payload_t.endswith(b"column1:int64:not_null")
+          and len(re.findall(rb"row\[\d\]", payload_t)) == 2, f"route B line VALUES (1), (2) payload is not the two-row table built by the parser: {payload_t[:160]!r}")
     for index, token in ((2, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"), (3, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
-                         (4, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"), (5, "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1")):
+                         (5, "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1")):
         check(any(token in line for line in results[index]), f"route B line statement {index + 1}: expected {token}, got {results[index]!r}")
 
     # --- shutdown, listener first, then the server ---

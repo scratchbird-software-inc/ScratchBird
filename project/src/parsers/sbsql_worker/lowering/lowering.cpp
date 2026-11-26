@@ -38462,7 +38462,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           native_descriptors_by_id.find(output_descriptor_id);
       return expression.expression_kind ==
                  NativeExpressionAstKind::kLiteral &&
-             expression.literal_kind == NativeLiteralAstKind::kNumeric &&
+             // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): a boolean literal of a later row has its own negotiated descriptor exactly as a
+             // numeric one does (same type uuid as its column, non-null, no width/precision/scale)
+             (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
+              expression.literal_kind == NativeLiteralAstKind::kBoolean) &&
              expression.structural_literal_occurrence_id != 0 &&
              expression.child_expression_ids.empty() &&
              !expression.bound_function_uuid.has_value() &&
@@ -48627,7 +48630,8 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     const auto expression_descriptor =
         descriptors.find(expression.descriptor_id);
     const auto output_descriptor = descriptors.find(output_descriptor_id);
-    return expression.kind == 1 && expression.literal_kind == 1 &&
+    // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): literal kind 1 is numeric, 6 is boolean (RelationalLiteralKind); this lambda only judges VALUES rows
+    return expression.kind == 1 && (expression.literal_kind == 1 || expression.literal_kind == 6) &&
            expression.literal_or_parameter_ref.has_value() &&
            !expression.literal_or_parameter_ref->empty() &&
            expression.child_ids.empty() &&

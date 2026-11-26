@@ -3161,13 +3161,17 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   std::unordered_set<std::uint32_t> assigned_values_row_ids;
   const auto exact_values_literal_descriptor =
       [&](const RelationalExpressionRecord& expression,
-          const std::uint32_t output_descriptor_id) {
+          const std::uint32_t output_descriptor_id,
+          const bool allow_boolean = false) {
     const auto expression_descriptor =
         descriptors_by_id.find(expression.result_descriptor_id);
     const auto output_descriptor =
         descriptors_by_id.find(output_descriptor_id);
+    // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): a VALUES row's boolean literal carries its own descriptor like a numeric one; only the VALUES
+    // row check below asks for it (allow_boolean), the MATCH_RECOGNIZE bound parse keeps numeric only
     return expression.expression_kind == RelationalExpressionKind::kLiteral &&
-           expression.literal_kind == RelationalLiteralKind::kNumeric &&
+           (expression.literal_kind == RelationalLiteralKind::kNumeric ||
+            (allow_boolean && expression.literal_kind == RelationalLiteralKind::kBoolean)) &&
            expression.child_expression_ids.empty() &&
            !expression.function_uuid.has_value() &&
            !expression.bound_name_uuid.has_value() &&
@@ -3342,7 +3346,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         if (expression->result_descriptor_id !=
                 node.output_descriptor_ids[ordinal] &&
             !exact_values_literal_descriptor(
-                *expression, node.output_descriptor_ids[ordinal])) {
+                *expression, node.output_descriptor_ids[ordinal], true)) {
           return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                         "values_row_descriptor_ids");
         }

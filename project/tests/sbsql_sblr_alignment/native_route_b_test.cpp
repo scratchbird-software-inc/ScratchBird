@@ -144,6 +144,131 @@ void CheckAccepted(const Ran& ran, const std::string& sql, std::int64_t value, c
         "'" + sql + "': the engine's vector carries no column name");
 }
 
+// SB_NATIVE_LITERAL_VALUES_TABLE (2026-12-13, wider literals): a literal VALUES TABLE (R rows by C columns of int64) answers with ONE vector in one message
+// (row_count R, column_count C, row-major values, the cohort int64 identity per column, no name) and the parser builds the table: columns column1..columnC,
+// rows in the order written. `expected` is row-major by row.
+void CheckAcceptedTable(const Ran& ran, const std::string& sql, const std::vector<std::vector<std::int64_t>>& expected, const CohortInt64& cohort) {
+  const auto& r = ran.result;
+  const std::string label = "'" + sql.substr(0, 60) + (sql.size() > 60 ? "..." : "") + "'";
+  Check(r.accepted && !r.messages.has_errors(), label + " is accepted through the real pipeline: " + AllCodes(r));
+  Check(r.server_operation_id == "query.execute", label + ": the engine operation is query.execute: " + r.server_operation_id);
+  const std::size_t rows = expected.size(), columns = expected.front().size();
+  std::vector<std::uint32_t> oids;
+  std::vector<std::vector<std::optional<std::string>>> got;
+  Check(ps2::DecodePublicResultRowsForTest(r.server_result_payload, &oids, &got), label + ": the parser's client rows decode");
+  Check(oids.size() == columns && got.size() == rows, label + ": the parser-built table is " + std::to_string(rows) + " rows by " + std::to_string(columns) + " columns");
+  for (std::size_t row = 0; row < rows && row < got.size(); ++row)
+    for (std::size_t column = 0; column < columns && column < got[row].size(); ++column)
+      Check(got[row][column] && *got[row][column] == std::to_string(expected[row][column]),
+            label + ": parser row " + std::to_string(row) + " column " + std::to_string(column) + " is " + std::to_string(expected[row][column]) + " (row order as written)");
+  std::string meta;
+  for (std::size_t column = 0; column < columns; ++column) meta += (column ? ";" : "") + std::string("column") + std::to_string(column + 1) + ":int64:not_null";
+  Check(r.server_result_payload.ends_with(meta), label + ": the parser names the columns column1..column" + std::to_string(columns) + " by position");
+  Check(r.server_result_payload.find("key_a") == std::string::npos, label + ": the fixture name key_a does not reach the client");
+  const auto vector = DecodeVector(ran.raw_vector);
+  std::vector<std::int64_t> flat;
+  for (const auto& row : expected) flat.insert(flat.end(), row.begin(), row.end());
+  Check(vector.ok && vector.operation_id == "query.execute" && vector.result_kind == "native_scalar_projection_vector" && vector.column_count == columns &&
+            vector.row_count == rows && vector.values == flat,
+        label + ": the engine's ONE vector has row_count " + std::to_string(rows) + ", column_count " + std::to_string(columns) + " and the values row-major in the order written");
+  if (vector.ok) {
+    for (std::size_t column = 0; column < columns; ++column)
+      Check(vector.column_datatype[column] == cohort.type_uuid && vector.column_datatype_descriptor[column] == cohort.descriptor_uuid &&
+                vector.column_datatype_generation[column] == cohort.generation,
+            label + ": column " + std::to_string(column) + "'s datatype and descriptor UUIDs and generation equal the cohort's int64 identity");
+  }
+  Check(ran.raw_vector.find("column1") == std::string::npos && ran.raw_vector.find("key_a") == std::string::npos, label + ": the engine's vector carries no column name");
+}
+// The VALUES text of R rows by C columns counting 1, 2, 3, ... row-major, and its expected rows.
+std::string ValuesText(std::size_t rows, std::size_t columns) {
+  std::string out = "VALUES ";
+  for (std::size_t row = 0; row < rows; ++row) {
+    out += row ? ", (" : "(";
+    for (std::size_t column = 0; column < columns; ++column) out += (column ? ", " : "") + std::to_string(row * columns + column + 1);
+    out += ")";
+  }
+  return out;
+}
+std::vector<std::vector<std::int64_t>> ValuesRows(std::size_t rows, std::size_t columns) {
+  std::vector<std::vector<std::int64_t>> out(rows);
+  for (std::size_t row = 0; row < rows; ++row)
+    for (std::size_t column = 0; column < columns; ++column) out[row].push_back(static_cast<std::int64_t>(row * columns + column + 1));
+  return out;
+}
+
+// SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): the cohort's BOOLEAN identity (datatype.boolean.u8.v1), read from the compiled registry independently of the
+// engine's encoder, exactly as CohortInt64Of reads the int64 one.
+CohortInt64 CohortBooleanOf(const api::EngineRequestContext& context) {
+  CohortInt64 out;
+  int found = 0;
+  for (const auto& row3 : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = row3.legacy_fields;
+    if (row.codec_id == "datatype.boolean.u8.v1" && row.canonical_name == "boolean" && row.catalog_snapshot_uuid == context.datatype_catalog_snapshot_uuid &&
+        row.catalog_generation == context.datatype_catalog_generation && row.registry_generation == context.datatype_registry_generation) {
+      out = {row.type_uuid, row.descriptor_uuid, row.descriptor_generation};
+      ++found;
+    }
+  }
+  Check(found == 1, "exactly one boolean identity in the receipt's datatype cohort (" + std::to_string(found) + ")");
+  return out;
+}
+// A table whose columns are int64 or boolean ('i' / 'b' per column); `expected` holds the int64 value or 0/1 for a boolean. The engine's ONE vector carries
+// each column's own cohort identity and, for a boolean, ONE byte 0 or 1 (bytes kind, never text); the parser renders `true` / `false` and names the column
+// `<name>:boolean:not_null`.
+void CheckAcceptedMixedTable(const Ran& ran, const std::string& sql, const std::string& kinds, const std::vector<std::vector<std::int64_t>>& expected,
+                             const CohortInt64& int64_cohort, const CohortInt64& boolean_cohort) {
+  namespace pr = scratchbird::wire::public_result;
+  const auto& r = ran.result;
+  const std::string label = "'" + sql.substr(0, 60) + "'";
+  Check(r.accepted && !r.messages.has_errors(), label + " is accepted through the real pipeline: " + AllCodes(r));
+  const std::size_t rows = expected.size(), columns = kinds.size();
+  std::vector<std::uint32_t> oids;
+  std::vector<std::vector<std::optional<std::string>>> got;
+  Check(ps2::DecodePublicResultRowsForTest(r.server_result_payload, &oids, &got) && got.size() == rows && oids.size() == columns, label + ": the parser-built table has " + std::to_string(rows) + " rows and " + std::to_string(columns) + " columns");
+  for (std::size_t row = 0; row < rows && row < got.size(); ++row)
+    for (std::size_t column = 0; column < columns && column < got[row].size(); ++column) {
+      const std::string want = kinds[column] == 'b' ? (expected[row][column] ? "true" : "false") : std::to_string(expected[row][column]);
+      Check(got[row][column] && *got[row][column] == want, label + ": parser row " + std::to_string(row) + " column " + std::to_string(column) + " is " + want + " (order as written)");
+    }
+  std::string meta;
+  for (std::size_t column = 0; column < columns; ++column) meta += (column ? ";" : "") + std::string("column") + std::to_string(column + 1) + (kinds[column] == 'b' ? ":boolean:not_null" : ":int64:not_null");
+  Check(r.server_result_payload.ends_with(meta), label + ": the parser's row metadata is " + meta);
+  std::vector<pr::Field> fields;
+  Check(pr::Decode(ran.raw_vector, &fields), label + ": the engine's vector decodes");
+  const auto find = [&](const std::string& name) -> const pr::Field* {
+    const pr::Field* found = nullptr;
+    for (const auto& f : fields) if (f.name == name) { if (found) return nullptr; found = &f; }
+    return found;
+  };
+  Check(fields.size() == 4 + 4 * columns + columns * rows, label + ": the vector holds exactly the header, four fields per column and one value per cell (no name, no text)");
+  const auto* kind_field = find("result_kind");
+  const auto* rows_field = find("row_count");
+  const auto* columns_field = find("column_count");
+  Check(kind_field && kind_field->value == "native_scalar_projection_vector" && rows_field && LE64(rows_field->value) == rows && columns_field && LE64(columns_field->value) == columns,
+        label + ": vector result_kind, row_count " + std::to_string(rows) + ", column_count " + std::to_string(columns));
+  for (std::size_t column = 0; column < columns; ++column) {
+    const auto& cohort = kinds[column] == 'b' ? boolean_cohort : int64_cohort;
+    const auto n = std::to_string(column);
+    const auto* t = find("column_datatype[" + n + "]");
+    const auto* td = find("column_datatype_descriptor[" + n + "]");
+    const auto* g = find("column_datatype_generation[" + n + "]");
+    Check(t && td && g && UuidOf(t->value) == cohort.type_uuid && UuidOf(td->value) == cohort.descriptor_uuid && LE64(g->value) == cohort.generation,
+          label + ": column " + n + " carries the cohort's " + (kinds[column] == 'b' ? "BOOLEAN" : "int64") + " identity (type, descriptor, generation)");
+  }
+  for (std::size_t row = 0; row < rows; ++row)
+    for (std::size_t column = 0; column < columns; ++column) {
+      const auto* v = find("value[" + std::to_string(row) + "." + std::to_string(column) + "]");
+      if (kinds[column] == 'b')
+        Check(v && v->kind == pr::Kind::bytes && v->value.size() == 1 && static_cast<std::int64_t>(static_cast<unsigned char>(v->value[0])) == expected[row][column],
+              label + ": value[" + std::to_string(row) + "." + std::to_string(column) + "] is ONE byte " + std::to_string(expected[row][column]) + " (a boolean, never text)");
+      else
+        Check(v && v->kind == pr::Kind::signed_integer && v->value.size() == 8 && static_cast<std::int64_t>(LE64(v->value)) == expected[row][column],
+              label + ": value[" + std::to_string(row) + "." + std::to_string(column) + "] is the int64 " + std::to_string(expected[row][column]));
+    }
+  Check(ran.raw_vector.find("true") == std::string::npos && ran.raw_vector.find("false") == std::string::npos && ran.raw_vector.find("column1") == std::string::npos,
+        label + ": the engine's vector carries no rendered boolean and no column name");
+}
+
 struct Refusal2 {
   const char* sql;
   const char* code;          // the parser-visible diagnostic code (the table's own code)
@@ -212,6 +337,88 @@ void RouteBState() {
     }
   }
 
+  // ---- (a2) WIDER LITERALS (2026-12-13): literal VALUES TABLES, one vector in one message, each around byte-identity, directory and Next ------------------
+  // OLD: `VALUES (1),(2)` was refused at the dispatch gate with SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (the native result was one row of one int64). NEW: it
+  // answers with row_count 2. The bound is 16 rows by 16 columns (no streaming exists); above it, the distinct token below.
+  {
+    struct Table { std::string sql; std::vector<std::vector<std::int64_t>> rows; };
+    const std::vector<Table> tables = {
+        {"VALUES (1),(2)", {{1}, {2}}},
+        {"VALUES (1, 2), (3, 4)", {{1, 2}, {3, 4}}},
+        {"VALUES (3), (1), (2)", {{3}, {1}, {2}}},                       // the order written, not sorted
+        {"VALUES (9223372036854775807), (2)", {{INT64_MAX}, {2}}},
+        {"VALUES (1, 2, 3)", {{1, 2, 3}}},                               // one row, several columns
+        {ValuesText(16, 1), ValuesRows(16, 1)},                          // the row bound itself
+        {ValuesText(1, 16), ValuesRows(1, 16)},                          // the column bound itself
+        {ValuesText(2, 16), ValuesRows(2, 16)},                          // 32 literals: the statement cohort's whole numeric slot count
+    };
+    // EVIDENCE PER GROUP (cost: every FileEvidence and `active` reads and parses the whole file, which at 128K pages made the per-statement form take 180 s
+    // for this target): ONE evidence before the whole group and one check after it. A write by ANY statement of the group would change the image, the
+    // directory or Next and fail the group check, so the group proves each statement wrote nothing; the transaction's registry ownership and order are
+    // still checked after EVERY statement (cheap), its TIP state (active) once after the group.
+    const FileEvidence group_before;
+    for (std::size_t index = 0; index < tables.size(); ++index) {
+      const auto& table = tables[index];
+      // two rounds (recorder log-only, then no recorder) for the first three shapes; the other shapes run once, recorder log-only (the production table still decides)
+      for (int round = 0; round < (index < 3 ? 2 : 1); ++round) {
+        const auto ran = RunSql(one, table.sql, round == 0 ? 2 : 0);
+        CheckAcceptedTable(ran, table.sql, table.rows, cohort);
+        Check(owner_of(one) && one.order() == order1, "(e) the transaction is still owned after the table '" + table.sql.substr(0, 40) + "'");
+        if (round == 0) {
+          std::string asked;
+          for (const auto& r : ran.recorded) asked += RowKey(r.row) + (r.in_allow_list ? "(listed) " : "(NOT listed) ");
+          Check(asked == "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ",
+                "(a2) the table '" + table.sql.substr(0, 40) + "' asks exactly [name_resolve (bind), literal (finalize), literal (execution)], all listed: " + asked);
+        }
+      }
+    }
+    CheckUntouched(group_before, "the (a2) literal VALUES tables, every one, with and without the recorder");
+    Check(active(order1), "(e) the transaction is still active after the (a2) tables");
+  }
+
+  // ---- (a3) BOOLEAN literals in a VALUES table (2026-12-13; OLD: `VALUES (TRUE)` failed in the PARSER's binding context with
+  // numeric_literal_profile_bijection_invalid): the negotiated boolean profile is the literal's descriptor; the engine's vector names the boolean cohort row
+  // and carries ONE byte; the parser renders true / false. `SELECT TRUE` is NOT a VALUES relation (a scalar projection) and still stops in the parser.
+  {
+    const auto boolean_cohort = CohortBooleanOf(CopyContext(direct_receipt));
+    struct Mixed { std::string sql; std::string kinds; std::vector<std::vector<std::int64_t>> rows; };
+    const std::vector<Mixed> mixed = {
+        {"VALUES (TRUE)", "b", {{1}}},
+        {"VALUES (FALSE)", "b", {{0}}},
+        {"VALUES (TRUE), (FALSE)", "b", {{1}, {0}}},
+        {"VALUES (FALSE), (TRUE), (FALSE)", "b", {{0}, {1}, {0}}},
+        {"VALUES (1, TRUE), (2, FALSE)", "ib", {{1, 1}, {2, 0}}},
+        {"VALUES (TRUE, 7), (FALSE, 9223372036854775807)", "bi", {{1, 7}, {0, INT64_MAX}}},
+    };
+    const FileEvidence group_before;  // evidence per group, see (a2)
+    for (std::size_t index = 0; index < mixed.size(); ++index) {
+      const auto& table = mixed[index];
+      for (int round = 0; round < (index < 3 ? 2 : 1); ++round) {  // two rounds for the first three shapes, the rest once (recorder log-only)
+        const auto ran = RunSql(one, table.sql, round == 0 ? 2 : 0);
+        CheckAcceptedMixedTable(ran, table.sql, table.kinds, table.rows, cohort, boolean_cohort);
+        Check(owner_of(one) && one.order() == order1, "(e) the transaction is still owned after '" + table.sql + "'");
+        if (round == 0) {
+          std::string asked;
+          for (const auto& r : ran.recorded) asked += RowKey(r.row) + (r.in_allow_list ? "(listed) " : "(NOT listed) ");
+          Check(asked == "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ",
+                "(a3) '" + table.sql + "' asks exactly [name_resolve (bind), literal (finalize), literal (execution)], all listed: " + asked);
+        }
+      }
+    }
+    // a column that mixes a boolean with an integer is not one type: the executor refuses it (no coercion is invented), nothing is written
+    for (const std::string sql : {"VALUES (1), (TRUE)", "VALUES (TRUE), (1)"}) {
+      const auto ran = RunSql(one, sql, 2);
+      bool code_present = false;
+      for (const auto& d : ran.result.messages.diagnostics) if (d.code == "SBLR.PLAN_TREE.INVALID_HANDLE") code_present = true;
+      std::string asked;
+      for (const auto& r : ran.recorded) asked += RowKey(r.row) + (r.in_allow_list ? "(listed) " : "(NOT listed) ");
+      Check(!ran.result.accepted && code_present && asked == "engine.op.name_resolve#4865(listed) " && ran.server_diagnostics.empty(),
+            "(a3) '" + sql + "' (a column mixing boolean and integer) is refused by the PARSER's lowering with SBLR.PLAN_TREE.INVALID_HANDLE, the engine never asked to finalize: " + AllCodes(ran.result) + " " + asked);
+    }
+    CheckUntouched(group_before, "the (a3) boolean tables and the mixed-column refusals");
+    Check(active(order1), "(e) the transaction is still active after the (a3) boolean tables");
+  }
+
   // ---- (b) the RECORDER log for SELECT 1: the Q302 evidence -------------------------------------------------------------------------------------
   {
     const auto ran = run(one, "SELECT 1", 1);
@@ -243,6 +450,7 @@ void RouteBState() {
   }
 
   // ---- (d) refused shapes: exactly their code and opcode field, and NOTHING written -------------------------------------------------------------
+  const std::string kSeventeenRows = ValuesText(17, 1), kSeventeenColumns = ValuesText(1, 17), kThirtyThree = ValuesText(33, 1);
   const std::vector<Refusal2> refused = {
       {"SELECT 1 + 0", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "INVALID_ARGUMENT", "engine.op.name_resolve#4865(listed) engine.op.operator_call#1025(NOT listed) ",
        "an operator expression: the executor is refused on the operator-call row (opcode_code 1025)"},
@@ -252,8 +460,14 @@ void RouteBState() {
        "a text literal (the table cannot tell it from 1; the vector builder refuses: no text reaches a native client)"},
       {"SELECT 1 FROM t", "ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5", "", "",
        "a table reference (the parser's own refusal: the engine is never asked)"},
-      {"VALUES (1),(2)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "UNSUPPORTED", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) ",
-       "a multi-row VALUES: refused at the dispatch gate (no execution-time row was asked)"},
+      // OLD (2026-12-11): {"VALUES (1),(2)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "UNSUPPORTED", ..., "a multi-row VALUES: refused at the dispatch gate"}.
+      // NEW (2026-12-13, wider literals): a multi-row VALUES runs (see (a2)); the bound is pinned instead (the gate refuses, no execution-time row asked).
+      {kSeventeenRows.c_str(), "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED", "UNSUPPORTED", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) ",
+       "17 rows: one over the 16-row bound of a native result (no streaming): refused at the dispatch gate with its own token"},
+      {kSeventeenColumns.c_str(), "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED", "UNSUPPORTED", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) ",
+       "17 columns: one over the 16-column bound: refused at the dispatch gate with the same token"},
+      {kThirtyThree.c_str(), "DATATYPE.DESCRIPTOR.INVALID", "", "engine.op.name_resolve#4865(listed) ",
+       "33 literals: the statement descriptor cohort carries 32 numeric literal slots, so the PARSER refuses before the engine is asked to finalize (an undifferentiated parser code today; owner question)"},
       {"CREATE TABLE t (a INT)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "UNSUPPORTED", "engine.op.name_resolve#4865(listed) ",
        "DDL: refused at the dispatch gate (only the bind row was asked)"},
   };
@@ -283,6 +497,51 @@ void RouteBState() {
       }
       Check(active(order1) && owner_of(one) && one.order() == order1, std::string("(e) the transaction is still active and owned after the refused '") + shape.sql + "'");
     }
+  }
+  // WIDER LITERALS (2026-12-13), the literals that STILL stop, pinned at the layer where each stops today (parser code, the rows the production
+  // table was asked, nothing written). Each is a numbered owner question in the report; none is built.
+  {
+    struct Pinned { const char* sql; const char* code; const char* asked; const char* what; };
+    const std::vector<Pinned> pinned = {
+        {"SELECT -1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "engine.op.name_resolve#4865(listed) engine.op.operator_call#1025(NOT listed) ",
+         "a negative literal: SBsql lowers `-1` as the unary-minus OPERATOR over the literal 1 (no folding rule exists), a scalar projection that asks the operator-call row"},
+        {"SELECT -9223372036854775808", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "engine.op.name_resolve#4865(listed) engine.op.operator_call#1025(NOT listed) ",
+         "the int64 minimum: the same unary-minus operator over a literal that does not itself fit"},
+        {"SELECT 1.5", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ",
+         "a decimal literal: passes the gate (the exact template) and stops in the executor's descriptor batch validation (DECIMAL column profile)"},
+        {"SELECT 0.1", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ",
+         "a decimal literal below one: the same executor refusal"},
+        {"SELECT TRUE", "DATATYPE.DESCRIPTOR.INVALID", "engine.op.name_resolve#4865(listed) ",
+         "a boolean literal as a bare SELECT: a scalar projection (not a VALUES relation); the PARSER's literal finalization stops it (bound literal occurrence inventory changed: the scalar-projection stopgap excludes boolean on purpose); the engine is never asked to finalize"},
+        {"SELECT 9223372036854775808", "DATATYPE.DESCRIPTOR.INVALID", "engine.op.name_resolve#4865(listed) ",
+         "an int64-overflow literal: the PARSER cannot encode it under the int64 profile it was negotiated (SBXN proof); the engine is never asked to finalize"},
+        {"VALUES (-1)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) ",
+         "a negative literal in VALUES: the unary-minus expression is not the literal template, refused at the dispatch gate (a literal was finalized, no execution row asked)"},
+        {"VALUES ('a')", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "engine.op.name_resolve#4865(listed) ",
+         "a text literal in VALUES: no numeric or boolean literal profile exists for it, refused at the dispatch gate (the bare `SELECT 'a'` is a scalar projection with its own token, above)"},
+        {"VALUES (NULL)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "engine.op.name_resolve#4865(listed) ",
+         "a NULL in VALUES: not the literal template, refused at the dispatch gate"},
+        {"VALUES (9223372036854775808)", "DATATYPE.DESCRIPTOR.INVALID", "engine.op.name_resolve#4865(listed) ",
+         "an int64-overflow literal in VALUES: the same PARSER stop as the bare SELECT form"},
+        {"VALUES (1.5)", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ",
+         "a decimal literal in VALUES: the same executor stop as the bare SELECT form"},
+        {"SELECT NULL", "DATATYPE.CONTEXT_REQUIRED", "",
+         "a bare NULL: the PARSER needs one concrete datatype context before SBLR; the engine is never asked anything"},
+    };
+    const FileEvidence group_before;  // evidence per group, see (a2)
+    for (const auto& shape : pinned) {
+      const auto ran = RunSql(one, shape.sql, 2);
+      Check(!ran.result.accepted, std::string("(d2) '") + shape.sql + "' (" + shape.what + ") is refused: " + AllCodes(ran.result));
+      bool code_present = false;
+      for (const auto& d : ran.result.messages.diagnostics) if (d.code == shape.code) code_present = true;
+      Check(code_present, std::string("(d2) '") + shape.sql + "' is refused with " + shape.code + ": " + AllCodes(ran.result));
+      std::string asked;
+      for (const auto& r : ran.recorded) asked += RowKey(r.row) + (r.in_allow_list ? "(listed) " : "(NOT listed) ");
+      Check(asked == shape.asked, std::string("(d2) '") + shape.sql + "': the production table was asked exactly [" + shape.asked + "], got [" + asked + "]");
+      Check(owner_of(one) && one.order() == order1, std::string("(e) the transaction is still owned after the pinned refusal '") + shape.sql + "'");
+    }
+    CheckUntouched(group_before, "the (d2) pinned refusals, every one");
+    Check(active(order1), "(e) the transaction is still active after the (d2) pinned refusals");
   }
   // two statements as one envelope: the gate refuses a package of other than the exact three records (a hand-framed [begin, query.execute x2, end])
   {
@@ -385,7 +644,8 @@ void RouteBTraceState() {
   const std::vector<Traced> traced = {
       {"SELECT 1", true, 1, ""}, {"select 1", true, 1, ""}, {"SELECT 1;", true, 1, ""}, {"SELECT 2", true, 2, ""}, {"VALUES (1)", true, 1, ""},
       {"SELECT 1 + 0", false, 0, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"}, {"SELECT 'a'", false, 0, "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"},
-      {"VALUES (1),(2)", false, 0, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"}, {"SELECT 1", true, 1, ""}};
+      // OLD (2026-12-11): {"VALUES (1),(2)", false, 0, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"}. NEW (2026-12-13): it runs (the table below); the bound is traced instead.
+      {"VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(14),(15),(16),(17)", false, 0, "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED"}, {"SELECT 1", true, 1, ""}};
   for (const auto& statement : traced) {
     const auto ran = RunSql(*one, statement.sql, 0);
     bool code_present = false;
@@ -399,6 +659,16 @@ void RouteBTraceState() {
     } else {
       Check(!ran.result.accepted && code_present, std::string("(traced) '") + statement.sql + "' was refused with " + statement.code + ": " + AllCodes(ran.result));
     }
+  }
+  {
+    // wider literals (2026-12-13): a multi-row, multi-column table inside the traced region
+    const auto ran = RunSql(*one, "VALUES (3, 4), (1, 2), (5, 6)", 0);
+    std::vector<std::uint32_t> oids;
+    std::vector<std::vector<std::optional<std::string>>> rows;
+    Check(ran.result.accepted && ps2::DecodePublicResultRowsForTest(ran.result.server_result_payload, &oids, &rows) && rows.size() == 3 && oids.size() == 2 &&
+              rows[0][0] && *rows[0][0] == "3" && rows[0][1] && *rows[0][1] == "4" && rows[1][0] && *rows[1][0] == "1" && rows[2][1] && *rows[2][1] == "6" &&
+              ran.result.server_result_payload.ends_with("column1:int64:not_null;column2:int64:not_null"),
+          "(traced) a 3-row 2-column table ran and returned its rows in the order written: " + AllCodes(ran.result));
   }
   Mark("verify");
   Check(Image(served.path) == image_before, "the statements wrote nothing: the file's bytes are identical");

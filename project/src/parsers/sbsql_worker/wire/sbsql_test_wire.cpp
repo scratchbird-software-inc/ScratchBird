@@ -8823,10 +8823,15 @@ BuildEngineProjectedNativeBindingContext(
     return finish_context();
   }
 
+  // SEARCH_KEY: SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13, wider literals). The negotiated literal profiles cover every NUMERIC and every BOOLEAN
+  // (TRUE / FALSE) literal occurrence (EncodeLiteralPrebindRequest asks for both), in occurrence order. OLD: only numeric occurrences were counted,
+  // so `VALUES (TRUE)` failed here with numeric_literal_profile_bijection_invalid. NEW: both kinds are counted and a boolean literal takes its own
+  // negotiated boolean profile as its descriptor (below).
   std::vector<std::uint64_t> numeric_literal_occurrences;
   for (const auto& expression : ast.expressions) {
     if (expression.expression_kind == NativeExpressionAstKind::kLiteral &&
-        expression.literal_kind == NativeLiteralAstKind::kNumeric) {
+        (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
+         expression.literal_kind == NativeLiteralAstKind::kBoolean)) {
       if (expression.structural_literal_occurrence_id == 0) {
         return fail("numeric_literal_occurrence_missing");
       }
@@ -8893,7 +8898,8 @@ BuildEngineProjectedNativeBindingContext(
     const auto profile_index = numeric_profile_index_by_occurrence.find(
         expression.structural_literal_occurrence_id);
     if (expression.expression_kind != NativeExpressionAstKind::kLiteral ||
-        expression.literal_kind != NativeLiteralAstKind::kNumeric ||
+        (expression.literal_kind != NativeLiteralAstKind::kNumeric &&
+         expression.literal_kind != NativeLiteralAstKind::kBoolean) ||
         expression.structural_literal_occurrence_id == 0 ||
         profile_index == numeric_profile_index_by_occurrence.end()) {
       return std::nullopt;
@@ -8901,6 +8907,22 @@ BuildEngineProjectedNativeBindingContext(
     const auto& profile =
         statement_context.literal_statement_descriptor_profiles[
             profile_index->second];
+    if (expression.literal_kind == NativeLiteralAstKind::kBoolean) {
+      // SB_NATIVE_VALUES_BOOLEAN_LITERAL: the descriptor is the negotiated BOOLEAN profile's own (never a numeric one, never nullable).
+      if (profile.profile_version != 1 || profile.binding_descriptor_uuid.is_nil() || profile.type_uuid.is_nil() || profile.nullable ||
+          profile.descriptor_generation == 0 || profile.codec_id != "datatype.boolean.u8.v1" || profile.codec_version != 1 ||
+          profile.codec_generation == 0) {
+        return std::nullopt;
+      }
+      NativeDescriptorBindingInput boolean_descriptor;
+      boolean_descriptor.descriptor_id = static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      boolean_descriptor.descriptor_uuid = profile.binding_descriptor_uuid;
+      boolean_descriptor.type_uuid = profile.type_uuid;
+      boolean_descriptor.nullability = BoundNullability::kNonNull;
+      boolean_descriptor.canonical_type_name = "boolean";
+      context.descriptors.push_back(std::move(boolean_descriptor));
+      return context.descriptors.back().descriptor_id;
+    }
     const bool bigint_codec =
         profile.codec_id == scratchbird::engine::sblr::
                                 kSblrLiteralInt64LeCodecId;

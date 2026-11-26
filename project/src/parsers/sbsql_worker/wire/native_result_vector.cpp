@@ -63,6 +63,7 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
     if (name.empty()) return Refuse("SBSQL.NATIVE_RESULT.COLUMN_NAME_MISSING", "empty_name");
 
   // ---- the type of each column, from its descriptor UUIDs through the compiled cohort identity table ----
+  std::vector<bool> column_is_boolean;
   for (std::uint64_t c = 0; c < columns; ++c) {
     const auto base = 4 + 4 * c;
     const auto index = Index(static_cast<std::size_t>(c));
@@ -78,8 +79,10 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
     // The compiled table holds one row per (snapshot, generation) of the same identity; the vector names the identity (type, descriptor,
     // descriptor generation) and the receipt's snapshot already fixed which row the engine used. Every row that matches the identity must
     // be the int64 codec; an identity that matches rows of different codecs, or none, is refused (never a nearest match).
+    // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): two codecs are built, int64 and boolean (datatype.boolean.u8.v1); the column's kind is the codec of the
+    // identity rows it matches (every matching row must agree).
     bool matched = false;
-    bool all_int64 = true;
+    bool all_int64 = true, all_boolean = true;
     for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
       const auto& row = entry.legacy_fields;
       if (std::string_view(reinterpret_cast<const char*>(row.type_uuid.bytes.data()), 16) != datatype.value ||
@@ -88,9 +91,11 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
         continue;
       matched = true;
       all_int64 = all_int64 && row.codec_id == "datatype.int64.le.v1";
+      all_boolean = all_boolean && row.codec_id == "datatype.boolean.u8.v1";
     }
     if (!matched) return Refuse("SBSQL.NATIVE_RESULT.TYPE_NOT_BUILT", "unknown_type");
-    if (!all_int64) return Refuse("SBSQL.NATIVE_RESULT.TYPE_NOT_BUILT", "type_codec");
+    if (!all_int64 && !all_boolean) return Refuse("SBSQL.NATIVE_RESULT.TYPE_NOT_BUILT", "type_codec");
+    column_is_boolean.push_back(all_boolean);
   }
 
   // ---- the rows: value[r.c], row-major, each a signed 64-bit carrier ----
@@ -99,17 +104,25 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
   std::string metadata;
   for (std::uint64_t c = 0; c < columns; ++c) {
     if (c != 0) metadata += ';';
-    metadata += column_names[static_cast<std::size_t>(c)] + ":int64:not_null";
+    metadata += column_names[static_cast<std::size_t>(c)] + (column_is_boolean[static_cast<std::size_t>(c)] ? ":boolean:not_null" : ":int64:not_null");
   }
   const auto values_base = 4 + 4 * columns;
   for (std::uint64_t r = 0; r < rows; ++r) {
     std::vector<pr::Field> row_fields;
     for (std::uint64_t c = 0; c < columns; ++c) {
       const auto& value = fields[values_base + r * columns + c];
+      const bool boolean_column = column_is_boolean[static_cast<std::size_t>(c)];
+      // an int64 value is a signed 64-bit carrier; a boolean value is ONE byte, 0 or 1 (the engine's vector carrier, Kind::bytes)
       if (value.name != "value[" + Index(static_cast<std::size_t>(r)) + "." + Index(static_cast<std::size_t>(c)) + "]" ||
-          value.kind != pr::Kind::signed_integer || value.value.size() != 8)
+          (boolean_column ? (value.kind != pr::Kind::bytes || value.value.size() != 1 || static_cast<unsigned char>(value.value[0]) > 1)
+                          : (value.kind != pr::Kind::signed_integer || value.value.size() != 8)))
         return Refuse("SBSQL.NATIVE_RESULT.VALUE_INVALID", "value_" + Index(static_cast<std::size_t>(r)) + "_" + Index(static_cast<std::size_t>(c)));
-      row_fields.push_back({column_names[static_cast<std::size_t>(c)], pr::Kind::signed_integer, value.value});
+      // The parser renders the value for the client: an int64 stays a signed 64-bit carrier; a boolean becomes the text `true` / `false` (the forms the
+      // client's own typing recognizes as a boolean column; a display choice, the parser's business: the engine sent one byte 0 or 1).
+      if (boolean_column)
+        row_fields.push_back({column_names[static_cast<std::size_t>(c)], pr::Kind::text, value.value[0] == '\0' ? "false" : "true"});
+      else
+        row_fields.push_back({column_names[static_cast<std::size_t>(c)], pr::Kind::signed_integer, value.value});
     }
     std::string record;
     if (!pr::Encode(row_fields, &record)) return Refuse("SBSQL.NATIVE_RESULT.VECTOR_INVALID", "row_encode");

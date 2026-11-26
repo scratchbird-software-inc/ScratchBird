@@ -4758,7 +4758,8 @@ std::string api_result_payload(const scratchbird::engine::internal_api::EngineAp
 //                  column_datatype_descriptor[c] uuid  the cohort's datatype descriptor identity
 //                  column_datatype_generation[c] unsigned  u64 LE8, the cohort descriptor generation
 //   per row r, column c:  value[r.c]         signed_integer  int64 LE8 (the native carrier)
-// Only a non-null int64 is built in this slice; any other value is refused with ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT (before a byte of the
+// Only a non-null int64 (value[r.c] signed_integer) and, since 2026-12-13, a non-null BOOLEAN (value[r.c] bytes, one byte 0 or 1; the column's datatype
+// UUIDs name the boolean cohort row) are built; any other value is refused with ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT (before a byte of the
 // result exists), so no text carrier can reach a native client.
 std::optional<std::string> native_scalar_projection_vector(const scratchbird::engine::internal_api::EngineApiResult& api_result,
                                                            const scratchbird::engine::internal_api::EngineRequestContext& context) {
@@ -4771,17 +4772,34 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
     for (unsigned i = 0; i < 8; ++i) out[i] = static_cast<char>(value >> (i * 8));
     return out;
   };
-  // The int64 identity of the datatype cohort the receipt is bound to (exact snapshot and generations; never a nearest match).
-  const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1* int64_identity = nullptr;
-  for (const auto& row3 : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
-    const auto& row = row3.legacy_fields;
-    if (row.canonical_name == "bigint" && row.codec_id == "datatype.int64.le.v1" && row.catalog_snapshot_uuid == context.datatype_catalog_snapshot_uuid &&
-        row.catalog_generation == context.datatype_catalog_generation && row.registry_generation == context.datatype_registry_generation) {
-      if (int64_identity != nullptr) return std::nullopt;  // ambiguous
-      int64_identity = &row;
+  // The identity of a datatype of the cohort the receipt is bound to (exact snapshot and generations; never a nearest match). SB_NATIVE_VALUES_BOOLEAN_LITERAL
+  // (2026-12-13): two column types are built, int64 ("bigint", datatype.int64.le.v1) and boolean (datatype.boolean.u8.v1); each column carries ITS type's
+  // identity, read from the compiled cohort table, never from text.
+  const auto cohort_identity = [&](std::string_view canonical_name, std::string_view codec_id)
+      -> const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1* {
+    const scratchbird::core::datatypes::DatatypeTypeCodecIdentityRowV1* found = nullptr;
+    for (const auto& row3 : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      const auto& row = row3.legacy_fields;
+      if (row.canonical_name == canonical_name && row.codec_id == codec_id && row.catalog_snapshot_uuid == context.datatype_catalog_snapshot_uuid &&
+          row.catalog_generation == context.datatype_catalog_generation && row.registry_generation == context.datatype_registry_generation) {
+        if (found != nullptr) return nullptr;  // ambiguous
+        found = &row;
+      }
     }
+    return found;
+  };
+  const auto* int64_identity = cohort_identity("bigint", "datatype.int64.le.v1");
+  const auto* boolean_identity = cohort_identity("boolean", "datatype.boolean.u8.v1");
+  // a column's kind comes from its FIRST row's value descriptor; every other row of the column must agree (checked per value below)
+  enum class ColumnKind { int64, boolean };
+  std::vector<ColumnKind> kinds;
+  for (std::size_t c = 0; c < columns; ++c) {
+    const auto& type = rows.front().fields[c].second.descriptor.canonical_type_name;
+    if (scratchbird::engine::PublicBooleanScalarTypeV1(type)) kinds.push_back(ColumnKind::boolean);
+    else if (type == "bigint" || scratchbird::engine::PublicInt64ScalarTypeV1(type)) kinds.push_back(ColumnKind::int64);
+    else return std::nullopt;
+    if ((kinds.back() == ColumnKind::int64 ? int64_identity : boolean_identity) == nullptr) return std::nullopt;
   }
-  if (int64_identity == nullptr) return std::nullopt;
   std::vector<public_result::Field> fields;
   // Route B (2026-12-11): the SAME vector serves the object-free literal VALUES relation (query.execute); operation_id names the operation that
   // produced it, as a machine token (never a name): query.evaluate_projection (route A) or query.execute (route B).
@@ -4792,11 +4810,12 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
   for (std::size_t c = 0; c < columns; ++c) {
     const auto minted = scratchbird::core::uuid::IssueRuntimeIdentityV7();
     if (!minted) return std::nullopt;
+    const auto* identity = kinds[c] == ColumnKind::int64 ? int64_identity : boolean_identity;
     const std::string index = std::to_string(c);
     fields.push_back({"column_descriptor[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(*minted)});
-    fields.push_back({"column_datatype[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(int64_identity->type_uuid)});
-    fields.push_back({"column_datatype_descriptor[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(int64_identity->descriptor_uuid)});
-    fields.push_back({"column_datatype_generation[" + index + "]", public_result::Kind::unsigned_integer, u64(int64_identity->descriptor_generation)});
+    fields.push_back({"column_datatype[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(identity->type_uuid)});
+    fields.push_back({"column_datatype_descriptor[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(identity->descriptor_uuid)});
+    fields.push_back({"column_datatype_generation[" + index + "]", public_result::Kind::unsigned_integer, u64(identity->descriptor_generation)});
   }
   for (std::size_t r = 0; r < rows.size(); ++r) {
     if (rows[r].fields.size() != columns) return std::nullopt;
@@ -4805,7 +4824,15 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
       const auto& type = value.descriptor.canonical_type_name;
       if (value.is_null || value.state != scratchbird::engine::internal_api::EngineValueState::value) return std::nullopt;
       std::string bytes;
-      if (scratchbird::engine::PublicInt64ScalarTypeV1(type) && value.encoded_value.empty() && value.binary_value.size() == 8) {
+      public_result::Kind kind = public_result::Kind::signed_integer;
+      if (kinds[c] == ColumnKind::boolean) {
+        // a boolean: ONE byte, 0 or 1, the same carrier the legacy row used (Kind::bytes); never text
+        std::string_view payload;
+        if (!scratchbird::engine::PublicBooleanScalarTypeV1(type) || !scratchbird::engine::PublicBooleanScalarPayloadV1(value, &payload) || payload.size() != 1)
+          return std::nullopt;
+        bytes.assign(payload);
+        kind = public_result::Kind::bytes;
+      } else if (scratchbird::engine::PublicInt64ScalarTypeV1(type) && value.encoded_value.empty() && value.binary_value.size() == 8) {
         bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 8);  // the native carrier (an operator result)
       } else if ((type == "bigint" || scratchbird::engine::PublicInt64ScalarTypeV1(type)) && !value.encoded_value.empty() && value.binary_value.empty()) {
         // an integer LITERAL: the parser's text carrier, decoded here as DATA into the native int64 (strict decimal, no fallback)
@@ -4817,7 +4844,7 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
       } else {
         return std::nullopt;
       }
-      fields.push_back({"value[" + std::to_string(r) + "." + std::to_string(c) + "]", public_result::Kind::signed_integer, std::move(bytes)});
+      fields.push_back({"value[" + std::to_string(r) + "." + std::to_string(c) + "]", kind, std::move(bytes)});
     }
   }
   std::string bytes;
@@ -22314,20 +22341,24 @@ static bool native_dispatch_member_opcodes(const std::vector<std::uint8_t>& byte
   return true;
 }
 
-// SEARCH_KEY: SB_NATIVE_QUERY_EXECUTE_LITERAL_VALUES (route B, 2026-12-11). The ONE query.execute shape a native dispatch admits: the exact
-// three-member stream [package begin, query.execute, package end] whose query.execute member is, operand for operand, the object-free
-// literal VALUES template the engine already recognizes (ValidatePreparedRelationalQueryV1, profile kLiteralValues): 18 operands, one typed
-// descriptor, one literal expression, one values row, root node 1 bound as values.literal-table.v1, no object, no property, no parameter.
-// It is not a row of the availability table: the opcode is not a row, the literal it evaluates asks engine.op.literal inside the executor
-// (the recorded row, already allow-listed). Anything else carrying 0x1207 (a FROM clause, a join, an aggregate, a function, a second
-// literal, any other operand count) fails this check and is refused at the gate with SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, writing nothing.
-static bool native_dispatch_is_exact_literal_values_query(const std::vector<std::uint8_t>& bytes, const std::vector<std::uint16_t>& codes) {
-  if (codes != std::vector<std::uint16_t>{1, 0x1207, 2}) return false;
+// SEARCH_KEY: SB_NATIVE_QUERY_EXECUTE_LITERAL_VALUES (route B, 2026-12-11; widened 2026-12-13 to a TABLE of literals, SB_NATIVE_LITERAL_VALUES_TABLE).
+// The ONE query.execute shape a native dispatch admits: the exact three-member stream [package begin, query.execute, package end] whose
+// query.execute member is, operand for operand, the object-free literal VALUES table the parser lowers: R rows by C columns of literals, root
+// node 1 bound as values.literal-table.v1, one typed descriptor and one reference per literal, no object, no property, no parameter
+// (ClassifyNativeLiteralValuesTableV1, engine/sblr/prepared_relational_query.hpp; R = C = 1 is the original one-literal template, unchanged).
+// It is not a row of the availability table: the opcode is not a row, the literals it evaluates ask engine.op.literal inside the executor (the
+// recorded row, already allow-listed). Anything else carrying 0x1207 (a FROM clause, a join, an aggregate, a function, any other operand layout)
+// fails this check and is refused at the gate with SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, writing nothing. A table that IS the shape but larger than
+// the native result bound (rows or columns; no streaming exists) is refused with its own token ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED,
+// also before any executor entry.
+static scratchbird::engine::sblr::NativeLiteralValuesTableClassV1 native_dispatch_literal_values_table_class(
+    const std::vector<std::uint8_t>& bytes, const std::vector<std::uint16_t>& codes, std::uint32_t* rows, std::uint32_t* columns) {
+  using Class = scratchbird::engine::sblr::NativeLiteralValuesTableClassV1;
+  if (codes != std::vector<std::uint16_t>{1, 0x1207, 2}) return Class::kNotTemplate;
   const auto decoded = scratchbird::engine::sblr::DecodeSblrOpcodeStream(
       std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
-  if (!decoded.ok || decoded.stream.operations.size() != 3) return false;
-  return scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
-      decoded.stream.operations[1], scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kLiteralValues);
+  if (!decoded.ok || decoded.stream.operations.size() != 3) return Class::kNotTemplate;
+  return scratchbird::engine::sblr::ClassifyNativeLiteralValuesTableV1(decoded.stream.operations[1], rows, columns);
 }
 
 sb_engine_status_t DispatchStatementContextReceipt(
@@ -22371,7 +22402,16 @@ sb_engine_status_t DispatchStatementContextReceipt(
                                           "native_executor_availability_s4g");
       for (const auto code : member_codes) {
         if (scratchbird::engine::internal_api::NativeExecutorOpcodeCodeAllowed(code)) continue;
-        if (code == 0x1207 && native_dispatch_is_exact_literal_values_query(request->canonical_operation_bytes, member_codes)) continue;
+        if (code == 0x1207) {
+          std::uint32_t table_rows = 0, table_columns = 0;
+          const auto table_class = native_dispatch_literal_values_table_class(request->canonical_operation_bytes, member_codes, &table_rows, &table_columns);
+          if (table_class == scratchbird::engine::sblr::NativeLiteralValuesTableClassV1::kAdmitted) continue;
+          if (table_class == scratchbird::engine::sblr::NativeLiteralValuesTableClassV1::kOverBound)
+            return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED", "engine.native.result_row_bound_exceeded", {},
+                               {{"rows", std::to_string(table_rows)}, {"columns", std::to_string(table_columns)},
+                                {"row_bound", std::to_string(scratchbird::engine::sblr::kNativeLiteralValuesMaxRows)},
+                                {"column_bound", std::to_string(scratchbird::engine::sblr::kNativeLiteralValuesMaxColumns)}});
+        }
         // the table's own code and fields (opcode_code); the dispatch gate knows the opcode, not a row, so there is no row_identity_sha256
         return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED",
                            "sblr.executor.native_not_implemented", {}, {{"opcode_code", std::to_string(code)}});
@@ -33902,6 +33942,19 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       if (receipt->engine_context.native_served_facts && dispatched.api_result.ok &&
           (dispatched.api_result.operation_id == "query.evaluate_projection" ||
            dispatched.api_result.operation_id == "query.execute")) {
+        // SB_NATIVE_LITERAL_VALUES_TABLE (2026-12-13): the native result is one vector in one message; there is no streaming, so a result larger than
+        // the bound is refused here as well (the dispatch gate already refuses an over-bound VALUES table before execution), before a byte of the
+        // vector exists, with the same distinct token.
+        if (dispatched.api_result.result_shape.rows.size() > scratchbird::engine::sblr::kNativeLiteralValuesMaxRows) {
+          const auto produced_rows = dispatched.api_result.result_shape.rows.size();
+          delete result;
+          auto refusal = scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+              "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED", "engine.native.result_row_bound_exceeded", {}, true);
+          refusal.fields.push_back({"rows", std::to_string(produced_rows)});
+          refusal.fields.push_back({"row_bound", std::to_string(scratchbird::engine::sblr::kNativeLiteralValuesMaxRows)});
+          return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED",
+                             "engine.native.result_row_bound_exceeded", {}, {}, nullptr, &refusal);
+        }
         native_result_vector = native_scalar_projection_vector(dispatched.api_result, receipt->engine_context);
         if (!native_result_vector) {
           delete result;

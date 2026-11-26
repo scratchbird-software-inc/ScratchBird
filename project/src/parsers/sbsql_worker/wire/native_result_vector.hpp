@@ -16,6 +16,8 @@
 //   * the value comes from value[r.c] (a signed 64-bit little-endian carrier);
 //   * the TYPE comes from the descriptor UUIDs, mapped through the compiled datatype cohort's identity table (type uuid, descriptor uuid and
 //     descriptor generation must name exactly one row, and that row's codec must be the int64 codec); anything else is refused, not guessed.
+// Wider literals (2026-12-13): the vector may carry R rows by C columns (a literal VALUES table; the engine bounds it, no streaming) and a column is int64 OR
+// boolean (the datatype.boolean.u8.v1 cohort row; the value is one byte 0 or 1). The parser renders a boolean for the client as the text `true` / `false`.
 // The result is the SAME packet shape the legacy engine rendered for the same statement (SBRES002 with operation_id, result_kind
 // "scalar_projection_rows", row_count, row[i] and row_meta[i]), so every downstream decoder (the line wire, SBWP) is unchanged.
 // A payload that is not a native vector is left alone (status not_native_vector): legacy rows pass through byte for byte.

@@ -340,6 +340,80 @@ inline bool ValidatePreparedRelationalQueryV1(const SblrOperationEnvelope& op, P
       EncodeRelationalRowPatternV1(pattern, &expected_bytes) && expected_bytes == op.operands[tail + 5].value_body;
 }
 
+// SEARCH_KEY: SB_NATIVE_LITERAL_VALUES_TABLE (2026-12-13, wider literals). The object-free literal VALUES TABLE on a native dispatch: R rows by C
+// columns of literals (R >= 1, C >= 1), the exact generalisation of the one-literal template above (which is the R = 1, C = 1 case, operand for
+// operand). Structural recognition only, like the rest of this header. Layout (the parser's own lowering, read from a real stream): the 11 header
+// operands; N = R*C descriptors slot_1..slot_N (descriptor i belongs to literal i, row-major); N literal references "1".."N" (expression_node_ref);
+// C outputs slot_1..slot_C (output c: node 1, expression c+1, descriptor c+1, visible, ordinal c; the name rides as DATA and is never read here);
+// R rows slot_1..slot_R (row r lists literals r*C+1..r*C+C); the node "13|0|-|1,..,C|1,..,R"; its binding values.literal-table.v1 over ALL N literal expressions
+// 1..N (every row's expressions, concatenated, as the binder emits them); the expression node table with N nodes (node i is a root literal whose parent operand ordinal is i). Anything else is kNotTemplate.
+// The BOUND of a native result is the caller's: a recognized table larger than the bound is reported as kOverBound, never as kNotTemplate.
+inline constexpr std::uint32_t kNativeLiteralValuesMaxRows = 16;       // rows of one native literal VALUES result (one vector in one message; no streaming exists: refused above)
+inline constexpr std::uint32_t kNativeLiteralValuesMaxColumns = 16;    // columns of one native literal VALUES result
+enum class NativeLiteralValuesTableClassV1 { kNotTemplate, kAdmitted, kOverBound };
+inline NativeLiteralValuesTableClassV1 ClassifyNativeLiteralValuesTableV1(const SblrOperationEnvelope& op, std::uint32_t* rows_out = nullptr,
+                                                                          std::uint32_t* columns_out = nullptr) {
+  namespace d = prepared_relational_detail;
+  using Class = NativeLiteralValuesTableClassV1;
+  if (!d::Header(op) || op.operands.size() < 16 || !d::Text(op, 10, "uint32", "relational_root_node_id", "1")) return Class::kNotTemplate;
+  const auto run = [&](std::size_t* index, std::string_view type) {
+    std::size_t count = 0;
+    while (*index < op.operands.size() && op.operands[*index].type == type) { ++*index; ++count; }
+    return count;
+  };
+  std::size_t at = 11;
+  const std::size_t descriptor_count = run(&at, "relational_descriptor_v3");
+  const std::size_t expression_count = run(&at, "relational_expression_v1");
+  const std::size_t column_count = run(&at, "relational_output_v1");
+  const std::size_t row_count = run(&at, "relational_values_row_v1");
+  if (!column_count || !row_count || descriptor_count != expression_count || descriptor_count != column_count * row_count ||
+      op.operands.size() != at + 3 || descriptor_count > kSblrOperationMaximumOperands) return Class::kNotTemplate;
+  const std::size_t literals = descriptor_count, columns = column_count, rows = row_count;
+  const auto join = [](std::size_t first, std::size_t last) {
+    std::string out;
+    for (std::size_t value = first; value <= last; ++value) { if (!out.empty()) out += ','; out += std::to_string(value); }
+    return out;
+  };
+  const std::size_t expression_begin = 11 + literals, output_begin = expression_begin + literals, row_begin = output_begin + columns;
+  const std::size_t node_index = row_begin + rows;
+  RelationalNodeBindingRecord table_binding;
+  table_binding.node_id = 1;
+  table_binding.semantic_variant_id = "values.literal-table.v1";
+  for (std::size_t literal = 1; literal <= literals; ++literal) table_binding.bound_expression_ids.push_back(static_cast<std::uint32_t>(literal));
+  if (!d::Text(op, node_index, "relational_node_v1", "slot_1", "13|0|-|" + join(1, columns) + "|" + join(1, rows)) ||
+      !d::Binding(op, node_index + 1, table_binding) ||
+      !d::Slot(op, node_index + 2, "expression.node_table.v1", "expression_nodes", SblrValueKind::expression_node_table)) return Class::kNotTemplate;
+  for (std::size_t column = 0; column < columns; ++column)
+    if (!d::Output(op, output_begin + column, static_cast<std::uint32_t>(column + 1), 1, static_cast<std::uint32_t>(column + 1),
+                   static_cast<std::uint32_t>(column + 1), static_cast<std::uint32_t>(column))) return Class::kNotTemplate;
+  for (std::size_t row = 0; row < rows; ++row)
+    if (!d::Text(op, row_begin + row, "relational_values_row_v1", "slot_" + std::to_string(row + 1), join(row * columns + 1, row * columns + columns)))
+      return Class::kNotTemplate;
+  std::vector<internal_api::RelationalTypeDescriptor> descriptors;
+  if (!d::Descriptors(op, literals, &descriptors)) return Class::kNotTemplate;
+  const auto table = DecodeSblrExpressionNodeTableV1(op.operands[node_index + 2].value_body.data(), op.operands[node_index + 2].value_body.size());
+  if (!table.ok || table.table.nodes.size() != literals) return Class::kNotTemplate;
+  std::vector<SblrExpressionNodeReferenceV1> refs;
+  refs.reserve(literals);
+  for (std::size_t literal = 0; literal < literals; ++literal) {
+    SblrExpressionNodeReferenceV1 ref;
+    if (!d::Slot(op, expression_begin + literal, "relational_expression_v1", std::to_string(literal + 1), SblrValueKind::expression_node_ref) ||
+        !DecodeSblrExpressionNodeReferenceV1(op.operands[expression_begin + literal].value_body.data(),
+                                             op.operands[expression_begin + literal].value_body.size(), &ref)) return Class::kNotTemplate;
+    const auto& node = table.table.nodes[literal];
+    if (node.node_id != ref.node_id || node.parent_node_id != 0 || node.parent_operand_ordinal != literal + 1 ||
+        ref.occurrence_ordinal != literal + 1 || ref.descriptor_uuid != descriptors[literal].descriptor_uuid.bytes ||
+        (descriptors[literal].datatype_identity_authoritative && ref.descriptor_generation != descriptors[literal].descriptor_generation))
+      return Class::kNotTemplate;
+    refs.push_back(ref);
+  }
+  if (!ValidateSblrLiteralReferenceBijectionV1(table, refs)) return Class::kNotTemplate;
+  if (rows_out) *rows_out = static_cast<std::uint32_t>(rows);
+  if (columns_out) *columns_out = static_cast<std::uint32_t>(columns);
+  if (rows > kNativeLiteralValuesMaxRows || columns > kNativeLiteralValuesMaxColumns) return Class::kOverBound;
+  return Class::kAdmitted;
+}
+
 struct PreparedRelationalContextV1 {
   core::platform::Uuid catalog_epoch_uuid, security_context_uuid, statement_uuid, transaction_uuid,
       statement_snapshot_uuid, statement_metadata_snapshot_uuid;

@@ -81,8 +81,12 @@ MaterializedValues MaterializeValues(
     const auto output_descriptor = descriptors.find(output_descriptor_id);
     return expression.expression_kind ==
                api::RelationalExpressionKind::kLiteral &&
-           expression.literal_kind ==
-               api::RelationalLiteralKind::kNumeric &&
+           // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): a boolean literal of a later row, like a numeric one, carries its own descriptor
+           // (same type uuid as its column, non-null, no width, precision or scale)
+           (expression.literal_kind ==
+                api::RelationalLiteralKind::kNumeric ||
+            expression.literal_kind ==
+                api::RelationalLiteralKind::kBoolean) &&
            expression.child_expression_ids.empty() &&
            !expression.function_uuid.has_value() &&
            !expression.bound_name_uuid.has_value() &&
