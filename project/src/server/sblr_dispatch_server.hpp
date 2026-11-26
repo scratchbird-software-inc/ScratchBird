@@ -45,6 +45,13 @@ RegisteredEngineDiagnosticFieldsForTest(
     std::string_view diagnostic_code,
     const std::vector<ServerDiagnosticField>& candidates);
 
+// SB_SBMV_TYPED_UUID_FIELDS seams: the identity registry (code, name, non-nil UUIDv7, no repeat) and the one decision "this peer negotiated typed UUID fields".
+std::vector<std::pair<std::string, std::array<std::uint8_t, 16>>>
+RegisteredEngineDiagnosticIdentityFieldsForTest(
+    std::string_view diagnostic_code,
+    const std::vector<scratchbird::server_engine_bridge::EngineDiagnosticIdentityField>& candidates);
+bool PeerAcceptsTypedUuidDiagnosticFieldsForTest(const ServerSessionRecord& session);
+
 std::vector<std::uint8_t> EncodePrepareSblrPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::string& encoded_sblr_envelope);

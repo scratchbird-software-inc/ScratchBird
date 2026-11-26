@@ -13,6 +13,7 @@
 // SEARCH_KEY: SB_SERVER_SBLR_DISPATCH_RESULTS
 
 #include "sblr_dispatch_server.hpp"
+#include "../wire/message_vector_typed_uuid_registry.hpp"
 #include "native_database_loop.hpp"
 #include "../wire/parser_server_ipc/binary_identity_io.hpp"
 #include "hash_digest.hpp"
@@ -1265,7 +1266,8 @@ std::vector<std::uint8_t> EncodeExecuteResultV2(
     const std::string& detail,
     const ServerTransactionResponseState& transaction_state,
     const std::vector<ServerDiagnostic>& diagnostics = {},
-    const ServerCursorRecord* cursor = nullptr) {
+    const ServerCursorRecord* cursor = nullptr,
+    bool typed_uuid_peer = false) {
   auto out = EncodeExecuteResult(outcome,
                                  server_request_uuid,
                                  cursor_uuid,
@@ -1306,7 +1308,8 @@ std::vector<std::uint8_t> EncodeExecuteResultV2(
   if (!diagnostics.empty()) {
     PutBytes(&out,
              sbps::EncodeMessageVectorSet(diagnostics,
-                                          server_request_uuid));
+                                          server_request_uuid,
+                                          typed_uuid_peer));
   }
   // Schema 4012 has one cursor-presence trailer on every outcome, including
   // refusals before canonical admission. It is not part of the length-framed
@@ -2781,7 +2784,8 @@ SessionOperationResult V2TransactionOutcome(
     std::string row_packet,
     std::string detail,
     ServerTransactionResponseState transaction_state,
-    std::vector<ServerDiagnostic> diagnostics = {}) {
+    std::vector<ServerDiagnostic> diagnostics = {},
+    bool typed_uuid_peer = false) {
   SessionOperationResult result;
   result.accepted = accepted;
   result.response_message_type =
@@ -2800,7 +2804,9 @@ SessionOperationResult V2TransactionOutcome(
                                          row_packet,
                                          detail,
                                          transaction_state,
-                                         diagnostics);
+                                         diagnostics,
+                                         nullptr,
+                                         typed_uuid_peer);
   result.transaction_state = std::move(transaction_state);
   result.diagnostics = std::move(diagnostics);
   return result;
@@ -5763,6 +5769,25 @@ std::vector<ServerDiagnosticField> RegisteredEngineDiagnosticFields(
   return {candidate};
 }
 
+// SEARCH_KEY: SB_SBMV_TYPED_UUID_FIELDS. The engine diagnostic's identity operands that the parser may receive, as binary(16): only a (code, name) pair in
+// wire/message_vector_typed_uuid_registry.hpp, only a non-nil UUIDv7, the first of a repeated name. Never text; the text registry above is unchanged and
+// still refuses a uuid-named field.
+std::vector<std::pair<std::string, std::array<std::uint8_t, 16>>> RegisteredEngineDiagnosticIdentityFields(
+    std::string_view diagnostic_code,
+    const std::vector<engine_bridge::EngineDiagnosticIdentityField>& candidates) {
+  std::vector<std::pair<std::string, std::array<std::uint8_t, 16>>> forwarded;
+  for (const auto& candidate : candidates) {
+    if (!wire::message_vector::IsRegisteredTypedUuidField(diagnostic_code, candidate.key) ||
+        !wire::message_vector::IsSystemUuidValue(candidate.value.data(), candidate.value.size())) continue;
+    if (std::any_of(forwarded.begin(), forwarded.end(), [&](const auto& kept) { return kept.first == candidate.key; })) continue;
+    forwarded.emplace_back(candidate.key, candidate.value);
+  }
+  return forwarded;
+}
+
+// The peer negotiated typed UUID diagnostic fields iff its session is a NATIVE session (the receipt announced as wire extension 75, the native admission).
+bool PeerAcceptsTypedUuidDiagnosticFields(const ServerSessionRecord& session) { return session.native_session_approved; }
+
 struct PublicAbiDispatchResult {
   bool attempted = false;
   bool ok = false;
@@ -5806,7 +5831,8 @@ void CapturePublicAbiFailure(sb_engine_result_t handle,
 ServerDiagnostic PublicAbiFailureDiagnostic(
     const PublicAbiDispatchResult& result,
     std::string message,
-    std::string detail) {
+    std::string detail,
+    bool typed_uuid_peer = false) {
   auto diagnostic = SblrServerDiagnostic(
       result.diagnostic_code.empty()
           ? "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED"
@@ -5824,6 +5850,11 @@ ServerDiagnostic PublicAbiFailureDiagnostic(
     }
     // The source key remains private until active template/redaction authority
     // resolves a public rendering key; source identity grants no disclosure.
+    // SB_SBMV_TYPED_UUID_FIELDS: the registered identity operands ride only to a peer that negotiated them (a native session).
+    if (typed_uuid_peer) {
+      diagnostic.typed_uuid_fields = RegisteredEngineDiagnosticIdentityFields(
+          result.source_diagnostic->code, result.source_diagnostic->identity_fields);
+    }
   }
   if (diagnostic.code == "SB_DIAG_FUNCTION_CONVERSION_INPUT" ||
       diagnostic.code == "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION") {
@@ -6890,6 +6921,17 @@ RegisteredEngineDiagnosticFieldsForTest(
     std::string_view diagnostic_code,
     const std::vector<ServerDiagnosticField>& candidates) {
   return RegisteredEngineDiagnosticFields(diagnostic_code, candidates);
+}
+
+std::vector<std::pair<std::string, std::array<std::uint8_t, 16>>>
+RegisteredEngineDiagnosticIdentityFieldsForTest(
+    std::string_view diagnostic_code,
+    const std::vector<engine_bridge::EngineDiagnosticIdentityField>& candidates) {
+  return RegisteredEngineDiagnosticIdentityFields(diagnostic_code, candidates);
+}
+
+bool PeerAcceptsTypedUuidDiagnosticFieldsForTest(const ServerSessionRecord& session) {
+  return PeerAcceptsTypedUuidDiagnosticFields(session);
 }
 
 std::string EncodeCreateViewPublicAbiEnvelopeForTest(
@@ -10333,7 +10375,8 @@ SessionOperationResult HandleExecuteSblrImpl(
         auto diagnostic = PublicAbiFailureDiagnostic(
             public_abi,
             "The engine rejected the admitted SBLR envelope.",
-            detail);
+            detail,
+            PeerAcceptsTypedUuidDiagnosticFields(*session));
         if (v2) {
           transaction_response.outcome_detail = detail;
           transaction_response.diagnostic_code = diagnostic.code;
@@ -10351,7 +10394,8 @@ SessionOperationResult HandleExecuteSblrImpl(
                                       {},
                                       detail,
                                       transaction_response,
-                                      std::move(diagnostics));
+                                      std::move(diagnostics),
+                                      PeerAcceptsTypedUuidDiagnosticFields(*session));
         }
         return FailureWithDiagnostics(
             static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
@@ -11209,6 +11253,11 @@ SessionOperationResult HandleExecuteSblr(
     }
     transaction_state.diagnostic_code = result.diagnostics.front().code;
   }
+  // SB_SBMV_TYPED_UUID_FIELDS: THIS is the path a canonical refusal takes to its V2 typed outcome (the inner handler answers a canonical request with the error-frame
+  // form; this adapter re-encodes it). The peer negotiated typed UUID fields iff the request's session is a native session: asked of the registry, never inferred from the
+  // diagnostics themselves.
+  const auto* typed_uuid_session = FindMutableSession(registry, decoded ? decoded->session_uuid : request.header.session_uuid);
+  const bool typed_uuid_peer = typed_uuid_session != nullptr && PeerAcceptsTypedUuidDiagnosticFields(*typed_uuid_session);
   auto rejection=V2TransactionOutcome(false,
                                       decoded ? decoded->session_uuid
                                               : request.header.session_uuid,
@@ -11217,7 +11266,8 @@ SessionOperationResult HandleExecuteSblr(
                                       {},
                                       detail,
                                       transaction_state,
-                                      std::move(result.diagnostics));
+                                      std::move(result.diagnostics),
+                                      typed_uuid_peer);
   rejection.cursor_stream_descriptor_trailer_required =
       result.cursor_stream_descriptor_trailer_required;
   return rejection;

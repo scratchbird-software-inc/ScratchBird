@@ -3914,7 +3914,7 @@ EmbeddedEngineClient::ExecuteCanonicalSblrWithDataPacket(
       &impl_->Registry(), impl_->State(), frame);
   const bool decoded_execute = ipc::DecodeCanonicalExecuteResultPayload(
       operation.payload, frame.header.request_uuid, &result,
-      &result.messages);
+      &result.messages, statement_context.preliminary_native_variant);
 #if defined(SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM)
   impl_->last_execute_row_packet = decoded_execute ? result.row_packet : std::string();
   impl_->last_execute_server_diagnostics.clear();

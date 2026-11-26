@@ -16,6 +16,7 @@
 #include "disconnect_result_validation.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "../../core/uuid/uuid.hpp"
+#include "wire/message_vector_typed_uuid_registry.hpp"
 #include "sbps_statement_management_bind_codec.hpp"
 #include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
 #include "engine/sblr/sblr_stmt_execute_direct_runtime.hpp"
@@ -1504,6 +1505,8 @@ bool AppendTypedExecuteDiagnostics(
     const std::vector<std::uint8_t>& encoded_diagnostics,
     std::string_view expected_first_code,
     const std::array<std::uint8_t, 16>& expected_request_uuid,
+    bool typed_uuid_negotiated,
+    std::string* refusal_reason,
     MessageVectorSet* messages);
 
 std::string TextLineValue(std::string_view encoded, std::string_view key) {
@@ -1568,7 +1571,8 @@ bool ReadTransactionSelector(const std::vector<std::uint8_t>& payload,
 
 bool DecodeExecuteResultPayloadV2Base(const Frame& response,
                                       ServerExecutionResult* result,
-                                      MessageVectorSet* messages) {
+                                      MessageVectorSet* messages,
+                                      bool typed_uuid_negotiated) {
   if (result == nullptr) return false;
   std::size_t offset = 0;
   std::string outcome;
@@ -1810,13 +1814,21 @@ bool DecodeExecuteResultPayloadV2Base(const Frame& response,
   }
   if (!result->accepted) {
     if (!encoded_diagnostics.empty()) {
+      std::string typed_refusal_reason;
       if (!AppendTypedExecuteDiagnostics(encoded_diagnostics,
                                          result->transaction_diagnostic_code,
                                          result_request_uuid,
+                                         typed_uuid_negotiated,
+                                         &typed_refusal_reason,
                                          messages)) {
+        // SB_SBMV_TYPED_UUID_FIELDS: a typed-field violation names its cause as a DATA token (never prose); any other malformation keeps the old answer.
+        std::vector<Field> refusal_fields;
+        if (!typed_refusal_reason.empty()) refusal_fields.push_back({"reason", typed_refusal_reason});
         AddDiagnostic(messages,
                       "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID",
-                      "The server V2 typed diagnostic vector is malformed or contradicts its transaction diagnostic code.");
+                      "The server V2 typed diagnostic vector is malformed or contradicts its transaction diagnostic code.",
+                      "parser_server_ipc.sbps_client",
+                      std::move(refusal_fields));
         return false;
       }
     } else {
@@ -1837,7 +1849,8 @@ bool DecodeExecuteResultPayloadV2Base(const Frame& response,
 
 bool DecodeExecuteResultPayloadV2(const Frame& response,
                                   ServerExecutionResult* result,
-                                  MessageVectorSet* messages) {
+                                  MessageVectorSet* messages,
+                                  bool typed_uuid_negotiated = false) {
   constexpr std::size_t kPresentDescriptorBytes =
       1 + 16 + 2 + 8 + 16 * 5 + 8 + 8;
   if (result == nullptr || response.payload.empty()) return false;
@@ -1911,7 +1924,7 @@ bool DecodeExecuteResultPayloadV2(const Frame& response,
     return false;
   }
   ServerExecutionResult decoded;
-  if (!DecodeExecuteResultPayloadV2Base(base, &decoded, messages)) return false;
+  if (!DecodeExecuteResultPayloadV2Base(base, &decoded, messages, typed_uuid_negotiated)) return false;
   if (!decoded.cursor_uuid.is_nil()) {
     if (!descriptor.complete() || descriptor.cursor_uuid != decoded.cursor_uuid) {
       AddDiagnostic(messages,
@@ -3155,9 +3168,19 @@ struct DecodedMessageVector {
   std::vector<Field> fields;
 };
 
+// SEARCH_KEY: SB_SBMV_TYPED_UUID_FIELDS. `typed_uuid_negotiated` is true ONLY for a response on a session whose receipt was the NATIVE variant (wire extension
+// 75). OLD: type_code 1 (text) was the only TLV type; any other type failed the whole vector. NEW: in the FIELD section only, and only when negotiated, a
+// type 5 (SBMV v1 registered system_uuid) TLV is read as a binary_uuid Field: exactly 16 bytes, a non-nil UUIDv7, a name registered for the record's code
+// (wire/message_vector_typed_uuid_registry.hpp), not a repeat of any earlier field name. Anything else fails the vector; `refusal_reason` (optional)
+// names the first cause as a token. A text TLV with a uuid-named field is still refused by IsPublicDiagnosticFieldAllowed, exactly as before.
 std::optional<std::vector<DecodedMessageVector>> DecodeMessageVectors(
     const std::vector<std::uint8_t>& payload,
-    const std::array<std::uint8_t, 16>& expected_request_uuid) {
+    const std::array<std::uint8_t, 16>& expected_request_uuid,
+    bool typed_uuid_negotiated = false,
+    std::string* refusal_reason = nullptr) {
+  const auto refuse = [&](const char* reason) {
+    if (refusal_reason != nullptr && refusal_reason->empty()) *refusal_reason = reason;
+  };
   constexpr std::size_t kHeaderBytes = 64;
   constexpr std::size_t kRecordHeaderBytes = 112;
   constexpr std::size_t kMaximumSetBytes = 1024u * 1024u;
@@ -3262,15 +3285,22 @@ std::optional<std::vector<DecodedMessageVector>> DecodeMessageVectors(
       return std::nullopt;
     }
 
-    auto read_tlv = [&](Field* field) {
+    auto read_tlv = [&](Field* field, bool field_section) {
       if (field == nullptr || cursor + 8 > record_end) return false;
       const auto key_len = GetU16(payload, cursor);
       const auto type_code = GetU16(payload, cursor + 2);
       const auto value_len = GetU32(payload, cursor + 4);
       cursor += 8;
-      if (key_len == 0 || type_code != 1 ||
-          key_len > record_end - cursor ||
-          value_len > record_end - cursor - key_len) {
+      const bool typed = type_code == scratchbird::wire::message_vector::kTypedUuidFieldTypeCode;
+      if (typed) {
+        // Typed UUID TLV: the cheap structural checks first, each with its own token.
+        if (!field_section) { refuse("typed_uuid_wrong_section"); return false; }
+        if (!typed_uuid_negotiated) { refuse("typed_uuid_not_negotiated"); return false; }
+        if (key_len == 0 || key_len > record_end - cursor || value_len > record_end - cursor - key_len) { refuse("typed_uuid_truncated"); return false; }
+        if (value_len != 16) { refuse("typed_uuid_length_invalid"); return false; }
+      } else if (key_len == 0 || type_code != 1 ||
+                 key_len > record_end - cursor ||
+                 value_len > record_end - cursor - key_len) {
         return false;
       }
       field->name.assign(
@@ -3280,21 +3310,36 @@ std::optional<std::vector<DecodedMessageVector>> DecodeMessageVectors(
           reinterpret_cast<const char*>(payload.data() + cursor), value_len);
       cursor += value_len;
       while ((cursor % 4u) != 0u) {
-        if (cursor >= record_end || payload[cursor++] != 0) return false;
+        if (cursor >= record_end || payload[cursor++] != 0) {
+          if (typed) refuse("typed_uuid_padding_invalid");
+          return false;
+        }
       }
-      return IsPublicDiagnosticFieldAllowed(field->name, field->value);
+      if (typed) {
+        if (!scratchbird::wire::message_vector::IsRegisteredTypedUuidField(vector.code, field->name)) { refuse("typed_uuid_field_not_registered"); return false; }
+        if (!scratchbird::wire::message_vector::IsSystemUuidValue(
+                reinterpret_cast<const std::uint8_t*>(field->value.data()), field->value.size())) { refuse("typed_uuid_value_invalid"); return false; }
+        if (std::any_of(vector.fields.begin(), vector.fields.end(), [&](const Field& kept) { return kept.name == field->name; })) {
+          refuse("typed_uuid_field_duplicate");
+          return false;
+        }
+        field->kind = FieldKind::binary_uuid;  // never passed through the text filter: a binary_uuid is refused by it by design
+        return true;
+      }
+      if (!IsPublicDiagnosticFieldAllowed(field->name, field->value)) { refuse("text_field_not_public"); return false; }
+      return true;
     };
     for (std::uint16_t field_index = 0; field_index < field_count;
          ++field_index) {
       Field field;
-      if (!read_tlv(&field)) return std::nullopt;
+      if (!read_tlv(&field, true)) return std::nullopt;
       vector.fields.push_back(std::move(field));
     }
     for (std::uint32_t ignored = 0;
          ignored < static_cast<std::uint32_t>(detail_count) + cause_count;
          ++ignored) {
       Field field;
-      if (!read_tlv(&field)) return std::nullopt;
+      if (!read_tlv(&field, false)) return std::nullopt;
     }
     if (cursor != record_end) return std::nullopt;
     vectors.push_back(std::move(vector));
@@ -3310,15 +3355,29 @@ bool AppendTypedExecuteDiagnostics(
     const std::vector<std::uint8_t>& encoded_diagnostics,
     std::string_view expected_first_code,
     const std::array<std::uint8_t, 16>& expected_request_uuid,
+    bool typed_uuid_negotiated,
+    std::string* refusal_reason,
     MessageVectorSet* messages) {
   auto decoded = DecodeMessageVectors(encoded_diagnostics,
-                                      expected_request_uuid);
+                                      expected_request_uuid,
+                                      typed_uuid_negotiated,
+                                      refusal_reason);
   if (!decoded || decoded->empty() ||
       (!expected_first_code.empty() &&
        decoded->front().code != expected_first_code)) {
     return false;
   }
   for (auto& vector : *decoded) {
+    // SB_SBMV_TYPED_UUID_FIELDS test seam (non-authoritative, off unless the variable names a file): the exact bytes of each typed UUID field the
+    // parser received, in hex. The public renderers drop a binary_uuid field by design (owner Q194); this is how a multi-process test sees the bytes.
+    for (const auto& field : vector.fields) {
+      if (field.kind != FieldKind::binary_uuid) continue;
+      static constexpr char kHex[] = "0123456789abcdef";
+      std::string hex;
+      for (const unsigned char byte : field.value) { hex.push_back(kHex[byte >> 4]); hex.push_back(kHex[byte & 0x0f]); }
+      AppendNonAuthoritativeDiagnosticTraceLine("SCRATCHBIRD_SBPS_CLIENT_PHASE_TRACE_FILE",
+          "layer=engine_diagnostic_typed_uuid\tcode=" + vector.code + "\tfield=" + field.name + "\tuuid_hex=" + hex);
+    }
     AddDiagnostic(messages,
                   std::move(vector.code),
                   vector.message.empty()
@@ -5203,11 +5262,21 @@ bool DecodeCanonicalExecuteResultPayload(
     const std::vector<std::uint8_t>& payload,
     const std::array<std::uint8_t, 16>& request_uuid,
     ServerExecutionResult* result,
-    MessageVectorSet* messages) {
+    MessageVectorSet* messages,
+    bool typed_uuid_negotiated) {
   Frame response;
   response.header.request_uuid = request_uuid;
   response.payload = payload;
-  return DecodeExecuteResultPayloadV2(response, result, messages);
+  return DecodeExecuteResultPayloadV2(response, result, messages, typed_uuid_negotiated);
+}
+
+bool DecodeTypedMessageVectorForTest(
+    const std::vector<std::uint8_t>& payload,
+    const std::array<std::uint8_t, 16>& request_uuid,
+    bool typed_uuid_negotiated,
+    std::string* refusal_reason,
+    MessageVectorSet* messages) {
+  return AppendTypedExecuteDiagnostics(payload, {}, request_uuid, typed_uuid_negotiated, refusal_reason, messages);
 }
 
 bool DecodeDiagnosticFrame(
@@ -7563,7 +7632,8 @@ ServerExecutionResult SbpsClient::ExecuteCanonicalSblrWithDataPacket(
     result.messages = std::move(messages);
     return result;
   }
-  if (!DecodeExecuteResultPayloadV2(response, &result, &messages)) {
+  if (!DecodeExecuteResultPayloadV2(response, &result, &messages,
+                                    statement_context.preliminary_native_variant)) {
     ProjectV2ResponseOutcomeUnknown(
         &messages, &result, "malformed_canonical_response");
   }

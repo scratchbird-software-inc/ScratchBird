@@ -26,6 +26,12 @@ struct EngineDiagnosticField {
   std::string value;
 };
 
+// An identity operand of a diagnostic as its 16 raw bytes (never text). Private bridge transport, not the public C ABI view.
+struct EngineDiagnosticIdentityField {
+  std::string key;
+  std::array<std::uint8_t, 16> value{};
+};
+
 struct EngineDiagnosticSnapshot {
   std::array<std::uint8_t, 16> occurrence_uuid{};
   std::uint32_t numeric_code = 0;
@@ -35,6 +41,8 @@ struct EngineDiagnosticSnapshot {
   // Private source detail, not permission to disclose it to a caller.
   std::string safe_detail;
   std::vector<EngineDiagnosticField> fields;
+  // SB_SBMV_TYPED_UUID_FIELDS: the engine diagnostic's identity operands (EngineApiDiagnostic::identity_fields) as binary(16); empty when it has none.
+  std::vector<EngineDiagnosticIdentityField> identity_fields;
   // Exact trusted metadata. The C ABI view preserves the same severity class
   // through its independently numbered enum, not by an enum cast.
   // Neither this metadata nor the native cause authorizes parser disclosure.

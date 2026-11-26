@@ -483,6 +483,14 @@ struct DiagnosticFieldStorage {
   std::string value;
 };
 
+// SEARCH_KEY: SB_SBMV_TYPED_UUID_FIELDS. An identity operand of a diagnostic: the key and the 16 raw bytes. OLD: add_diagnostic copied neither
+// EngineApiDiagnostic::fields nor ::identity_fields from the source, so no engine identity ever reached the server's snapshot. NEW: identity operands
+// are carried (binary only; the public C ABI diagnostic view is unchanged) into CopyEngineDiagnosticSnapshot.
+struct DiagnosticIdentityStorage {
+  std::string key;
+  std::array<std::uint8_t, 16> value{};
+};
+
 struct DiagnosticStorage {
   sb_engine_diagnostic_view_t view{};
   std::array<std::uint8_t, 16> occurrence_uuid{};
@@ -490,6 +498,7 @@ struct DiagnosticStorage {
   std::string message;
   std::string detail;
   std::vector<DiagnosticFieldStorage> fields;
+  std::vector<DiagnosticIdentityStorage> identity_fields;
   std::optional<scratchbird::core::diagnostics::CanonicalDiagnosticMetadata>
       canonical_metadata;
   std::optional<scratchbird::core::diagnostics::NativeDiagnosticSource>
@@ -5120,6 +5129,13 @@ void add_diagnostic(sb_engine_result_t result,
       storage.canonical_metadata = source->canonical_metadata;
     }
     storage.native_source = source->native_source;
+    // SB_SBMV_TYPED_UUID_FIELDS: the source's identity operands travel as 16 raw bytes (only the matching source, as every other source datum).
+    for (const auto& [key, identity] : source->identity_fields) {
+      DiagnosticIdentityStorage identity_storage;
+      identity_storage.key = key;
+      identity_storage.value = identity.bytes;
+      storage.identity_fields.push_back(std::move(identity_storage));
+    }
   }
   storage.view.severity = scratchbird::engine::PublicDiagnosticSeverity(
       storage.canonical_metadata, severity);
@@ -22413,8 +22429,14 @@ sb_engine_status_t DispatchStatementContextReceipt(
                                 {"column_bound", std::to_string(scratchbird::engine::sblr::kNativeLiteralValuesMaxColumns)}});
         }
         // the table's own code and fields (opcode_code); the dispatch gate knows the opcode, not a row, so there is no row_identity_sha256
+        // SB_SBMV_TYPED_UUID_FIELDS. OLD: this refusal passed no source diagnostic, so it carried the opcode only although the comment above says
+        // "identities: the table and the database". NEW: the table's own diagnostic (NativeExecutorNotImplementedDiagnostic) is the source, so the
+        // refusal carries availability_table_uuid and database_uuid as binary identities (the opcode_code field is unchanged).
+        scratchbird::engine::internal_api::EngineApiDiagnostic not_implemented =
+            scratchbird::engine::internal_api::NativeExecutorNotImplementedDiagnostic(
+                native_facts ? native_facts->database_uuid : scratchbird::engine::internal_api::EngineUuid{}, code, std::string{});
         return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED",
-                           "sblr.executor.native_not_implemented", {}, {{"opcode_code", std::to_string(code)}});
+                           "sblr.executor.native_not_implemented", {}, {{"opcode_code", std::to_string(code)}}, nullptr, &not_implemented);
       }
     }
   }
@@ -36764,6 +36786,10 @@ bool CopyEngineDiagnosticSnapshot(
     copy.fields.reserve(diagnostic.fields.size());
     for (const auto& field : diagnostic.fields) {
       copy.fields.push_back({field.key, field.value});
+    }
+    copy.identity_fields.reserve(diagnostic.identity_fields.size());
+    for (const auto& identity : diagnostic.identity_fields) {
+      copy.identity_fields.push_back({identity.key, identity.value});
     }
     if (!IsConsistentEngineDiagnosticSnapshot(copy)) return false;
     *snapshot = std::move(copy);

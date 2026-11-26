@@ -18,6 +18,7 @@
 #include "native_select_one_test.cpp"
 
 #include "embedded/embedded_engine_client.hpp"
+#include "sblr_dispatch_server.hpp"  // SB_SBMV_TYPED_UUID_FIELDS seams: RegisteredEngineDiagnosticIdentityFieldsForTest, PeerAcceptsTypedUuidDiagnosticFieldsForTest
 #include "wire/sbsql_test_wire.hpp"
 
 namespace scratchbird::parser::sbsql {
@@ -307,9 +308,19 @@ void CheckEngineFields(const Ran& ran, const std::string& sql, const std::string
     }
   }
   (void)parser_only;
-  // no identity UUID rides the text message vector (a typed binary field is an owner question): no field named *uuid reaches the parser from the engine's diagnostic
+  // OLD (b906cae90): for EVERY field of every diagnostic, Check(f.name.find("uuid") == npos, "no identity UUID field is forwarded") (a typed binary field was an owner question).
+  // NEW (2026-12-17; owner 2026-11-26 "yes, native-only"; SB_SBMV_TYPED_UUID_FIELDS): a TEXT field named *uuid is still never forwarded (unchanged); a field of kind
+  // binary_uuid is allowed ONLY for a registered (code, name) pair and only as exactly 16 bytes (the exact bytes are asserted in the `typed_uuid` state and by native_wire_exchange.py).
   for (const auto& d : ran.result.messages.diagnostics)
-    for (const auto& f : d.fields) Check(f.name.find("uuid") == std::string::npos, "(D) '" + sql + "': no identity UUID field is forwarded: " + f.name);
+    for (const auto& f : d.fields) {
+      if (f.kind == scratchbird::parser::ipc::FieldKind::binary_uuid) {
+        const bool registered = (d.code == "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED" && (f.name == "availability_table_uuid" || f.name == "database_uuid")) ||
+                                (d.code == "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY" && f.name == "database_uuid");
+        Check(registered && f.value.size() == 16, "(D) '" + sql + "': a binary identity field is a registered (code, name) of exactly 16 bytes: " + d.code + " " + f.name);
+      } else {
+        Check(f.name.find("uuid") == std::string::npos, "(D) '" + sql + "': no uuid-named TEXT field is forwarded: " + f.name);
+      }
+    }
 }
 
 void RouteBState() {
@@ -995,9 +1006,343 @@ void RouteBTraceState() {
   one.reset();
 }
 
+// ---- SB_SBMV_TYPED_UUID_FIELDS (2026-12-17; owner 2026-11-26 "Yes, native-only") ----------------------------------------------------------------------------
+// The engine diagnostic's identity UUIDs (availability_table_uuid, database_uuid) reach the parser as SBMV v1 registered value type 5 (system_uuid) TLVs, native
+// sessions only. State `typed_uuid` of this executable: (1) the real pipeline (RunPipeline over the embedded client and the real server handlers) hands the
+// parser the EXACT 16 bytes the engine put; (2) the encoder writes them only for a negotiating peer and only for a registered (code, name); (3) the decoder
+// refuses every malformed form with its own token; (4) a text TLV with a uuid-named field is still refused.
+namespace tu {
+namespace ipcns = scratchbird::parser::ipc;
+using Bytes16 = std::array<std::uint8_t, 16>;
+struct RawTlv { std::string name; std::uint16_t type; std::string value; std::uint32_t declared_len = 0xffffffffu; };
+void PutLe(std::vector<std::uint8_t>* out, std::size_t at, std::uint64_t value, unsigned width) {
+  if (out->size() < at + width) out->resize(at + width, 0);
+  for (unsigned i = 0; i < width; ++i) (*out)[at + i] = static_cast<std::uint8_t>(value >> (8 * i));
+}
+void PutPadded(std::vector<std::uint8_t>* record, const std::string& text) {
+  record->insert(record->end(), text.begin(), text.end());
+  while (record->size() % 4 != 0) record->push_back(0);
+}
+// An SBMV v1 set with ONE record, built independently of the server's encoder (the decoder's own framing rules: sizes, CRCs, padding), carrying `tlvs` as its fields.
+std::vector<std::uint8_t> BuildSbmv(const std::string& code, const Bytes16& request, const std::vector<RawTlv>& tlvs, std::uint16_t declared_field_count = 0xffff,
+                                    std::uint16_t declared_detail_count = 0) {
+  std::vector<std::uint8_t> record(112, 0);
+  PutLe(&record, 8, 1, 2);
+  record[10] = 0;
+  record[11] = 2;
+  const auto vector_uuid = srv::sbps::MakeUuidV7Bytes();
+  std::copy(vector_uuid.begin(), vector_uuid.end(), record.begin() + 16);
+  const auto occurrence = srv::sbps::MakeUuidV7Bytes();
+  std::copy(occurrence.begin(), occurrence.end(), record.begin() + 32);
+  std::copy(request.begin(), request.end(), record.begin() + 48);
+  PutLe(&record, 88, 0x52565253u, 4);
+  const std::string language = "en", message_key = "tu.key", safe = "typed uuid test";
+  PutLe(&record, 92, language.size(), 2);
+  PutLe(&record, 94, code.size(), 2);
+  PutLe(&record, 96, message_key.size(), 2);
+  PutLe(&record, 98, 0, 2);
+  PutLe(&record, 100, safe.size(), 2);
+  PutLe(&record, 102, declared_field_count == 0xffff ? tlvs.size() : declared_field_count, 2);
+  PutLe(&record, 104, declared_detail_count, 2);
+  PutPadded(&record, language);
+  PutPadded(&record, code);
+  PutPadded(&record, message_key);
+  PutPadded(&record, std::string());
+  PutPadded(&record, safe);
+  for (const auto& tlv : tlvs) {
+    const auto at = record.size();
+    PutLe(&record, at, tlv.name.size(), 2);
+    PutLe(&record, at + 2, tlv.type, 2);
+    PutLe(&record, at + 4, tlv.declared_len != 0xffffffffu ? tlv.declared_len : tlv.value.size(), 4);
+    record.insert(record.end(), tlv.name.begin(), tlv.name.end());
+    record.insert(record.end(), tlv.value.begin(), tlv.value.end());
+    while (record.size() % 4 != 0) record.push_back(0);
+  }
+  PutLe(&record, 0, record.size(), 4);
+  PutLe(&record, 4, 0, 4);
+  PutLe(&record, 4, srv::sbps::Crc32c(record.data(), record.size()), 4);
+  std::vector<std::uint8_t> set(64, 0);
+  PutLe(&set, 0, 0x564d4253u, 4);
+  PutLe(&set, 4, 64, 2);
+  PutLe(&set, 6, 1, 2);
+  PutLe(&set, 12, 1, 4);
+  PutLe(&set, 16, 64 + record.size(), 4);
+  PutLe(&set, 20, srv::sbps::Crc32c(record.data(), record.size()), 4);
+  PutLe(&set, 24, 1, 8);
+  const auto set_uuid = srv::sbps::MakeUuidV7Bytes();
+  std::copy(set_uuid.begin(), set_uuid.end(), set.begin() + 32);
+  PutLe(&set, 48, 65536, 4);
+  PutLe(&set, 52, 0, 4);
+  PutLe(&set, 52, srv::sbps::Crc32c(set.data(), set.size()), 4);
+  set.insert(set.end(), record.begin(), record.end());
+  return set;
+}
+std::string Raw(const Bytes16& bytes) { return std::string(reinterpret_cast<const char*>(bytes.data()), 16); }
+// A UUIDv7-shaped test identity (nothing in a catalog): version 7, RFC variant.
+Bytes16 V7(std::uint8_t tag) {
+  Bytes16 bytes{0x01, 0x9e, 0x5a, 0x11, 0x22, 0x33, 0x70, 0x44, 0x80, 0x55, tag, tag, tag, tag, tag, tag};
+  return bytes;
+}
+struct Decoded { bool ok = false; std::string reason; ipcns::MessageVectorSet messages; };
+Decoded Decode(const std::vector<std::uint8_t>& set, const Bytes16& request, bool negotiated) {
+  Decoded out;
+  out.ok = ipcns::DecodeTypedMessageVectorForTest(set, request, negotiated, &out.reason, &out.messages);
+  return out;
+}
+std::vector<const ipcns::Field*> BinaryFields(const Decoded& d) {
+  std::vector<const ipcns::Field*> found;
+  for (const auto& diagnostic : d.messages.diagnostics)
+    for (const auto& field : diagnostic.fields)
+      if (field.kind == ipcns::FieldKind::binary_uuid) found.push_back(&field);
+  return found;
+}
+// Everything random in an encoded set (the set and vector identities and the CRCs they feed) zeroed, so two encodings of the same diagnostics compare byte for byte.
+std::vector<std::uint8_t> Normalised(std::vector<std::uint8_t> set) {
+  const auto zero = [&](std::size_t at, std::size_t n) { for (std::size_t i = 0; i < n && at + i < set.size(); ++i) set[at + i] = 0; };
+  zero(20, 4); zero(32, 16); zero(52, 4);
+  std::size_t at = 64;
+  while (at + 112 <= set.size()) {
+    const auto size = static_cast<std::size_t>(set[at]) | (static_cast<std::size_t>(set[at + 1]) << 8) | (static_cast<std::size_t>(set[at + 2]) << 16) | (static_cast<std::size_t>(set[at + 3]) << 24);
+    zero(at + 4, 4); zero(at + 16, 16);
+    if (size < 112) break;
+    at += size;
+  }
+  return set;
+}
+bool ContainsTypeFive(const std::vector<std::uint8_t>& set) {
+  // walk the one-record sets this test builds: the field TLVs start after the five padded strings
+  std::size_t at = 64;
+  while (at + 112 <= set.size()) {
+    const auto size = static_cast<std::size_t>(set[at]) | (static_cast<std::size_t>(set[at + 1]) << 8) | (static_cast<std::size_t>(set[at + 2]) << 16) | (static_cast<std::size_t>(set[at + 3]) << 24);
+    if (size < 112 || at + size > set.size()) return false;
+    const auto len = [&](std::size_t off) { return static_cast<std::size_t>(set[at + off]) | (static_cast<std::size_t>(set[at + off + 1]) << 8); };
+    const auto padded = [](std::size_t n) { return (n + 3) & ~std::size_t(3); };
+    std::size_t cursor = at + 112 + padded(len(92)) + padded(len(94)) + padded(len(96)) + padded(len(98)) + padded(len(100));
+    for (std::size_t i = 0; i < len(102); ++i) {
+      if (cursor + 8 > at + size) return false;
+      const auto key = static_cast<std::size_t>(set[cursor]) | (static_cast<std::size_t>(set[cursor + 1]) << 8);
+      const auto type = static_cast<std::size_t>(set[cursor + 2]) | (static_cast<std::size_t>(set[cursor + 3]) << 8);
+      const auto value = static_cast<std::size_t>(set[cursor + 4]) | (static_cast<std::size_t>(set[cursor + 5]) << 8) | (static_cast<std::size_t>(set[cursor + 6]) << 16);
+      if (type == 5) return true;
+      cursor += 8 + padded(key + value) ;
+    }
+    at += size;
+  }
+  return false;
+}
+}  // namespace tu
+
+void TypedUuidState() {
+  (void)std::setvbuf(stdout, nullptr, _IONBF, 0);
+  using tu::Bytes16;
+  namespace ipcns = scratchbird::parser::ipc;
+  const Bytes16 table_uuid = api::NativeExecutorAvailabilityTableUuid().bytes;
+  const Bytes16 database_uuid = served.facts->database_uuid.bytes;
+  Check(table_uuid != database_uuid && tu::V7(1) != tu::V7(2), "(tu) the two engine identities are distinct (an exact-bytes comparison can tell them apart)");
+  srv::ServerSessionRegistry registry;
+  Pipe one(registry);
+  const auto order1 = one.order();
+  Check(order1 != 0, "(tu) the session's login began a transaction");
+  const auto binary_of = [](const ps2::PipelineResult& result, const std::string& code) {
+    std::vector<std::pair<std::string, std::string>> found;
+    for (const auto& d : result.messages.diagnostics)
+      if (d.code == code)
+        for (const auto& f : d.fields)
+          if (f.kind == ipcns::FieldKind::binary_uuid) found.emplace_back(f.name, f.value);
+    return found;
+  };
+  const auto all_binary = [](const ps2::PipelineResult& result) {
+    std::size_t count = 0;
+    for (const auto& d : result.messages.diagnostics) for (const auto& f : d.fields) if (f.kind == ipcns::FieldKind::binary_uuid) ++count;
+    return count;
+  };
+
+  // ---- (1) THE REAL PIPELINE: the parser receives the exact 16 bytes the engine put ----------------------------------------------------------------------
+  // OLD (b906cae90): the refusals' identity fields (availability_table_uuid, database_uuid) were NOT forwarded: the engine dropped them before the snapshot and the
+  // SBMV v1 text TLV refuses uuid-named fields. NEW: the dispatch-gate refusal carries them as type 5 TLVs to a native session; the parser's diagnostic holds them as
+  // binary_uuid fields. `SELECT 1 + 0` is the operator-call row (opcode 1025); the aggregate over VALUES is the gate shape 4615.
+  const std::vector<std::pair<std::string, std::string>> gate_shapes = {
+      {"SELECT 1 + 0", "1025"},
+      {"SELECT key_a, COUNT(*), SUM(amount) FROM (VALUES (1, 5), (1, 7)) AS input(key_a, amount) GROUP BY key_a", "4615"}};
+  for (const auto& [sql, opcode] : gate_shapes) {
+    const auto ran = RunSql(one, sql, 0);
+    const auto found = binary_of(ran.result, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED");
+    Check(!ran.result.accepted && FirstCode(ran.result) == "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED" && FieldNamed(ran.result, "opcode_code") == opcode,
+          "(tu) '" + sql + "' is refused at the dispatch gate with opcode_code=" + opcode + " (text field, unchanged): " + AllCodes(ran.result));
+    Check(found.size() == 2 && found[0].first == "availability_table_uuid" && found[1].first == "database_uuid",
+          "(tu) '" + sql + "': exactly two binary fields, availability_table_uuid then database_uuid: " + std::to_string(found.size()));
+    Check(found.size() == 2 && found[0].second == tu::Raw(table_uuid),
+          "(tu) '" + sql + "': availability_table_uuid is EXACTLY the engine's 16 table-identity bytes (NativeExecutorAvailabilityTableUuid)");
+    Check(found.size() == 2 && found[1].second == tu::Raw(database_uuid),
+          "(tu) '" + sql + "': database_uuid is EXACTLY the 16 bytes page zero gave the served database (served.facts->database_uuid)");
+    // the public renderers drop a binary_uuid by design (owner Q194): neither the raw bytes, their hex nor their canonical text reach a rendering
+    const auto json = ipcns::MessageVectorToJson(ran.result.messages);
+    for (const auto& field : ran.result.messages.diagnostics.front().fields) {
+      if (field.kind != ipcns::FieldKind::binary_uuid) continue;
+      Check(json.find(ipcns::RenderFieldValue(field)) == std::string::npos && json.find(field.name) == std::string::npos,
+            "(tu) the public rendering of '" + sql + "' does not show the identity field " + field.name);
+    }
+    // the server's own text view of the diagnostic (code{key=value}) holds no identity key: the text registry still refuses a uuid-named field
+    Check(ran.server_diagnostics.find("availability_table_uuid") == std::string::npos && ran.server_diagnostics.find("database_uuid") == std::string::npos,
+          "(tu) '" + sql + "': the server's text fields carry no uuid-named key: " + ran.server_diagnostics);
+    Check(one.order() == order1, "(tu) the transaction is unchanged after '" + sql + "'");
+  }
+  // refusals whose engine diagnostic carries NO registered identity forward none; a parser-only refusal never reached the engine
+  for (const std::string sql : {"SELECT 'a'", "VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(14),(15),(16),(17)", "SELECT * FROM (VALUES (1)) AS t(x, y)"}) {
+    const auto ran = RunSql(one, sql, 0);
+    Check(!ran.result.accepted && all_binary(ran.result) == 0, "(tu) '" + sql + "' is refused and carries no binary identity field: " + AllCodes(ran.result));
+  }
+  // an accepted statement has no diagnostics at all
+  {
+    const auto ran = RunSql(one, "SELECT 1", 0);
+    Check(ran.result.accepted && all_binary(ran.result) == 0, "(tu) an accepted statement carries no identity field");
+  }
+
+  // ---- (2) THE SERVER'S REGISTRY AND THE ONE NEGOTIATION DECISION ------------------------------------------------------------------------------------------
+  {
+    using Id = scratchbird::server_engine_bridge::EngineDiagnosticIdentityField;
+    const Bytes16 v4{0x01, 0x9e, 0x5a, 0x11, 0x22, 0x33, 0x40, 0x44, 0x80, 0x55, 1, 1, 1, 1, 1, 1};        // version 4
+    const Bytes16 bad_variant{0x01, 0x9e, 0x5a, 0x11, 0x22, 0x33, 0x70, 0x44, 0xc0, 0x55, 1, 1, 1, 1, 1, 1};  // variant 11xx
+    const std::vector<Id> candidates = {{"availability_table_uuid", table_uuid}, {"object_uuid", tu::V7(3)}, {"database_uuid", database_uuid},
+                                        {"database_uuid", tu::V7(4)}, {"facts_database_uuid", tu::V7(5)}};
+    const auto kept = srv::RegisteredEngineDiagnosticIdentityFieldsForTest("SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", candidates);
+    Check(kept.size() == 2 && kept[0].first == "availability_table_uuid" && kept[0].second == table_uuid && kept[1].first == "database_uuid" && kept[1].second == database_uuid,
+          "(tu) the registry keeps the two registered names for NATIVE_NOT_IMPLEMENTED in order, the first of a repeated name, drops unregistered names");
+    const auto restricted = srv::RegisteredEngineDiagnosticIdentityFieldsForTest("ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY", candidates);
+    Check(restricted.size() == 1 && restricted[0].first == "database_uuid" && restricted[0].second == database_uuid,
+          "(tu) DATABASE_RESTRICTED_READ_ONLY may carry database_uuid only (availability_table_uuid is not registered for it)");
+    for (const char* code : {"ENGINE.NATIVE.OPERATION_NOT_BUILT", "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT", "ENGINE.STATEMENT_CONTEXT.NATIVE_DATABASE_FAILED", "SBLR.EXECUTOR.NATIVE_AVAILABILITY_IMMUTABLE"})
+      Check(srv::RegisteredEngineDiagnosticIdentityFieldsForTest(code, candidates).empty(), std::string("(tu) ") + code + " has no registered identity field");
+    const std::vector<Id> invalid = {{"database_uuid", Bytes16{}}, {"availability_table_uuid", v4}};
+    Check(srv::RegisteredEngineDiagnosticIdentityFieldsForTest("SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", invalid).empty(), "(tu) a nil identity and a version-4 identity are dropped");
+    Check(srv::RegisteredEngineDiagnosticIdentityFieldsForTest("SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", {{"database_uuid", bad_variant}}).empty(), "(tu) a non-RFC-variant identity is dropped");
+    srv::ServerSessionRecord legacy;
+    const auto found = registry.sessions_by_uuid.find(one.session().session_uuid);
+    Check(found != registry.sessions_by_uuid.end() && found->second.native_session_approved, "(tu) the pipeline's session is a native session");
+    Check(found != registry.sessions_by_uuid.end() && srv::PeerAcceptsTypedUuidDiagnosticFieldsForTest(found->second), "(tu) a native session negotiated typed UUID fields");
+    Check(!legacy.native_session_approved && !srv::PeerAcceptsTypedUuidDiagnosticFieldsForTest(legacy), "(tu) a legacy session did NOT negotiate them");
+  }
+
+  // ---- (3) THE ENCODER: typed fields only to a negotiating peer, only registered, never text -------------------------------------------------------------------
+  {
+    const Bytes16 request = tu::V7(9);
+    srv::ServerDiagnostic base;
+    base.code = "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED";
+    base.message_key = "sblr.executor.native_not_implemented";
+    base.safe_message = "refused";
+    base.fields.push_back({"opcode_code", "1025"});
+    auto native = base;
+    native.typed_uuid_fields = {{"availability_table_uuid", table_uuid}, {"database_uuid", database_uuid}};
+    const auto plain_bytes = tu::Normalised(srv::sbps::EncodeMessageVectorSet({base}, request));
+    // a legacy peer: the two-argument overload and the flag-false overload are BYTE-IDENTICAL to a diagnostic that carries no typed field
+    const auto legacy_two = srv::sbps::EncodeMessageVectorSet({native}, request);
+    const auto legacy_three = srv::sbps::EncodeMessageVectorSet({native}, request, false);
+    Check(tu::Normalised(legacy_two) == plain_bytes && tu::Normalised(legacy_three) == plain_bytes,
+          "(tu) a diagnostic WITH typed fields encoded for a non-negotiating peer is byte-identical (identities, CRCs normalised) to the same diagnostic without them");
+    Check(!tu::ContainsTypeFive(legacy_two) && !tu::ContainsTypeFive(legacy_three), "(tu) a non-negotiating peer's set holds no type 5 TLV");
+    const auto negotiated = srv::sbps::EncodeMessageVectorSet({native}, request, true);
+    Check(tu::ContainsTypeFive(negotiated), "(tu) a negotiating peer's set holds a type 5 TLV");
+    Check(negotiated.size() == legacy_two.size() + 2 * (8 + 24 + 16) + 0 || negotiated.size() > legacy_two.size(), "(tu) and is longer by the two TLVs");
+    const auto got = tu::Decode(negotiated, request, true);
+    const auto fields = tu::BinaryFields(got);
+    Check(got.ok && fields.size() == 2 && fields[0]->name == "availability_table_uuid" && fields[0]->value == tu::Raw(table_uuid) && fields[1]->name == "database_uuid" &&
+              fields[1]->value == tu::Raw(database_uuid),
+          "(tu) the decoder gives the encoder's exact bytes back, in order, as binary_uuid fields: " + got.reason);
+    Check(got.ok && !got.messages.diagnostics.empty() && got.messages.diagnostics.front().code == "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED" && [&] {
+      for (const auto& f : got.messages.diagnostics.front().fields) if (f.name == "opcode_code" && f.kind == ipcns::FieldKind::text && f.value == "1025") return true;
+      return false; }(), "(tu) the text field opcode_code rides beside them, unchanged");
+    const auto refused_unnegotiated = tu::Decode(negotiated, request, false);
+    Check(!refused_unnegotiated.ok && refused_unnegotiated.reason == "typed_uuid_not_negotiated", "(tu) a decoder that did not negotiate refuses a typed field: " + refused_unnegotiated.reason);
+    Check(tu::Decode(legacy_two, request, false).ok && tu::Decode(legacy_two, request, true).ok, "(tu) the legacy bytes decode with either decoder");
+    // registry bypass attempts: every one is DROPPED by the encoder (the set equals the plain set), never written, never converted to text
+    const auto dropped = [&](srv::ServerDiagnostic diagnostic, const std::string& what) {
+      Check(tu::Normalised(srv::sbps::EncodeMessageVectorSet({diagnostic}, request, true)) == tu::Normalised(srv::sbps::EncodeMessageVectorSet({[&] { auto d = diagnostic; d.typed_uuid_fields.clear(); return d; }()}, request, true)) &&
+                !tu::ContainsTypeFive(srv::sbps::EncodeMessageVectorSet({diagnostic}, request, true)),
+            "(tu) the encoder drops " + what);
+    };
+    { auto d = base; d.typed_uuid_fields = {{"object_uuid", database_uuid}}; dropped(d, "an unregistered name"); }
+    { auto d = base; d.code = "ENGINE.NATIVE.OPERATION_NOT_BUILT"; d.typed_uuid_fields = {{"database_uuid", database_uuid}}; dropped(d, "a registered name on a code that does not register it"); }
+    { auto d = base; d.code = "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY"; d.typed_uuid_fields = {{"availability_table_uuid", table_uuid}}; dropped(d, "availability_table_uuid on a code that registers only database_uuid"); }
+    { auto d = base; d.typed_uuid_fields = {{"database_uuid", Bytes16{}}}; dropped(d, "a nil identity"); }
+    { auto d = base; d.typed_uuid_fields = {{"database_uuid", Bytes16{0x01, 0x9e, 0x5a, 0x11, 0x22, 0x33, 0x40, 0x44, 0x80, 0x55, 1, 1, 1, 1, 1, 1}}}; dropped(d, "a version-4 identity"); }
+    {
+      auto d = base;
+      d.typed_uuid_fields = {{"database_uuid", tu::V7(7)}, {"database_uuid", tu::V7(8)}};
+      const auto set = srv::sbps::EncodeMessageVectorSet({d}, request, true);
+      const auto got_dup = tu::Decode(set, request, true);
+      const auto dup_fields = tu::BinaryFields(got_dup);
+      Check(got_dup.ok && dup_fields.size() == 1 && dup_fields[0]->value == tu::Raw(tu::V7(7)), "(tu) a repeated name is written once, the first");
+    }
+    // a uuid-named TEXT field is still refused by the encoder's public filter (not converted to a typed field)
+    {
+      auto d = base;
+      d.fields.push_back({"database_uuid", "not_a_uuid_but_named_one"});
+      const auto set = srv::sbps::EncodeMessageVectorSet({d}, request, true);
+      const auto got_text = tu::Decode(set, request, true);
+      bool text_named = false;
+      for (const auto& diagnostic : got_text.messages.diagnostics) for (const auto& f : diagnostic.fields) if (f.name == "database_uuid") text_named = true;
+      Check(got_text.ok && !text_named && tu::BinaryFields(got_text).empty(), "(tu) a text field named database_uuid is dropped by the encoder (still refused), no typed field appears");
+    }
+  }
+
+  // ---- (4) THE DECODER: malformed forms, each refused with its own token -----------------------------------------------------------------------------------
+  {
+    const Bytes16 request = tu::V7(10);
+    const std::string code = "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED";
+    const std::string good = tu::Raw(table_uuid);
+    const auto run = [&](const std::string& with_code, std::vector<tu::RawTlv> tlvs, bool negotiated, std::uint16_t fields = 0xffff, std::uint16_t details = 0) {
+      return tu::Decode(tu::BuildSbmv(with_code, request, tlvs, fields, details), request, negotiated);
+    };
+    {
+      const auto ok = run(code, {{"opcode_code", 1, "1025"}, {"availability_table_uuid", 5, good}}, true);
+      const auto fields = tu::BinaryFields(ok);
+      Check(ok.ok && fields.size() == 1 && fields[0]->value == good, "(tu) control: an independently built set with one valid typed field decodes to its exact bytes");
+    }
+    struct Case { const char* what; std::vector<tu::RawTlv> tlvs; const char* reason; };
+    const std::vector<Case> cases = {
+        {"15 bytes", {{"availability_table_uuid", 5, good.substr(0, 15)}}, "typed_uuid_length_invalid"},
+        {"17 bytes", {{"availability_table_uuid", 5, good + "x"}}, "typed_uuid_length_invalid"},
+        {"0 bytes", {{"availability_table_uuid", 5, ""}}, "typed_uuid_length_invalid"},
+        {"an unregistered name", {{"object_uuid", 5, good}}, "typed_uuid_field_not_registered"},
+        {"another unregistered name", {{"sessions_uuid", 5, good}}, "typed_uuid_field_not_registered"},
+        {"a repeated name", {{"availability_table_uuid", 5, good}, {"availability_table_uuid", 5, good}}, "typed_uuid_field_duplicate"},
+        {"a nil identity", {{"database_uuid", 5, std::string(16, '\0')}}, "typed_uuid_value_invalid"},
+        {"a version-4 identity", {{"database_uuid", 5, tu::Raw(Bytes16{0x01, 0x9e, 0x5a, 0x11, 0x22, 0x33, 0x40, 0x44, 0x80, 0x55, 1, 1, 1, 1, 1, 1})}}, "typed_uuid_value_invalid"},
+        {"a wrong-variant identity", {{"database_uuid", 5, tu::Raw(Bytes16{0x01, 0x9e, 0x5a, 0x11, 0x22, 0x33, 0x70, 0x44, 0xc0, 0x55, 1, 1, 1, 1, 1, 1})}}, "typed_uuid_value_invalid"},
+        {"a truncated value (declared 16, 4 present)", {{"database_uuid", 5, "abcd", 16}}, "typed_uuid_truncated"},
+        {"a text TLV carrying a uuid-named field", {{"database_uuid", 1, "abc"}}, "text_field_not_public"},
+        {"a text TLV carrying a uuid-named field with canonical UUID text", {{"database_uuid", 1, "019e5a00-0000-7000-8000-0000000000aa"}}, "text_field_not_public"},
+        {"a text TLV carrying a canonical UUID value under another name", {{"owner", 1, "019e5a00-0000-7000-8000-0000000000aa"}}, "text_field_not_public"},
+    };
+    for (const auto& c : cases) {
+      const auto got = run(code, c.tlvs, true);
+      Check(!got.ok && got.reason == c.reason && got.messages.diagnostics.empty(), std::string("(tu) ") + c.what + " is refused with " + c.reason + ": ok=" + std::to_string(got.ok) + " reason=" + got.reason);
+    }
+    {
+      const auto got = run("ENGINE.NATIVE.OPERATION_NOT_BUILT", {{"database_uuid", 5, good}}, true);
+      Check(!got.ok && got.reason == "typed_uuid_field_not_registered", "(tu) database_uuid on ENGINE.NATIVE.OPERATION_NOT_BUILT (registered for other codes only) is refused: " + got.reason);
+      const auto got2 = run("ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY", {{"availability_table_uuid", 5, good}}, true);
+      Check(!got2.ok && got2.reason == "typed_uuid_field_not_registered", "(tu) availability_table_uuid on DATABASE_RESTRICTED_READ_ONLY is refused: " + got2.reason);
+      const auto got3 = run("ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY", {{"database_uuid", 5, good}}, true);
+      Check(got3.ok && tu::BinaryFields(got3).size() == 1, "(tu) database_uuid on DATABASE_RESTRICTED_READ_ONLY is accepted");
+    }
+    {
+      const auto got = run(code, {{"database_uuid", 5, good}}, false);
+      Check(!got.ok && got.reason == "typed_uuid_not_negotiated", "(tu) a typed field to a decoder that did not negotiate is refused: " + got.reason);
+      const auto in_details = run(code, {{"database_uuid", 5, good}}, true, 0, 1);
+      Check(!in_details.ok && in_details.reason == "typed_uuid_wrong_section", "(tu) a typed field in the details section (not the field section) is refused: " + in_details.reason);
+      const auto unknown_type = run(code, {{"opcode_code", 2, std::string(1, '\x01')}}, true);
+      Check(!unknown_type.ok && unknown_type.reason.empty(), "(tu) any other type (2 = boolean) is still refused exactly as before: " + unknown_type.reason);
+    }
+  }
+  Check(one.order() == order1 && off::ReadFile(served.path, served.facts->page_size_bytes).words.at(order1).state == pgs::TipStateCode::active, "(tu) the transaction is still active at the end");
+  one.End();
+}
+
 std::optional<int> ExtraReceiptStateForTest(const std::string& state, const Offline&) {
   if (state == "route_b") { RouteBState(); return 0; }
   if (state == "route_b2") { RouteB2State(); return 0; }
+  if (state == "typed_uuid") { TypedUuidState(); return 0; }
   if (state == "trace") { RouteBTraceState(); return 0; }
   return std::nullopt;
 }
@@ -1013,7 +1358,7 @@ int main(int argc, char** argv) {
   if ((argc == 3 || argc == 4) && std::string(argv[1]) == "size") {
     const std::string self = fs::read_symlink("/proc/self/exe").string();
     scratchbird::tests::OwnedTempDirectory artifacts;
-    // `size N` runs the route_b state; `size N route_b2` (this batch's parser additions) runs its own state
+    // `size N` runs the route_b state; `size N route_b2` (this batch's parser additions) and `size N typed_uuid` (typed binary identity fields) run their own states
     RunState(self, artifacts.path(), static_cast<std::uint32_t>(std::stoul(argv[2])), argc == 4 ? argv[3] : "route_b");
     artifacts.Cleanup();
     std::printf("native_route_b: %d driver checks passed\n", checks);

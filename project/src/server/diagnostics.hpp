@@ -82,6 +82,9 @@ struct ServerDiagnostic {
   std::string internal_audit_key;
   // Native identity evidence is kept separate from human-readable fields.
   std::vector<std::pair<std::string, core::platform::Uuid>> identity_fields;
+  // SEARCH_KEY: SB_SBMV_TYPED_UUID_FIELDS. Identity operands of a REGISTERED engine diagnostic (wire/message_vector_typed_uuid_registry.hpp), as the 16 raw
+  // bytes. Serialised ONLY by the encoder that is told the peer is a native session; every other encoder ignores them (a legacy peer's bytes are unchanged).
+  std::vector<std::pair<std::string, std::array<std::uint8_t, 16>>> typed_uuid_fields;
   // Newly emitted server records own this identity. An engine-to-server
   // adapter must preserve the engine occurrence instead of using this new ID.
   std::array<std::uint8_t, 16> occurrence_uuid =

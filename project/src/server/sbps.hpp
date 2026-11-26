@@ -1213,6 +1213,11 @@ std::optional<std::uint32_t> PayloadLengthFromHeader(const std::vector<std::uint
 std::vector<std::uint8_t> EncodeMessageVectorSet(
     const std::vector<ServerDiagnostic>& diagnostics,
     const std::array<std::uint8_t, 16>& request_uuid);
+// SB_SBMV_TYPED_UUID_FIELDS: as above, plus the registered typed UUID fields (type 5) when the peer is a native session (see sbps.cpp).
+std::vector<std::uint8_t> EncodeMessageVectorSet(
+    const std::vector<ServerDiagnostic>& diagnostics,
+    const std::array<std::uint8_t, 16>& request_uuid,
+    bool typed_uuid_peer);
 std::vector<std::string> DecodeMessageVectorDiagnosticCodes(const std::vector<std::uint8_t>& payload);
 
 std::vector<std::uint8_t> EncodeHelloRequestForTest();

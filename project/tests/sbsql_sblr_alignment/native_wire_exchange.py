@@ -172,7 +172,7 @@ def stop_server(process, work, tag, ctl="sc"):
     check(code == 0, f"{tag}: exit {code} after SIGTERM")
 
 
-def start_listener(args, work, database):
+def start_listener(args, work, database, env=None):
     last = None
     for attempt in range(3):                      # bind(0) then release is a race under -j parallel runs: retry on a new port
         port = find_free_port()
@@ -182,7 +182,7 @@ def start_listener(args, work, database):
             f"--server-endpoint=unix:{os.path.join(work, 'sc', 'sb_server.sbps.sock')}",
             f"--parser-executable={args.parser}", f"--control-dir={os.path.join(work, 'lc')}",
             f"--runtime-dir={os.path.join(work, 'lr')}", "--bind-address=127.0.0.1", f"--port={port}",
-            "--warm-pool-min=1", "--warm-pool-max=2"], work)
+            "--warm-pool-min=1", "--warm-pool-max=2"], work, env)
         try:
             wait_for_tcp(port, timeout=60)
             if process.poll() is None:
@@ -382,7 +382,10 @@ def run(args, work):
 
     log1 = os.path.join(work, "srv1.strace") if args.strace else None
     server = start_server(args, work, database, "server1", log1)
-    listener, port = start_listener(args, work, database)
+    # SB_SBMV_TYPED_UUID_FIELDS (2026-12-17): the parser's own non-authoritative trace names the typed UUID fields it received (the public renderers drop a binary
+    # identity by design, owner Q194): the listener forwards SCRATCHBIRD_SBPS_CLIENT_PHASE_TRACE_FILE to the parser it spawns (parser_pool.cpp, its explicit opt-in sink list).
+    typed_trace = os.path.join(work, "typed-uuid-trace.log")
+    listener, port = start_listener(args, work, database, dict(os.environ, SCRATCHBIRD_SBPS_CLIENT_PHASE_TRACE_FILE=typed_trace))
     logins = 0
 
     # --- the wrong password first: generic failure, the file is untouched ---
@@ -577,6 +580,30 @@ def run(args, work):
     # field, no wire change) and the line client renders it as a data field (statement 3: SELECT 1 + 0 is the operator-call row, opcode 1025).
     check(any("opcode_code=1025" in line for line in results[2]), f"route B line statement 3: the engine's opcode_code=1025 must reach the parser as a message-vector field: {results[2]!r}")
     check(not any("opcode_code=" in line for line in results[5]), f"route B line statement 6 (a decimal literal, the executor's own code): no opcode field is registered for it: {results[5]!r}")
+    # SB_SBMV_TYPED_UUID_FIELDS (2026-12-17; owner 2026-11-26 "yes, native-only"). OLD: the engine's identity UUIDs (availability_table_uuid, database_uuid) never reached the parser
+    # (SBMV v1 text TLVs refuse uuid-named fields). NEW: a native session's refusal carries them as SBMV v1 type 5 (system_uuid) TLVs through the real SBsrv -> SBParser exchange. The
+    # public rendering shows no identity (the line client's output holds none of the bytes); the parser's trace names the exact 16 bytes it received: the database UUID is the one
+    # `create` reported (read independently of the served engine) and the table identity is the engine's build constant (ASCII tag SBENAV in the tail).
+    database_hex = re.search(r"database=([0-9a-f]{32})", created.stdout)
+    check(database_hex is not None, f"the create output names the database UUID: {created.stdout[-300:]!r}")
+    table_hex = "019e5a000000700080" + "00" + "5342454e4156"
+    check(os.path.exists(typed_trace), "the parser wrote no trace: the environment did not reach it (the typed-field assertion would be vacuous)")
+    with open(typed_trace, encoding="utf-8") as handle:
+        typed_lines = [line.rstrip("\n").split("\t") for line in handle if line.startswith("layer=engine_diagnostic_typed_uuid")]
+    received = {}
+    for parts in typed_lines:
+        item = dict(part.split("=", 1) for part in parts[1:])
+        received.setdefault(item["code"], []).append((item["field"], item["uuid_hex"]))
+    refusals = received.get("SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", [])
+    check(refusals and len(refusals) % 2 == 0, f"the parser received typed UUID fields for NATIVE_NOT_IMPLEMENTED: {received!r}")
+    for index in range(0, len(refusals), 2):
+        check(refusals[index] == ("availability_table_uuid", table_hex) and refusals[index + 1] == ("database_uuid", database_hex.group(1)),
+              f"the parser received EXACTLY the table build constant and the database UUID create reported: got {refusals[index:index + 2]!r}, wanted table {table_hex} database {database_hex.group(1)}")
+    check(set(received) == {"SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"}, f"no other refusal carried a typed identity: {received!r}")
+    for index, reply in enumerate(results):
+        text = "".join(reply)
+        check(table_hex not in text.lower() and database_hex.group(1) not in text.lower() and "availability_table_uuid" not in text and "database_uuid" not in text,
+              f"route B line statement {index + 1}: the client-visible output shows an identity: {text[:300]!r}")
 
     # --- shutdown, listener first, then the server ---
     listener_process = listener

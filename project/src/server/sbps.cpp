@@ -10,6 +10,7 @@
 
 #include "sbps.hpp"
 #include "core/uuid/uuid.hpp"
+#include "wire/message_vector_typed_uuid_registry.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -946,6 +947,18 @@ DecodeResult DecodeFrameBytes(const std::vector<std::uint8_t>& bytes,
 std::vector<std::uint8_t> EncodeMessageVectorSet(
     const std::vector<ServerDiagnostic>& diagnostics,
     const std::array<std::uint8_t, 16>& request_uuid) {
+  // OLD and unchanged: every caller that is not told the peer negotiated typed UUID fields gets text TLVs only (byte-for-byte the v1 encoding).
+  return EncodeMessageVectorSet(diagnostics, request_uuid, false);
+}
+
+// SEARCH_KEY: SB_SBMV_TYPED_UUID_FIELDS. `typed_uuid_peer` is true ONLY when the peer is a NATIVE session (the receipt announced as wire extension 75):
+// then, and only then, a diagnostic's typed_uuid_fields are written as SBMV v1 registered value type 5 (system_uuid, 16 raw bytes) TLVs after its text
+// fields. A field is written only if (code, name) is in the registry, its 16 bytes are a non-nil UUIDv7, and its name was not already written; anything
+// else is dropped (never converted to text). With `typed_uuid_peer` false the bytes are exactly those of the two-argument overload.
+std::vector<std::uint8_t> EncodeMessageVectorSet(
+    const std::vector<ServerDiagnostic>& diagnostics,
+    const std::array<std::uint8_t, 16>& request_uuid,
+    bool typed_uuid_peer) {
   std::vector<std::uint8_t> records;
   bool set_redacted = false;
   for (const auto& diagnostic : diagnostics) {
@@ -972,6 +985,17 @@ std::vector<std::uint8_t> EncodeMessageVectorSet(
         public_fields.push_back(field);
       }
     }
+    std::vector<std::pair<std::string, std::array<std::uint8_t, 16>>> typed_fields;
+    if (typed_uuid_peer) {
+      for (const auto& [key, value] : diagnostic.typed_uuid_fields) {
+        if (!wire::message_vector::IsRegisteredTypedUuidField(diagnostic.code, key) ||
+            !wire::message_vector::IsSystemUuidValue(value.data(), value.size())) {
+          continue;
+        }
+        if (std::any_of(typed_fields.begin(), typed_fields.end(), [&](const auto& kept) { return kept.first == key; })) continue;
+        typed_fields.emplace_back(key, value);
+      }
+    }
     const bool record_redacted =
         public_fields.size() != diagnostic.fields.size();
     set_redacted = set_redacted || record_redacted;
@@ -980,7 +1004,7 @@ std::vector<std::uint8_t> EncodeMessageVectorSet(
     PutAtU16(&record, 96, static_cast<std::uint16_t>(diagnostic.message_key.size()));
     PutAtU16(&record, 98, static_cast<std::uint16_t>(admin_detail_key.size()));
     PutAtU16(&record, 100, static_cast<std::uint16_t>(diagnostic.safe_message.size()));
-    PutAtU16(&record, 102, static_cast<std::uint16_t>(public_fields.size()));
+    PutAtU16(&record, 102, static_cast<std::uint16_t>(public_fields.size() + typed_fields.size()));
     record[108] = diagnostic.retryable ? 1 : 0;
     record[109] = record_redacted ? 1 : 0;
     PutPaddedString(&record, language);
@@ -990,6 +1014,10 @@ std::vector<std::uint8_t> EncodeMessageVectorSet(
     PutPaddedString(&record, diagnostic.safe_message);
     for (const auto& field : public_fields) {
       PutTlv(&record, field.key, 1, field.value);
+    }
+    for (const auto& [key, value] : typed_fields) {
+      PutTlv(&record, key, wire::message_vector::kTypedUuidFieldTypeCode,
+             std::string(reinterpret_cast<const char*>(value.data()), value.size()));
     }
     Pad4(&record);
     PutAtU32(&record, 0, static_cast<std::uint32_t>(record.size()));
