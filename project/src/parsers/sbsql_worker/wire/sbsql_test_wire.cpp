@@ -9092,7 +9092,16 @@ BuildEngineProjectedNativeBindingContext(
         return fail("output_expression_descriptor_missing");
       }
       std::string name;
-      if (relation.relation_kind == NativeRelationAstKind::kValues) {
+      if (relation.relation_kind == NativeRelationAstKind::kValues && ast.relations.size() == 1 &&
+          relation.relation_id == ast.root_relation_id) {
+        // SEARCH_KEY: SB_PARSER_VALUES_DEFAULT_COLUMN_NAME (2026-12-12; owner: the same rule as the unaliased scalar-projection route).
+        // A VALUES relation that is the whole statement and carries no names (`SELECT 1`, `VALUES (1, 2)`) is named column1, column2, ...
+        // by position (1-based), the name PostgreSQL gives VALUES. OLD: the fixture list {"key_a","key_b","amount"} leaked here as a
+        // user-visible name (`SELECT 1` printed `key_a`). Names are parser business; the engine sends none. A VALUES relation that feeds
+        // another relation (the aggregate / filter fixtures) keeps the fixture names below: there they are internal binding names and
+        // no result column carries them.
+        name = "column" + std::to_string(ordinal + 1);
+      } else if (relation.relation_kind == NativeRelationAstKind::kValues) {
         name = one_key || values_arity == 2
                    ? (ordinal == 0 ? "key_a" : "amount")
                    : (ordinal < kValuesNames.size()

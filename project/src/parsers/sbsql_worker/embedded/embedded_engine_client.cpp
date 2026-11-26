@@ -527,6 +527,28 @@ struct EmbeddedEngineClient::Impl {
   scratchbird::server::HostedEngineState engine_state;
   scratchbird::server::ServerSessionRegistry registry;
   bool started = false;
+#if defined(SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM)
+  // TEST ONLY (see embedded_engine_client.hpp): an engine state and a registry owned by the test; null in every production build (the macro is
+  // never defined there, so this block, BindExternalEngineForTest and LastExecuteRowPacketForTest are not compiled).
+  scratchbird::server::HostedEngineState* external_engine_state = nullptr;
+  scratchbird::server::ServerSessionRegistry* external_registry = nullptr;
+  std::string last_execute_row_packet;
+  std::string last_execute_server_diagnostics;
+#endif
+  // Every handler call goes through these two: the client's own state and registry (always, in production), or the test's (only when the test seam
+  // bound them).
+  scratchbird::server::HostedEngineState& State() {
+#if defined(SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM)
+    if (external_engine_state != nullptr) return *external_engine_state;
+#endif
+    return engine_state;
+  }
+  scratchbird::server::ServerSessionRegistry& Registry() {
+#if defined(SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM)
+    if (external_registry != nullptr) return *external_registry;
+#endif
+    return registry;
+  }
   std::array<std::uint8_t, 16> parser_package_uuid{};
   std::array<std::uint8_t, 16> dialect_profile_uuid{};
 
@@ -550,14 +572,14 @@ struct EmbeddedEngineClient::Impl {
                                      : config.parser_api_major;
     identity.parser_package_version_minor = 0;
     identity.parser_package_version_patch = 0;
-    registry.admitted_parser_identity_by_connection_uuid.insert_or_assign(
+    Registry().admitted_parser_identity_by_connection_uuid.insert_or_assign(
         scratchbird::core::platform::Uuid{connection_uuid}, identity);
   }
 
   bool PublishCanonicalNativeSessionIdentity(SessionContext* session) {
     if (session == nullptr || session->session_uuid.is_nil()) return false;
-    const auto found = registry.sessions_by_uuid.find(session->session_uuid);
-    if (found == registry.sessions_by_uuid.end()) return false;
+    const auto found = Registry().sessions_by_uuid.find(session->session_uuid);
+    if (found == Registry().sessions_by_uuid.end()) return false;
     EnsureEmbeddedParserIdentity();
     if (found->second.admitted_parser_package_uuid ==
         std::array<std::uint8_t, 16>{}) {
@@ -633,7 +655,7 @@ struct EmbeddedEngineClient::Impl {
         scratchbird::core::platform::Uuid scope_uuid, language_uuid;
         std::copy(scope.begin(), scope.end(), scope_uuid.bytes.begin());
         std::copy(language.begin(), language.end(), language_uuid.bytes.begin());
-        const auto listed = scratchbird::server::ListNamesForEmbedded(&registry, session_uuid, scope_uuid, language_uuid,
+        const auto listed = scratchbird::server::ListNamesForEmbedded(&Registry(), session_uuid, scope_uuid, language_uuid,
                                                                        continuation, max_entries);
         page.ok = listed.ok;
         page.refusal_code = listed.diagnostic.code;
@@ -752,6 +774,24 @@ EmbeddedEngineClient::EmbeddedEngineClient(ParserConfig config)
 
 EmbeddedEngineClient::~EmbeddedEngineClient() = default;
 
+#if defined(SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM) && defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+// SEARCH_KEY: SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM. TEST ONLY; not compiled into any production library.
+void EmbeddedEngineClient::BindExternalEngineForTest(scratchbird::server::HostedEngineState* engine_state,
+                                                     scratchbird::server::ServerSessionRegistry* registry) {
+  impl_->external_engine_state = engine_state;
+  impl_->external_registry = registry;
+  // the engine is already open (the test's served database): EnsureStarted must not try to open a path
+  impl_->started = engine_state != nullptr && registry != nullptr;
+}
+
+const std::string& EmbeddedEngineClient::LastExecuteRowPacketForTest() const { return impl_->last_execute_row_packet; }
+const std::string& EmbeddedEngineClient::LastExecuteServerDiagnosticsForTest() const { return impl_->last_execute_server_diagnostics; }
+void EmbeddedEngineClient::ResetLastExecuteForTest() {
+  impl_->last_execute_row_packet.clear();
+  impl_->last_execute_server_diagnostics.clear();
+}
+#endif
+
 bool EmbeddedEngineClient::AuthenticateAndAttach(
     const AuthCredentialEnvelope& credentials,
     SessionContext* session,
@@ -772,8 +812,8 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
       connection_uuid);
   auth_frame.payload = EncodeAuthPayload(credentials, connection_uuid);
   const auto auth_response = scratchbird::server::HandleAuthHandoff(
-      &impl_->registry,
-      impl_->engine_state,
+      &impl_->Registry(),
+      impl_->State(),
       auth_frame);
   if (!auth_response.accepted) {
     AddServerDiagnostics(auth_response.diagnostics, messages);
@@ -809,8 +849,8 @@ bool EmbeddedEngineClient::AuthenticateAndAttach(
   attach_frame.payload =
       EncodeAttachPayload(connection_uuid, auth_context_uuid, credentials.requested_database);
   const auto attached = scratchbird::server::HandleAttachDatabase(
-      &impl_->registry,
-      impl_->engine_state,
+      &impl_->Registry(),
+      impl_->State(),
       attach_frame);
   if (!attached.accepted) {
     AddServerDiagnostics(attached.diagnostics, messages);
@@ -942,8 +982,8 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
   }
   if (!impl_->EnsureStarted(credentials.requested_database, messages)) return false;
   auto attached = scratchbird::server::HandleEmbeddedSysarchAttach(
-      &impl_->registry,
-      impl_->engine_state,
+      &impl_->Registry(),
+      impl_->State(),
       credentials.requested_database,
       credentials.application_name.empty() ? "sb_isql" : credentials.application_name);
   if (!attached.accepted) {
@@ -1016,12 +1056,12 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
     return false;
   }
 
-  const auto found = impl_->registry.sessions_by_uuid.find(
+  const auto found = impl_->Registry().sessions_by_uuid.find(
       scratchbird::core::platform::Uuid{session_uuid});
 
   session->authenticated = true;
   session->session_uuid = scratchbird::core::platform::Uuid{session_uuid};
-  session->connection_uuid = found == impl_->registry.sessions_by_uuid.end()
+  session->connection_uuid = found == impl_->Registry().sessions_by_uuid.end()
                                  ? session->session_uuid
                                  : scratchbird::core::platform::Uuid{found->second.connection_uuid};
   session->database_uuid = database_uuid;
@@ -1119,7 +1159,7 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
       : EncodeResolveNamePayload(session, prepared.presented_name,
                                  prepared.quoted, object_class, config);
   const auto encoded = scratchbird::server::ResolveNamePublicFrameForEmbedded(
-      frame, impl_->engine_state, &impl_->registry);
+      frame, impl_->State(), &impl_->Registry());
   const auto decoded = scratchbird::server::sbps::DecodeFrameBytes(
       encoded, static_cast<std::uint32_t>(64u * 1024u * 1024u));
   if (!decoded.ok() ||
@@ -1210,7 +1250,7 @@ PublicNameResolutionResult EmbeddedEngineClient::RenderUuidPublic(
       scratchbird::server::sbps::kSchemaRenderUuidRequestV1;
   frame.payload = EncodeRenderUuidPayload(object_uuid);
   const auto encoded =
-      scratchbird::server::RenderUuidPublicFrameForEmbedded(frame, &impl_->registry);
+      scratchbird::server::RenderUuidPublicFrameForEmbedded(frame, &impl_->Registry());
   const auto decoded = scratchbird::server::sbps::DecodeFrameBytes(
       encoded, static_cast<std::uint32_t>(64u * 1024u * 1024u));
   if (!decoded.ok()) {
@@ -1262,7 +1302,7 @@ EmbeddedEngineClient::AcquireNativeStatementContext(
   frame.payload = ipc::EncodeNativeStatementContextRequestPayloadV11(
       session, transaction);
   const auto operation = scratchbird::server::HandleAcquireStatementContext(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -1315,7 +1355,7 @@ EmbeddedEngineClient::NegotiateLiteralDescriptors(
           kSchemaNegotiateLiteralDescriptorsRequestV1;
   frame.payload = canonical_sbln;
   const auto operation = scratchbird::server::HandleNegotiateLiteralDescriptors(
-      &impl_->registry, frame);
+      &impl_->Registry(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -1359,7 +1399,7 @@ EmbeddedEngineClient::IssueContextualTextLiteralProfiles(
   frame.payload = canonical_sbtlnr;
   const auto operation =
       scratchbird::server::HandleIssueContextualTextLiteralProfiles(
-          &impl_->registry, impl_->engine_state, frame);
+          &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -1399,7 +1439,7 @@ ipc::ServerLiteralBindingResult EmbeddedEngineClient::FinalizeLiteralBinding(
       scratchbird::server::sbps::kSchemaFinalizeLiteralBindingRequestV1;
   frame.payload = canonical_sblf;
   const auto operation = scratchbird::server::HandleFinalizeLiteralBinding(
-      &impl_->registry, frame);
+      &impl_->Registry(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -1443,7 +1483,7 @@ EmbeddedEngineClient::NegotiateParameterDescriptors(
   frame.payload = canonical_sbpr;
   const auto operation =
       scratchbird::server::HandleNegotiateParameterDescriptors(
-          &impl_->registry, frame);
+          &impl_->Registry(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -1487,7 +1527,7 @@ EmbeddedEngineClient::FinalizeParameterBinding(
       scratchbird::server::sbps::kSchemaFinalizeParameterBindingRequestV1;
   frame.payload = canonical_sbpf;
   const auto operation = scratchbird::server::HandleFinalizeParameterBinding(
-      &impl_->registry, frame);
+      &impl_->Registry(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -1535,7 +1575,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtPrepare(
       scratchbird::server::sbps::kSchemaStmtPrepareBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindStmtPrepare(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -1588,7 +1628,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateStmtPrepare(
       scratchbird::server::sbps::kSchemaStmtPrepareRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateStmtPrepare(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrStmtPrepareDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -1648,7 +1688,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtExecuteDirect(
       scratchbird::server::sbps::kSchemaStmtExecuteDirectBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindStmtExecuteDirect(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::wire::sbps_statement_management::ExecuteDirectBindAckV1 ack;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -1705,8 +1745,8 @@ EmbeddedEngineClient::CoordinateDmlDeleteRowsBind(
       kSchemaCoordinateDmlDeleteRowsBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::
-      HandleCoordinateDmlDeleteRowsBind(&impl_->registry,
-                                        impl_->engine_state, frame);
+      HandleCoordinateDmlDeleteRowsBind(&impl_->Registry(),
+                                        impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -1755,7 +1795,7 @@ EmbeddedEngineClient::CoordinateStmtExecuteDirect(
   frame.payload = canonical_request;
   const auto operation =
       scratchbird::server::HandleCoordinateStmtExecuteDirect(
-          &impl_->registry, impl_->engine_state, frame);
+          &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrStmtExecuteDirectDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -1813,7 +1853,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateStmtExecute(
       scratchbird::server::sbps::kSchemaStmtExecuteRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateStmtExecute(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrStmtExecuteDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -1869,7 +1909,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtFree(
       scratchbird::server::sbps::kSchemaStmtFreeBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindStmtFree(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::wire::sbps_statement_management::FreeBindAckV1 ack;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -1922,7 +1962,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateStmtFree(
       scratchbird::server::sbps::kSchemaStmtFreeRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateStmtFree(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrStmtFreeDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -1978,7 +2018,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtCancel(
       scratchbird::server::sbps::kSchemaStmtCancelBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindStmtCancel(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::wire::sbps_statement_management::CancelBindAckV1 ack;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -2034,7 +2074,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateStmtCancel(
       scratchbird::server::sbps::kSchemaStmtCancelRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateStmtCancel(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrStmtCancelDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -2088,7 +2128,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindParameterBind(
       scratchbird::server::sbps::kSchemaParameterBindPrivateRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindParameterBind(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrParameterBindDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -2149,7 +2189,7 @@ EmbeddedEngineClient::CoordinateParameterBind(
       scratchbird::server::sbps::kSchemaParameterBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateParameterBind(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrParameterBindDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -2204,7 +2244,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateResultPage(
       scratchbird::server::sbps::kSchemaResultPageRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateResultPage(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrResultPageDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -2259,7 +2299,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindQueryExplain(
       scratchbird::server::sbps::kSchemaQueryExplainBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindQueryExplain(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::wire::sbps_statement_management::QueryExplainBindAckV1 ack;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -2316,7 +2356,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateQueryExplain(
       scratchbird::server::sbps::kSchemaQueryExplainRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateQueryExplain(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   scratchbird::engine::sblr::SblrQueryExplainDescriptorV1 descriptor;
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
@@ -2374,7 +2414,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindNameResolve(
       scratchbird::server::sbps::kSchemaNameResolveBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindNameResolve(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2430,7 +2470,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateNameResolve(
       scratchbird::server::sbps::kSchemaNameResolveRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateNameResolve(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2489,7 +2529,7 @@ EmbeddedEngineClient::CoordinateCatalogIntrospect(
       scratchbird::server::sbps::kSchemaCoordinateCatalogIntrospectRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateCatalogIntrospect(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2552,7 +2592,7 @@ EmbeddedEngineClient::CoordinateDdlCreateSchema(
       scratchbird::server::sbps::kSchemaCoordinateDdlCreateSchemaRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateDdlCreateSchema(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2614,7 +2654,7 @@ EmbeddedEngineClient::CoordinateSecurityAlterPolicy(
   frame.payload = canonical_request;
   const auto operation =
       scratchbird::server::HandleCoordinateSecurityAlterPolicy(
-          &impl_->registry, impl_->engine_state, frame);
+          &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2685,7 +2725,7 @@ EmbeddedEngineClient::CoordinateDdlCreateProcedure(
   frame.payload = canonical_request;
   const auto operation =
       scratchbird::server::HandleCoordinateDdlCreateProcedure(
-          &impl_->registry, impl_->engine_state, frame);
+          &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2754,7 +2794,7 @@ EmbeddedEngineClient::CoordinateProcedureInvoke(
       kSchemaCoordinateProcedureInvokeRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateProcedureInvoke(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2812,7 +2852,7 @@ EmbeddedEngineClient::CoordinateDdlCreateTrigger(
       scratchbird::server::sbps::kSchemaCoordinateDdlCreateTriggerRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateDdlCreateTrigger(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2883,7 +2923,7 @@ EmbeddedEngineClient::CoordinateDdlAlterTrigger(
       scratchbird::server::sbps::kSchemaCoordinateDdlAlterTriggerRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateDdlAlterTrigger(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -2949,7 +2989,7 @@ EmbeddedEngineClient::CoordinateDdlDropTrigger(
       scratchbird::server::sbps::kSchemaCoordinateDdlDropTriggerRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateDdlDropTrigger(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3011,7 +3051,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::RecoverDdlCreateSchema(
       scratchbird::server::sbps::kSchemaDdlCreateSchemaRecoveryRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleRecoverDdlCreateSchema(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3078,7 +3118,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindParseText(
       scratchbird::server::sbps::kSchemaParseTextBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindParseText(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3133,7 +3173,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateParseText(
       scratchbird::server::sbps::kSchemaParseTextRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateParseText(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3192,7 +3232,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindCatalogEpochCheck(
       kSchemaCatalogEpochCheckBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindCatalogEpochCheck(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3254,7 +3294,7 @@ EmbeddedEngineClient::CoordinateCatalogEpochCheck(
   frame.payload = canonical_request;
   const auto operation =
       scratchbird::server::HandleCoordinateCatalogEpochCheck(
-          &impl_->registry, impl_->engine_state, frame);
+          &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3316,7 +3356,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindDatabaseAttach(
       kSchemaDatabaseAttachBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleBindDatabaseAttach(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3375,7 +3415,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::RetainSourceArtifact(
       scratchbird::server::sbps::kSchemaSourceArtifactRetainRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleRetainSourceArtifact(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3439,7 +3479,7 @@ EmbeddedEngineClient::CoordinateDatabaseAttach(
       scratchbird::server::sbps::kSchemaDatabaseAttachRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateDatabaseAttach(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3497,7 +3537,7 @@ EmbeddedEngineClient::CoordinateOptimizerStatsRead(
   frame.payload = canonical_request;
   const auto operation =
       scratchbird::server::HandleCoordinateOptimizerStatsRead(
-          &impl_->registry, impl_->engine_state, frame);
+          &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3557,8 +3597,8 @@ EmbeddedEngineClient::CoordinateOptimizerStatsDrop(
       scratchbird::server::sbps::kSchemaOptimizerStatsDropRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::
-      HandleCoordinateOptimizerStatsDrop(&impl_->registry,
-                                         impl_->engine_state, frame);
+      HandleCoordinateOptimizerStatsDrop(&impl_->Registry(),
+                                         impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3615,7 +3655,7 @@ ipc::ServerBulkImportBindResult EmbeddedEngineClient::BindBulkImportStream(
   frame.header.payload_schema_id = scratchbird::server::sbps::kSchemaBulkImportStreamBindV1;
   frame.payload = std::move(payload);
   const auto operation = scratchbird::server::HandleBindBulkImportStream(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3657,7 +3697,7 @@ ipc::ServerBulkImportChunkResult EmbeddedEngineClient::AppendBulkImportStream(co
   std::string detail;
   if (!session.authenticated || !scratchbird::wire::sbps_bulk_import::EncodeChunk(chunk, &payload, &detail)) { AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID", detail.empty() ? "bulk import chunk is malformed" : detail); return result; }
   auto frame = BaseFrame(static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamChunk), session); frame.header.payload_schema_id = scratchbird::server::sbps::kSchemaBulkImportStreamChunkV1; frame.payload = std::move(payload);
-  const auto operation = scratchbird::server::HandleAppendBulkImportStream(&impl_->registry, impl_->engine_state, frame);
+  const auto operation = scratchbird::server::HandleAppendBulkImportStream(&impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) { AddServerDiagnostics(operation.diagnostics, &result.messages); return result; }
   if (operation.response_message_type != static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamChunkAck) || operation.response_schema_id != scratchbird::server::sbps::kSchemaBulkImportStreamChunkAckV1) { result.outcome_unknown = true; AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT", "embedded bulk import chunk response is not exactly correlated"); return result; }
   const bool extent_valid =
@@ -3677,7 +3717,7 @@ ipc::ServerBulkImportSealResult EmbeddedEngineClient::SealBulkImportStream(const
   std::vector<std::uint8_t> payload; std::string detail;
   if (!session.authenticated || !scratchbird::wire::sbps_bulk_import::EncodeSeal(seal, &payload, &detail)) { AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID", detail.empty() ? "bulk import seal is malformed" : detail); return result; }
   auto frame = BaseFrame(static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamSeal), session); frame.header.payload_schema_id = scratchbird::server::sbps::kSchemaBulkImportStreamSealV1; frame.payload = std::move(payload);
-  const auto operation = scratchbird::server::HandleSealBulkImportStream(&impl_->registry, impl_->engine_state, frame);
+  const auto operation = scratchbird::server::HandleSealBulkImportStream(&impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) { AddServerDiagnostics(operation.diagnostics, &result.messages); return result; }
   if (operation.response_message_type != static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::kBulkImportStreamSealAck) || operation.response_schema_id != scratchbird::server::sbps::kSchemaBulkImportStreamSealAckV1) { result.outcome_unknown = true; AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT", "embedded bulk import seal response is not exactly correlated"); return result; }
   if (!scratchbird::wire::sbps_bulk_import::DecodeSealAck(operation.payload.data(), operation.payload.size(), &result.acknowledgement, &detail) || result.acknowledgement.stream_uuid != seal.stream_uuid || result.acknowledgement.stream_generation != seal.stream_generation || result.acknowledgement.chunk_count != seal.final_chunk_count || result.acknowledgement.total_stream_bytes != seal.total_stream_bytes || result.acknowledgement.final_chain_sha256 != seal.final_chain_sha256 || result.acknowledgement.content_sha256 != seal.content_sha256) { result.outcome_unknown = true; AddDiagnostic(&result.messages, "BULK.IMPORT.RECOVERY_CONFLICT", detail.empty() ? "bulk import seal acknowledgement is not exactly correlated" : detail); return result; }
@@ -3707,7 +3747,7 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateBulkImportStrea
       scratchbird::server::sbps::kSchemaCoordinateBulkImportStreamRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::HandleCoordinateBulkImportStream(
-      &impl_->registry, impl_->engine_state, frame);
+      &impl_->Registry(), impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3754,8 +3794,8 @@ EmbeddedEngineClient::CoordinateDmlUpdateRowsBind(
       kSchemaCoordinateDmlUpdateRowsBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::
-      HandleCoordinateDmlUpdateRowsBind(&impl_->registry,
-                                        impl_->engine_state, frame);
+      HandleCoordinateDmlUpdateRowsBind(&impl_->Registry(),
+                                        impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3807,8 +3847,8 @@ EmbeddedEngineClient::CoordinateDmlPlanImportRowsBind(
       kSchemaCoordinateDmlPlanImportRowsBindRequestV1;
   frame.payload = canonical_request;
   const auto operation = scratchbird::server::
-      HandleCoordinateDmlPlanImportRowsBind(&impl_->registry,
-                                            impl_->engine_state, frame);
+      HandleCoordinateDmlPlanImportRowsBind(&impl_->Registry(),
+                                            impl_->State(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -3871,10 +3911,20 @@ EmbeddedEngineClient::ExecuteCanonicalSblrWithDataPacket(
   frame.header.payload_schema_id = request_schema_id;
   frame.payload = std::move(payload);
   const auto operation = scratchbird::server::HandleExecuteSblr(
-      &impl_->registry, impl_->engine_state, frame);
-  if (!ipc::DecodeCanonicalExecuteResultPayload(
-          operation.payload, frame.header.request_uuid, &result,
-          &result.messages)) {
+      &impl_->Registry(), impl_->State(), frame);
+  const bool decoded_execute = ipc::DecodeCanonicalExecuteResultPayload(
+      operation.payload, frame.header.request_uuid, &result,
+      &result.messages);
+#if defined(SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM)
+  impl_->last_execute_row_packet = decoded_execute ? result.row_packet : std::string();
+  impl_->last_execute_server_diagnostics.clear();
+  for (const auto& diagnostic : operation.diagnostics) {
+    impl_->last_execute_server_diagnostics += diagnostic.code + "{";
+    for (const auto& field : diagnostic.fields) impl_->last_execute_server_diagnostics += field.key + "=" + field.value + ";";
+    impl_->last_execute_server_diagnostics += "}";
+  }
+#endif
+  if (!decoded_execute) {
     if (!operation.diagnostics.empty()) {
       AddServerDiagnostics(operation.diagnostics, &result.messages);
     }
@@ -3923,7 +3973,7 @@ ServerExecutionResult EmbeddedEngineClient::ExecuteSblrWithDataPacket(
       cursor_requested,
       data_packet);
   return DecodeExecutePayload(
-      scratchbird::server::HandleExecuteSblr(&impl_->registry, impl_->engine_state, frame));
+      scratchbird::server::HandleExecuteSblr(&impl_->Registry(), impl_->State(), frame));
 #else
   (void)session;
   (void)encoded_sblr_envelope;
@@ -3967,7 +4017,7 @@ ServerFetchResult EmbeddedEngineClient::FetchCursor(const SessionContext& sessio
   PutUuid(&frame.payload, stream_descriptor.stream_descriptor_uuid.bytes);
   PutU16(&frame.payload, stream_descriptor.descriptor_version);
   PutU64(&frame.payload, stream_descriptor.descriptor_generation);
-  auto operation = scratchbird::server::HandleFetch(&impl_->registry, frame);
+  auto operation = scratchbird::server::HandleFetch(&impl_->Registry(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -4029,7 +4079,7 @@ ServerCloseCursorResult EmbeddedEngineClient::CloseCursor(const SessionContext& 
                          session);
   frame.payload = scratchbird::server::EncodeCloseCursorPayloadForTest(
       session.session_uuid.bytes, cursor_uuid.bytes);
-  auto operation = scratchbird::server::HandleCloseCursor(&impl_->registry, frame);
+  auto operation = scratchbird::server::HandleCloseCursor(&impl_->Registry(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -4070,7 +4120,7 @@ ServerCloseCursorResult EmbeddedEngineClient::CancelCursor(const SessionContext&
                          session);
   frame.payload = scratchbird::server::EncodeCancelCursorPayloadForTest(
       session.session_uuid.bytes, cursor_uuid.bytes);
-  auto operation = scratchbird::server::HandleCloseCursor(&impl_->registry, frame);
+  auto operation = scratchbird::server::HandleCloseCursor(&impl_->Registry(), frame);
   if (!operation.accepted) {
     AddServerDiagnostics(operation.diagnostics, &result.messages);
     return result;
@@ -4150,7 +4200,7 @@ bool EmbeddedEngineClient::DisconnectSession(const SessionContext& session,
   // bridge must migrate with both endpoints to canonical schema 1074.
   PutUuid(&frame.payload, frame.header.session_uuid);
   PutString(&frame.payload, "parser_disconnect_notice");
-  auto operation = scratchbird::server::HandleDisconnectNotice(&impl_->registry, frame);
+  auto operation = scratchbird::server::HandleDisconnectNotice(&impl_->Registry(), frame);
   AddServerDiagnostics(operation.diagnostics, messages);
   if (!operation.accepted) {
     return false;

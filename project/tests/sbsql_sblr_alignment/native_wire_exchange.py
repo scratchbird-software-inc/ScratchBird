@@ -19,8 +19,9 @@ Steps and assertions:
   2. SBsql: `SELECT 1 AS one` prints the table with `one | 1`; `-q -A -t` prints `1`; `SELECT 2 AS two`;
      `SELECT 1 AS one, 2 AS two`. ROUTE B (2026-12-11; OLD: bare `SELECT 1` was SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, route B "WILL flip
      this assertion"): bare `SELECT 1` (also `select 1`, `SELECT 1;`, `SELECT 2`, `VALUES (1)`, the int64 maximum) prints the table whose
-     column carries the PARSER's current default name (`key_a`: the name the parser's own binding gives the one column of a literal
-     VALUES relation; the engine sends none) and the value; `-q -A -t` prints `1`. Refused shapes keep their machine tokens:
+     column carries the PARSER's default name `column1` (2026-12-12; OLD: `key_a`, a fixture-list name the parser's own binding gave the one
+     column of a literal VALUES relation and that leaked into the user-visible result; NEW: the same rule as the unaliased scalar-projection
+     route, column1, column2, ... by position; the engine sends no name) and the value; `-q -A -t` prints `1`. Refused shapes keep their machine tokens:
      `SELECT 1 + 0 AS s` and bare `SELECT 1 + 0`, `SELECT -1`, `VALUES (1), (2)` and CREATE TABLE are
      SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED, `SELECT 'a' AS t` is ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT, `SELECT 1 FROM t` is
      ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5 (the parser's own refusal), `SELECT 1.5` is QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1 (refused by the
@@ -405,12 +406,13 @@ def run(args, work):
           and re.search(r"^\|\s*1\s*\|\s*2\s*\|\s*$", both.stdout, re.M), f"SELECT 1 AS one, 2 AS two: {both.stdout!r} {both.stderr!r}")
 
     # --- ROUTE B: bare `SELECT 1` (the object-free literal VALUES relation, query.execute) runs natively. The column name is the PARSER's
-    # current default for the one column of a literal VALUES relation (`key_a`, from its own binding context); the engine sends no name. ---
+    # default for the one column of a literal VALUES relation (2026-12-12; OLD: `key_a`, a fixture-list name from its own binding context; NEW:
+    # `column1`, the same rule as the unaliased scalar-projection route); the engine sends no name. ---
     for label, sql, value in (("bare1", "SELECT 1", "1"), ("bare-lower", "select 1", "1"), ("bare-semi", "SELECT 1;", "1"),
                               ("bare2", "SELECT 2", "2"), ("values1", "VALUES (1)", "1"),
                               ("bare-max", "SELECT 9223372036854775807", "9223372036854775807")):
         bare = sbsql(args, work, port, label, sql); logins += 1
-        check(bare.returncode == 0 and re.search(r"^\|\s*key_a\s*\|\s*$", bare.stdout, re.M) and re.search(r"^\|\s*" + value + r"\s*\|\s*$", bare.stdout, re.M)
+        check(bare.returncode == 0 and re.search(r"^\|\s*column1\s*\|\s*$", bare.stdout, re.M) and re.search(r"^\|\s*" + value + r"\s*\|\s*$", bare.stdout, re.M)
               and "(1 row)" in bare.stdout, f"{sql!r}: rc={bare.returncode} {bare.stdout!r} {bare.stderr!r}")
     quiet_bare = sbsql(args, work, port, "quiet-bare", "SELECT 1", extra=("-q", "-A", "-t")); logins += 1
     check(quiet_bare.returncode == 0 and quiet_bare.stdout.strip() == "1", f"bare SELECT 1 with -q -A -t: {quiet_bare.stdout!r} {quiet_bare.stderr!r}")
@@ -489,7 +491,7 @@ def run(args, work):
     check(all(r for r in results), f"route B line session: a statement gave neither RESULT nor MESSAGE ERROR: {routeb!r}")
     check(results[0][0].startswith("RESULT query.execute 1 canonical_binary_payload_hex="), f"route B line SELECT 1: {results[0][0][:200]!r}")
     payload_b = bytes.fromhex(results[0][0].split("canonical_binary_payload_hex=", 1)[1].strip())
-    check(payload_b.startswith(b"SBRES002") and b"scalar_projection_rows" in payload_b and payload_b.endswith(b"key_a:int64:not_null"),
+    check(payload_b.startswith(b"SBRES002") and b"scalar_projection_rows" in payload_b and payload_b.endswith(b"column1:int64:not_null"),
           f"route B line SELECT 1 payload is not the one-column row built by the parser: {payload_b[:120]!r}")
     check(re.search(rb"row\[0\][\x00-\xff]{1,16}SBRES002", payload_b, re.S) is not None, f"route B line payload: row[0] is not an SBRES002 row: {payload_b[-120:]!r}")
     check(results[1][0].startswith("RESULT query.execute 1 "), f"route B line SELECT 2: {results[1][0][:200]!r}")

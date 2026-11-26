@@ -14,7 +14,15 @@
 #include "ipc/sbps_client.hpp"
 
 #include <memory>
+#include <string>
 #include <vector>
+
+#if defined(SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM)
+namespace scratchbird::server {
+struct HostedEngineState;
+struct ServerSessionRegistry;
+}  // namespace scratchbird::server
+#endif
 
 namespace scratchbird::parser::sbsql {
 
@@ -216,6 +224,23 @@ class EmbeddedEngineClient {
                                 std::uint64_t timeout_ms = 30000,
                                 bool include_history = false);
   bool DisconnectSession(const SessionContext& session, MessageVectorSet* messages);
+
+#if defined(SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM)
+  // SEARCH_KEY: SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM (2026-12-12; the in-process route B test, native_route_b_test.cpp).
+  // TEST ONLY. Compiled only into a test target that defines the macro AND compiles embedded_engine_client.cpp itself (the production libraries
+  // sbl_sbsql_embedded_client_bridge / sbl_sbsql_parser_worker_core / scratchbird_client are built without it and carry neither symbol; nm-checked
+  // by native_route_b_seam_symbols). Binds this client to an engine state and a session registry the TEST owns (the ones its served native
+  // database and its sessions live in) instead of opening a database path: every handler the client calls then runs on them. The client does
+  // not own them; the caller keeps them alive for the client's life.
+  void BindExternalEngineForTest(scratchbird::server::HostedEngineState* engine_state,
+                                 scratchbird::server::ServerSessionRegistry* registry);
+  // The engine's own row packet of the most recent canonical execute (the native result vector, before the parser turns it into a client row).
+  [[nodiscard]] const std::string& LastExecuteRowPacketForTest() const;
+  // The server's own diagnostics (code{key=value;...}) of the most recent canonical execute, before the parser flattens them into its messages.
+  [[nodiscard]] const std::string& LastExecuteServerDiagnosticsForTest() const;
+  // Forgets both of the above (so a statement that never reaches the engine shows nothing stale).
+  void ResetLastExecuteForTest();
+#endif
 
  private:
   struct Impl;

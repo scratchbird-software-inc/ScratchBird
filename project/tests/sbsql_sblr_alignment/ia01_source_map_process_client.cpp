@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // CSC-TEST-002337: explicit authenticated SOURCE_MAP process client.
+// SEARCH_KEY: SB_PARSER_VALUES_DEFAULT_COLUMN_NAME (2026-12-12; owner: an unaliased bare literal / VALUES relation is named column1, column2, ... by
+// position, the same rule as the unaliased scalar-projection route). OLD expectations in this file: the fixture list name `key_a` (and `amount` for the
+// second column) of a bare `SELECT 1` / `VALUES (?, ?)` prepared statement: row[0]=key_a=1, row[0]=key_a=7;amount=..., row_meta[0]=key_a:int64:not_null;
+// amount:int64:null, nested_row=key_a:1, typed_row=key_a:1. NEW: column1 / column2 in the same places. The checks are otherwise unchanged. NOTE: this
+// client cannot run in this tree today (its legacy-fixture database seeder fails in the baseline: "driver fixture durable bootstrap principal unavailable
+// or mismatched"), so these expectations are updated by reading, not by a green run.
 #include "common/common.hpp"
 #include "../support/client_public_result_display.hpp"
 #include "engine/sblr/sblr_stmt_execute_runtime.hpp"
@@ -658,7 +664,7 @@ int main(int argc, char** argv) {
       const auto fetched =
           target.FetchCursorOnRoute(executed.server_cursor_uuid, 1);
       const auto expected_row =
-          "row[0]=key_a=" + std::to_string(expected_value);
+          "row[0]=column1=" + std::to_string(expected_value);
       if (!fetched.accepted || fetched.row_count != 1 ||
           !fetched.end_of_cursor ||
           scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find(expected_row) == std::string::npos) {
@@ -3669,8 +3675,8 @@ END;)SBSQL";
             std::string::npos &&
         scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("result_kind=stmt_execute_result") !=
             std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=1") != std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=key_a:int64:not_null") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=column1=1") != std::string::npos &&
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=column1:int64:not_null") !=
             std::string::npos;
     if (!exact_nested_result) {
       std::cerr << "CSC-TEST-003577 STMT_EXECUTE nested_result_failed"
@@ -3685,7 +3691,7 @@ END;)SBSQL";
     }
     std::cout << "CSC-TEST-003577 STMT_EXECUTE accepted "
                  "canonical_sblr=true publication_barrier=passed "
-                 "result_handle=validated nested_row=key_a:1 "
+                 "result_handle=validated nested_row=column1:1 "
                  "surface_id=SBSQL-414E9A624B34 "
                  "input=execute_prepared_stmt\n";
     return 0;
@@ -3739,8 +3745,8 @@ END;)SBSQL";
             std::string::npos &&
         scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("result_kind=stmt_execute_result") !=
             std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=1") != std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=key_a:int64:not_null") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=column1=1") != std::string::npos &&
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=column1:int64:not_null") !=
             std::string::npos;
     if (!exact_nested_result) {
       std::cerr << "CSC-TEST-003581 STMT_EXECUTE_DIRECT nested_result_failed"
@@ -3755,7 +3761,7 @@ END;)SBSQL";
     }
     std::cout << "CSC-TEST-003581 STMT_EXECUTE_DIRECT accepted "
                  "canonical_sblr=true publication_barrier=passed "
-                 "result_handle=validated nested_row=key_a:1\n";
+                 "result_handle=validated nested_row=column1:1\n";
     return 0;
   }
   if (operation == "stmt-free") {
@@ -3863,9 +3869,9 @@ END;)SBSQL";
             std::string::npos &&
         scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("result_kind=stmt_execute_result") !=
             std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=7") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=column1=7") !=
             std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=key_a:int64:not_null") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=column1:int64:not_null") !=
             std::string::npos;
     if (!exact_typed_result) {
       std::cerr << "CSC-TEST-003593 PARAMETER_BIND typed_result_failed"
@@ -3931,10 +3937,10 @@ END;)SBSQL";
             std::string::npos &&
         scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("result_kind=stmt_execute_result") !=
             std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=7;amount=") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=column1=7;column2=") !=
             std::string::npos &&
         scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find(
-            "row_meta[0]=key_a:int64:not_null;amount:int64:null") !=
+            "row_meta[0]=column1:int64:not_null;column2:int64:null") !=
             std::string::npos &&
         scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("<NULL>") == std::string::npos;
     if (!exact_typed_result) {
@@ -4655,8 +4661,8 @@ END;)SBSQL";
         fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
         scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("operation_id=query.execute") !=
             std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=key_a=1") != std::string::npos &&
-        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=key_a:int64:not_null") !=
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row[0]=column1=1") != std::string::npos &&
+        scratchbird::tests::DisplayPublicResultPacket(fetched.row_packet).find("row_meta[0]=column1:int64:not_null") !=
             std::string::npos;
     if (!exact_row) {
       std::cerr << "CSC-TEST-003601 QUERY_EXECUTE row_result_failed"
@@ -4671,7 +4677,7 @@ END;)SBSQL";
     }
     std::cout << "CSC-TEST-003601 QUERY_EXECUTE accepted "
                  "canonical_sblr=true result_handle=validated "
-                 "typed_row=key_a:1\n";
+                 "typed_row=column1:1\n";
     return 0;
   }
   const char* static_refusal_test_id =

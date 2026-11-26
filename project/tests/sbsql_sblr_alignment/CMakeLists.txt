@@ -4727,6 +4727,74 @@ if(Python3_EXECUTABLE)
     LABELS "sbsql_sblr_alignment;native_storage;native_select_one;test_seam" TIMEOUT 600)
 endif()
 
+# SB_NATIVE_ROUTE_B (2026-12-12; owner: the in-process route B test, option A): bare `SELECT 1` through the REAL SBsql pipeline (RunPipeline) IN PROCESS on a
+# production-created native database, per page size: the exact availability rows route B asks (the recorder), every refused shape's code and opcode
+# field, and nothing written around every statement. Three TEST-ONLY seams, none in a production library (native_route_b_seam_symbols checks with nm):
+# (i) EmbeddedEngineClient::BindExternalEngineForTest / LastExecuteRowPacketForTest (SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM; this target compiles
+# embedded_engine_client.cpp itself, so the bridge library's copy is not linked), (ii) the friend DECLARATION SbsqlTestWireSessionTestAccess
+# (SB_SBSQL_TEST_WIRE_SESSION_TEST_ACCESS; the struct is defined by the test), (iii) the recorder (SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM; the registry
+# is compiled by this target). Reuses native_select_one_test.cpp's helpers (SB_NATIVE_SELECT_ONE_FIXTURE_ONLY hides that file's main).
+# (no `if(TARGET ...)` guard: the bridge target is defined by src/parsers/sbsql_worker, which may be added after this directory; the name resolves at generation)
+if(TRUE)
+  add_executable(sbsql_sblr_alignment_native_route_b native_route_b_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp
+    ${PROJECT_SOURCE_DIR}/src/engine/internal_api/sblr_executor_availability_registry.cpp
+    ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker/embedded/embedded_engine_client.cpp)
+  add_dependencies(sbsql_sblr_alignment_native_route_b sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)
+  target_compile_definitions(sbsql_sblr_alignment_native_route_b PRIVATE
+    SB_NATIVE_LOOP_TEST_SEAMS=1 SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM=1
+    SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM=1 SB_SBSQL_TEST_WIRE_SESSION_TEST_ACCESS=1)
+  target_compile_features(sbsql_sblr_alignment_native_route_b PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_route_b PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+  target_link_libraries(sbsql_sblr_alignment_native_route_b PRIVATE
+    sbl_sbsql_embedded_client_bridge sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+  target_compile_definitions(sbsql_sblr_alignment_native_route_b PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+    SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"
+    SB_NATIVE_LOGIN_MATERIAL_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_login_material>")
+  foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_rb_parts "${sb_rb_size}")
+    list(GET sb_rb_parts 0 sb_rb_bytes)
+    list(GET sb_rb_parts 1 sb_rb_label)
+    add_test(NAME sbsql_sblr_alignment_native_route_b_${sb_rb_label}
+      COMMAND sbsql_sblr_alignment_native_route_b size ${sb_rb_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_route_b_${sb_rb_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;binary_uuid"
+      TIMEOUT 190)
+  endforeach()
+  if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+    # the per-statement region (`statement`) is read-only: 0 .sb.* syscalls, 0 data-file writes or fsyncs, 0 opens of the data file by path
+    foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+      string(REPLACE ":" ";" sb_rb_parts "${sb_rb_size}")
+      list(GET sb_rb_parts 0 sb_rb_bytes)
+      list(GET sb_rb_parts 1 sb_rb_label)
+      add_test(NAME sbsql_sblr_alignment_native_route_b_strace_${sb_rb_label}
+        COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_receipt_strace.py"
+          --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_route_b>
+          --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+          --size ${sb_rb_bytes} --region statement --label native_route_b_strace)
+      set_tests_properties(sbsql_sblr_alignment_native_route_b_strace_${sb_rb_label} PROPERTIES
+        LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;strace"
+        TIMEOUT 190)
+    endforeach()
+  endif()
+  if(Python3_EXECUTABLE)
+    # the three seams are in no production library or binary; the guarded test binary has them (so the check is not vacuous)
+    add_test(NAME sbsql_sblr_alignment_native_route_b_seam_symbols
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_seam_symbols.py"
+        --production $<TARGET_FILE:sb_server_core> $<TARGET_FILE:sb_server> $<TARGET_FILE:sb_engine> $<TARGET_FILE:sb_engine_internal_api>
+          $<TARGET_FILE:sbl_sbsql_embedded_client_bridge> $<TARGET_FILE:sbl_sbsql_parser_worker_core> $<TARGET_FILE:sbp_sbsql>
+          $<TARGET_FILE:sb_isql> $<TARGET_FILE:scratchbird_client>
+        --guarded $<TARGET_FILE:sbsql_sblr_alignment_native_route_b>
+        --symbols BindExternalEngineForTest LastExecuteRowPacketForTest LastExecuteServerDiagnosticsForTest ResetLastExecuteForTest
+                  SbsqlTestWireSessionTestAccess StartNativeExecutorRecordingForTest)
+    set_tests_properties(sbsql_sblr_alignment_native_route_b_seam_symbols PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_route_b;test_seam" TIMEOUT 600)
+  endif()
+endif()
+
 add_executable(sbsql_sblr_alignment_native_receipt_gate native_receipt_gate_test.cpp
   ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
 add_dependencies(sbsql_sblr_alignment_native_receipt_gate sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)

@@ -1010,7 +1010,7 @@ def main() -> int:
             expected_success = (
                 "CSC-TEST-003577 STMT_EXECUTE accepted "
                 "canonical_sblr=true publication_barrier=passed "
-                "result_handle=validated nested_row=key_a:1 "
+                "result_handle=validated nested_row=column1:1 "
                 "surface_id=SBSQL-414E9A624B34 "
                 "input=execute_prepared_stmt\n"
             )

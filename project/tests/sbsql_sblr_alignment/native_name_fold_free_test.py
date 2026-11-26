@@ -120,7 +120,13 @@ def main(root):
             path = os.path.join(base, name)
             rel = os.path.relpath(path, src)
             with open(path, encoding="utf-8", errors="replace") as handle:
-                code = strip_code(handle.read())
+                raw = handle.read()
+            # Speed (suite timeout at 60 s under load: this scan is pure-Python and char-by-char): stripping comments and
+            # literals only REMOVES text, so a token that is absent from the raw text cannot be in the stripped code.
+            # Skip the expensive strip for files whose raw text names no token at all (same result, about 50x faster).
+            if not any(t in raw for t in TOKENS):
+                continue
+            code = strip_code(raw)
             hits = sorted(t for t in TOKENS if re.search(r"\b" + t + r"\b", code))
             if hits:
                 codes[rel] = (code, hits)

@@ -626,6 +626,12 @@ class SbsqlTestWireSession {
                                MessageVectorSet* messages);
   [[nodiscard]] const SessionContext& session() const { return session_; }
 
+#if defined(SB_SBSQL_TEST_WIRE_SESSION_TEST_ACCESS)
+  // SEARCH_KEY: SB_SBSQL_TEST_WIRE_SESSION_TEST_ACCESS (2026-12-12; the in-process route B test). TEST ONLY: a friend DECLARATION (it emits no
+  // symbol and changes no layout) that lets one test-defined struct reach the session context and the embedded client; the production
+  // build never defines the macro.
+  friend struct SbsqlTestWireSessionTestAccess;
+#endif
  private:
   struct HeldBulkImportStream;
   struct HeldDdlCreateSchema;
