@@ -5667,9 +5667,52 @@ bool IsWellFormedUtf8(std::string_view text) {
   return true;
 }
 
+// SEARCH_KEY: SB_NATIVE_REFUSAL_FIELDS_FORWARDED (2026-12-15; owner 2026-11-26 item 1: the server forwards the engine's diagnostic fields, opcode_code etc., to
+// the parser as a message vector). OLD: a native dispatch refusal reached the parser as its code and `detail=status=...;engine_diagnostic_detail_absent` only:
+// every engine field (the refused opcode, the row/column bound, the operation and requirement tokens) was dropped here because no field set was registered for
+// the code. NEW: the native refusal codes below register the engine's own DATA fields; they ride the SAME mechanism every other registered diagnostic uses
+// (this registry, ServerDiagnostic.fields, the SBMV v1 typed message vector the parser already decodes: text TLVs, no wire change); the parser builds the
+// user-facing message from them. Only these keys, only machine-shaped values (digits, a SHA-256 hex, a token of [A-Za-z0-9_.]); any other key (an identity
+// UUID such as availability_table_uuid or database_uuid, which needs a typed binary field the SBMV v1 text TLV cannot carry: owner question) and any value of
+// another shape is dropped. Never prose, never a name.
+bool NativeRefusalFieldValueValid(std::string_view key, std::string_view value) {
+  const auto all_of = [&](auto predicate, std::size_t maximum) {
+    return !value.empty() && value.size() <= maximum &&
+           std::all_of(value.begin(), value.end(), [&](char ch) { return predicate(static_cast<unsigned char>(ch)); });
+  };
+  const auto digit = [](unsigned char ch) { return ch >= '0' && ch <= '9'; };
+  const auto token = [](unsigned char ch) {
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '.';
+  };
+  const auto lower_hex = [](unsigned char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); };
+  if (key == "opcode_code" || key == "rows" || key == "columns" || key == "row_bound" || key == "column_bound") return all_of(digit, 10);
+  if (key == "operation" || key == "requires" || key == "reason") return all_of(token, 96);
+  if (key == "row_identity_sha256") return value.size() == 64 && all_of(lower_hex, 64);
+  return false;
+}
+
+std::vector<ServerDiagnosticField> RegisteredNativeRefusalFields(
+    std::string_view diagnostic_code,
+    const std::vector<ServerDiagnosticField>& candidates) {
+  static constexpr std::array<std::string_view, 5> kNativeRefusalCodes = {
+      "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT",
+      "ENGINE.NATIVE.OPERATION_NOT_BUILT", "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY"};
+  std::vector<ServerDiagnosticField> forwarded;
+  if (std::find(kNativeRefusalCodes.begin(), kNativeRefusalCodes.end(), diagnostic_code) == kNativeRefusalCodes.end()) return forwarded;
+  for (const auto& candidate : candidates) {
+    if (!NativeRefusalFieldValueValid(candidate.key, candidate.value)) continue;
+    if (std::any_of(forwarded.begin(), forwarded.end(), [&](const auto& kept) { return kept.key == candidate.key; })) continue;
+    forwarded.push_back(candidate);
+  }
+  return forwarded;
+}
+
 std::vector<ServerDiagnosticField> RegisteredEngineDiagnosticFields(
     std::string_view diagnostic_code,
     const std::vector<ServerDiagnosticField>& candidates) {
+  if (diagnostic_code.starts_with("ENGINE.NATIVE.") || diagnostic_code == "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED") {
+    return RegisteredNativeRefusalFields(diagnostic_code, candidates);
+  }
   constexpr std::string_view kConversionDiagnostic =
       "SB_DIAG_FUNCTION_CONVERSION_INPUT";
   constexpr std::string_view kConversionField = "conversion_input_text";

@@ -4730,16 +4730,26 @@ endif()
 # SB_NATIVE_ROUTE_B (2026-12-12; owner: the in-process route B test, option A): bare `SELECT 1` through the REAL SBsql pipeline (RunPipeline) IN PROCESS on a
 # production-created native database, per page size: the exact availability rows route B asks (the recorder), every refused shape's code and opcode
 # field, and nothing written around every statement. Three TEST-ONLY seams, none in a production library (native_route_b_seam_symbols checks with nm):
-# (i) EmbeddedEngineClient::BindExternalEngineForTest / LastExecuteRowPacketForTest (SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM; this target compiles
-# embedded_engine_client.cpp itself, so the bridge library's copy is not linked), (ii) the friend DECLARATION SbsqlTestWireSessionTestAccess
+# (i) EmbeddedEngineClient::BindExternalEngineForTest / LastExecuteRowPacketForTest (SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM; the dedicated test-only library sbl_sbsql_embedded_client_bridge_test_seam compiles
+# embedded_engine_client.cpp with it and is listed before the bridge archive), (ii) the friend DECLARATION SbsqlTestWireSessionTestAccess
 # (SB_SBSQL_TEST_WIRE_SESSION_TEST_ACCESS; the struct is defined by the test), (iii) the recorder (SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM; the registry
 # is compiled by this target). Reuses native_select_one_test.cpp's helpers (SB_NATIVE_SELECT_ONE_FIXTURE_ONLY hides that file's main).
 # (no `if(TARGET ...)` guard: the bridge target is defined by src/parsers/sbsql_worker, which may be added after this directory; the name resolves at generation)
 if(TRUE)
+  # SB_NATIVE_ROUTE_B_TEST_SEAM_LIBRARY (2026-12-15; owner 2026-11-26 item 4). OLD: this target compiled embedded_engine_client.cpp ITSELF to shadow the bridge
+  # archive's copy (an object on the executable's own link line beating an archive member: fragile). NEW: a dedicated TEST-ONLY static library holds that one
+  # translation unit compiled with the seam macro; it is defined here, installed nowhere, linked by the route_b executable ONLY and listed BEFORE the bridge
+  # archive (a seam-less copy of the same symbols in the archive is then never pulled; if both were pulled the link would fail on duplicates, loudly).
+  # native_route_b_seam_symbols (nm) proves no production library, binary or the bridge archive carries a seam symbol, and
+  # native_route_b_seam_library_symbols proves this library does (so the check is not vacuous).
+  add_library(sbl_sbsql_embedded_client_bridge_test_seam STATIC
+    ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker/embedded/embedded_engine_client.cpp)
+  target_compile_features(sbl_sbsql_embedded_client_bridge_test_seam PRIVATE cxx_std_23)
+  target_compile_definitions(sbl_sbsql_embedded_client_bridge_test_seam PUBLIC SB_EMBEDDED_CLIENT_EXTERNAL_ENGINE_TEST_SEAM=1)
+  target_link_libraries(sbl_sbsql_embedded_client_bridge_test_seam PUBLIC sbl_sbsql_embedded_client_bridge)
   add_executable(sbsql_sblr_alignment_native_route_b native_route_b_test.cpp
     ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp
-    ${PROJECT_SOURCE_DIR}/src/engine/internal_api/sblr_executor_availability_registry.cpp
-    ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker/embedded/embedded_engine_client.cpp)
+    ${PROJECT_SOURCE_DIR}/src/engine/internal_api/sblr_executor_availability_registry.cpp)
   add_dependencies(sbsql_sblr_alignment_native_route_b sbsql_sblr_alignment_native_serving sbsql_sblr_alignment_native_login_material)
   target_compile_definitions(sbsql_sblr_alignment_native_route_b PRIVATE
     SB_NATIVE_LOOP_TEST_SEAMS=1 SB_NATIVE_EXECUTOR_RECORDER_TEST_SEAM=1
@@ -4749,7 +4759,7 @@ if(TRUE)
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
   target_link_libraries(sbsql_sblr_alignment_native_route_b PRIVATE
-    sbl_sbsql_embedded_client_bridge sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+    sbl_sbsql_embedded_client_bridge_test_seam sbl_sbsql_embedded_client_bridge sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
   target_compile_definitions(sbsql_sblr_alignment_native_route_b PRIVATE
     SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
     SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>"
@@ -4762,6 +4772,18 @@ if(TRUE)
       COMMAND sbsql_sblr_alignment_native_route_b size ${sb_rb_bytes})
     set_tests_properties(sbsql_sblr_alignment_native_route_b_${sb_rb_label} PROPERTIES
       LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;binary_uuid"
+      TIMEOUT 190)
+  endforeach()
+  # SB_NATIVE_ROUTE_B2 (2026-12-15, parser/results batch): the same executable's `route_b2` state (negative literals, the literal-slot-limit token, the
+  # VALUES alias column list), its own target per page size so route_b's largest target does not grow.
+  foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_rb_parts "${sb_rb_size}")
+    list(GET sb_rb_parts 0 sb_rb_bytes)
+    list(GET sb_rb_parts 1 sb_rb_label)
+    add_test(NAME sbsql_sblr_alignment_native_route_b2_${sb_rb_label}
+      COMMAND sbsql_sblr_alignment_native_route_b size ${sb_rb_bytes} route_b2)
+    set_tests_properties(sbsql_sblr_alignment_native_route_b2_${sb_rb_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;native_route_b2;binary_uuid"
       TIMEOUT 190)
   endforeach()
   if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
@@ -4791,6 +4813,16 @@ if(TRUE)
         --symbols BindExternalEngineForTest LastExecuteRowPacketForTest LastExecuteServerDiagnosticsForTest ResetLastExecuteForTest
                   SbsqlTestWireSessionTestAccess StartNativeExecutorRecordingForTest)
     set_tests_properties(sbsql_sblr_alignment_native_route_b_seam_symbols PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_route_b;test_seam" TIMEOUT 600)
+    # the dedicated test-seam library itself carries the embedded-client seam symbols (so the production check above is not vacuous for it)
+    add_test(NAME sbsql_sblr_alignment_native_route_b_seam_library_symbols
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_seam_symbols.py"
+        --production $<TARGET_FILE:sb_server_core> $<TARGET_FILE:sb_server> $<TARGET_FILE:sb_engine> $<TARGET_FILE:sb_engine_internal_api>
+          $<TARGET_FILE:sbl_sbsql_embedded_client_bridge> $<TARGET_FILE:sbl_sbsql_parser_worker_core> $<TARGET_FILE:sbp_sbsql>
+          $<TARGET_FILE:sb_isql> $<TARGET_FILE:scratchbird_client>
+        --guarded $<TARGET_FILE:sbl_sbsql_embedded_client_bridge_test_seam>
+        --symbols BindExternalEngineForTest LastExecuteRowPacketForTest LastExecuteServerDiagnosticsForTest ResetLastExecuteForTest)
+    set_tests_properties(sbsql_sblr_alignment_native_route_b_seam_library_symbols PROPERTIES
       LABELS "sbsql_sblr_alignment;native_storage;native_route_b;test_seam" TIMEOUT 600)
   endif()
 endif()

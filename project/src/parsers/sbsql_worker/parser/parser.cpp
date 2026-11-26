@@ -294,6 +294,10 @@ class NativeRelationalParser final {
       return ParseCatalogJoinSelect();
     }
     if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
+        LooksLikeValuesDerivedTableSelect()) {
+      return ParseValuesDerivedTableSelect();
+    }
+    if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
         LooksLikeBoundedCatalogRelationSelect()) {
       return ParseCatalogRelationSelect();
     }
@@ -375,12 +379,273 @@ class NativeRelationalParser final {
     return std::move(document_);
   }
 
+  // SEARCH_KEY: SB_PARSER_VALUES_DERIVED_TABLE_ALIAS (2026-12-15; owner 2026-11-26: implement now if simple). `SELECT <* | name {, name}> FROM (VALUES row {, row})
+  // [AS] [alias [(column {, column})]] [;]` is ONE literal VALUES relation (the same relation the bare `VALUES ...` statement builds) plus the parser-side alias
+  // and column names. OLD: the catalog-relation route refused it (catalog_relation_name_required) because `(` is not a relation name. The route claims ONLY
+  // this exact shape (nothing after the alias list but `;`): a WHERE/GROUP/ORDER/JOIN or any other tail declines here and keeps the established routes and
+  // their refusals. The projection is `*` or exactly the effective column names in order; a subset or reorder (a projection over the VALUES relation) is NOT
+  // built and is refused with its own reason.
+  bool LooksLikeValuesDerivedTableSelect() const {
+    if (tokens_.size() < 8 || !IsWord(*tokens_[0], "SELECT")) return false;
+    std::size_t index = 1;
+    if (tokens_[index]->text == "*") {
+      ++index;
+    } else {
+      for (;;) {
+        if (index >= tokens_.size() || !IsNameToken(*tokens_[index]) ||
+            IsWord(*tokens_[index], "FROM")) {
+          return false;
+        }
+        ++index;
+        if (index < tokens_.size() && tokens_[index]->text == ",") {
+          ++index;
+          continue;
+        }
+        break;
+      }
+    }
+    if (index + 2 >= tokens_.size() || !IsWord(*tokens_[index], "FROM") ||
+        tokens_[index + 1]->text != "(" || !IsWord(*tokens_[index + 2], "VALUES")) {
+      return false;
+    }
+    std::size_t depth = 0;
+    std::size_t close = 0;
+    for (std::size_t cursor = index + 1; cursor < tokens_.size(); ++cursor) {
+      if (tokens_[cursor]->kind == TokenKind::kStringLiteral) continue;
+      if (tokens_[cursor]->text == "(") ++depth;
+      if (tokens_[cursor]->text == ")" && --depth == 0) {
+        close = cursor;
+        break;
+      }
+    }
+    if (close == 0) return false;
+    std::size_t cursor = close + 1;
+    static constexpr std::array<std::string_view, 21> kClauseWords{
+        "WHERE", "GROUP", "ORDER", "LIMIT", "OFFSET", "HAVING", "UNION",
+        "INTERSECT", "EXCEPT", "FETCH", "WINDOW", "JOIN", "CROSS", "INNER",
+        "LEFT", "RIGHT", "FULL", "NATURAL", "ON", "USING", "FOR"};
+    const bool explicit_as = cursor < tokens_.size() && IsWord(*tokens_[cursor], "AS");
+    if (explicit_as) ++cursor;
+    if (cursor < tokens_.size() && tokens_[cursor]->text != ";" &&
+        tokens_[cursor]->text != "(" && IsNameToken(*tokens_[cursor]) &&
+        (explicit_as || tokens_[cursor]->quoted ||
+         std::ranges::none_of(kClauseWords, [&](const std::string_view word) {
+           return IsWord(*tokens_[cursor], word);
+         }))) {
+      ++cursor;
+      if (cursor < tokens_.size() && tokens_[cursor]->text == "(") {
+        ++cursor;
+        for (;;) {
+          if (cursor >= tokens_.size() || !IsNameToken(*tokens_[cursor])) return false;
+          ++cursor;
+          if (cursor < tokens_.size() && tokens_[cursor]->text == ",") {
+            ++cursor;
+            continue;
+          }
+          break;
+        }
+        if (cursor >= tokens_.size() || tokens_[cursor]->text != ")") return false;
+        ++cursor;
+      }
+    } else if (explicit_as) {
+      return false;
+    }
+    if (cursor < tokens_.size() && tokens_[cursor]->text == ";") ++cursor;
+    return cursor == tokens_.size();
+  }
+
+  void RefuseWithFields(const std::string_view reason, const std::string_view message,
+                        std::vector<Field> extra) {
+    if (document_.messages.has_errors()) return;
+    std::vector<Field> fields{{"reason", std::string(reason)}};
+    for (auto& field : extra) fields.push_back(std::move(field));
+    document_.messages.diagnostics.push_back(MakeDiagnostic(
+        "QOW-DIAG-QRY-001-AST-MALFORMED", "ERROR", std::string(message),
+        "sbp_sbsql.native_relational_parser", std::move(fields)));
+  }
+
+  NativeRelationalAstDocument ParseValuesDerivedTableSelect() {
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "native relational token limit exceeded");
+      return FinishRefusal();
+    }
+    const Token& select_token = Consume();
+    std::vector<NativeIdentifierAstNode> projection;
+    bool wildcard = false;
+    if (AtSymbol("*")) {
+      Consume();
+      wildcard = true;
+    } else {
+      while (!AtEnd() && !IsWord(Current(), "FROM")) {
+        const Token& name = Consume();
+        projection.push_back({name.text, name.quoted, TokenSourceRange(name)});
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+    }
+    if (!RequireWord("FROM", "values_derived_from_required",
+                     "VALUES derived table requires FROM") ||
+        !RequireSymbol("(", "values_derived_open_required",
+                       "VALUES derived table requires an opening parenthesis") ||
+        !RequireWord("VALUES", "values_derived_values_required",
+                     "VALUES derived table requires VALUES")) {
+      return FinishRefusal();
+    }
+    std::optional<std::size_t> row_arity;
+    while (!AtEnd()) {
+      const auto row_id = ParseValuesRow();
+      if (!row_id.has_value()) return FinishRefusal();
+      const auto& row = document_.values_rows[*row_id - 1];
+      if (!row_arity.has_value()) {
+        row_arity = row.expression_ids.size();
+      } else if (*row_arity != row.expression_ids.size()) {
+        Refuse("row_arity_mismatch",
+               "VALUES rows must contain the same number of expressions");
+        return FinishRefusal();
+      }
+      if (!AtSymbol(",")) break;
+      Consume();
+      if (!AtSymbol("(")) {
+        Refuse("row_constructor_expected",
+               "VALUES row separator must be followed by a row constructor");
+        return FinishRefusal();
+      }
+    }
+    if (document_.values_rows.empty() || !row_arity.has_value()) {
+      Refuse("missing_values_row", "VALUES requires at least one row constructor");
+      return FinishRefusal();
+    }
+    if (!RequireSymbol(")", "values_derived_not_closed",
+                       "VALUES derived table is not closed")) {
+      return FinishRefusal();
+    }
+    const Token* last = &Previous();
+    std::optional<NativeIdentifierAstNode> relation_alias;
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        Refuse("values_alias_name_required", "AS requires a derived-table alias");
+        return FinishRefusal();
+      }
+    }
+    std::vector<NativeIdentifierAstNode> column_aliases;
+    if (!AtEnd() && !AtSymbol(";") && !AtSymbol("(") && IsNameToken(Current())) {
+      const Token& alias = Consume();
+      last = &alias;
+      relation_alias = NativeIdentifierAstNode{alias.text, alias.quoted, TokenSourceRange(alias)};
+      if (AtSymbol("(")) {
+        Consume();
+        while (!AtEnd() && !AtSymbol(")")) {
+          if (!IsNameToken(Current())) {
+            Refuse("values_alias_column_invalid", "a derived-table column alias must be an identifier");
+            return FinishRefusal();
+          }
+          const Token& name = Consume();
+          if (name.text.empty()) {
+            Refuse("values_alias_column_name_empty", "a derived-table column alias must not be empty");
+            return FinishRefusal();
+          }
+          column_aliases.push_back({name.text, name.quoted, TokenSourceRange(name)});
+          if (AtSymbol(")")) break;
+          if (!RequireSymbol(",", "values_alias_column_separator_required",
+                             "derived-table column aliases must be comma separated")) {
+            return FinishRefusal();
+          }
+        }
+        if (column_aliases.empty() ||
+            !RequireSymbol(")", "values_alias_columns_not_closed",
+                           "the derived-table column alias list is not closed")) {
+          if (!document_.messages.has_errors()) {
+            Refuse("values_alias_columns_empty", "the derived-table column alias list must not be empty");
+          }
+          return FinishRefusal();
+        }
+        last = &Previous();
+      }
+    }
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("trailing_input", "unexpected input follows the VALUES derived table");
+      return FinishRefusal();
+    }
+    // The alias list must name EVERY column: its count is the row arity (the reference engines refuse a mismatch; both counts ride as data).
+    if (!column_aliases.empty() && column_aliases.size() != *row_arity) {
+      RefuseWithFields("values_alias_column_count_mismatch",
+                       "the derived-table column alias list does not match the VALUES column count",
+                       {{"alias_count", std::to_string(column_aliases.size())},
+                        {"column_count", std::to_string(*row_arity)}});
+      return FinishRefusal();
+    }
+    // The projection: `*`, or exactly the effective column names in order (the alias list, else the default column1..N). Names compare by the
+    // parser's one identifier-key rule (quoted exact, unquoted ASCII-upper). A subset or reorder is a projection over the relation: not built.
+    if (!wildcard) {
+      std::vector<std::string> effective;
+      for (std::size_t ordinal = 0; ordinal < *row_arity; ++ordinal) {
+        effective.push_back(column_aliases.empty()
+                                ? NativeIdentifierComponentKey("column" + std::to_string(ordinal + 1), false)
+                                : NativeIdentifierComponentKey(column_aliases[ordinal]));
+      }
+      bool identity = projection.size() == effective.size();
+      bool all_known = true;
+      for (std::size_t ordinal = 0; ordinal < projection.size(); ++ordinal) {
+        const auto key = NativeIdentifierComponentKey(projection[ordinal]);
+        if (std::ranges::find(effective, key) == effective.end()) all_known = false;
+        if (ordinal >= effective.size() || effective[ordinal] != key) identity = false;
+      }
+      if (!all_known) {
+        RefuseWithFields("values_alias_column_not_found",
+                         "a projected name is not a column of the VALUES derived table",
+                         {{"projected_count", std::to_string(projection.size())},
+                          {"column_count", std::to_string(*row_arity)}});
+        return FinishRefusal();
+      }
+      if (std::unordered_set<std::string>(effective.begin(), effective.end()).size() != effective.size()) {
+        RefuseWithFields("values_alias_column_ambiguous",
+                         "a projected name matches more than one column of the VALUES derived table",
+                         {{"projected_count", std::to_string(projection.size())},
+                          {"column_count", std::to_string(*row_arity)}});
+        return FinishRefusal();
+      }
+      if (!identity) {
+        RefuseWithFields("values_alias_projection_not_built",
+                         "a projection that subsets or reorders the VALUES derived-table columns is not built",
+                         {{"projected_count", std::to_string(projection.size())},
+                          {"column_count", std::to_string(*row_arity)}});
+        return FinishRefusal();
+      }
+    }
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kValues;
+    relation.range = Span(select_token, *last);
+    for (const auto& row : document_.values_rows) relation.values_row_ids.push_back(row.row_id);
+    relation.output_expression_ids = document_.values_rows.front().expression_ids;
+    relation.relation_alias = std::move(relation_alias);
+    relation.column_aliases = std::move(column_aliases);
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
+  }
+
   bool LooksLikeBoundedObjectFreeScalarSelect() const {
-    if (tokens_.size() != 2 && tokens_.size() != 3) return false;
-    return IsWord(*tokens_[0], "SELECT") &&
-           (tokens_[1]->kind == TokenKind::kNumericLiteral ||
+    // SB_PARSER_NEGATIVE_LITERAL_FOLD (2026-12-15): `SELECT -<numeric>` (a minus directly applied to a numeric literal token, optionally followed by `;`)
+    // is the same bounded shape as `SELECT <numeric>`: the minus folds into the signed literal (see ParseUnary). OLD: only SELECT <numeric|parameter>.
+    if (tokens_.size() < 2 || tokens_.size() > 4) return false;
+    if (!IsWord(*tokens_[0], "SELECT")) return false;
+    const bool negative = tokens_.size() >= 3 && CanonicalTokenText(*tokens_[1]) == "-" &&
+                          tokens_[2]->kind == TokenKind::kNumericLiteral;
+    const std::size_t value_index = negative ? 2 : 1;
+    const std::size_t plain_size = value_index + 1;
+    return (negative || tokens_[1]->kind == TokenKind::kNumericLiteral ||
             tokens_[1]->kind == TokenKind::kParameter) &&
-           (tokens_.size() == 2 || tokens_[2]->text == ";");
+           (tokens_.size() == plain_size ||
+            (tokens_.size() == plain_size + 1 && tokens_[plain_size]->text == ";"));
   }
 
   NativeRelationalAstDocument ParseObjectFreeScalarSelect() {
@@ -395,6 +660,10 @@ class NativeRelationalParser final {
     }
 
     const Token& select_token = Consume();
+    const Token* sign_token = nullptr;
+    if (CanonicalTokenText(Current()) == "-" && Current().kind != TokenKind::kNumericLiteral) {
+      sign_token = &Consume();
+    }
     const Token& scalar_token = Consume();
     NativeExpressionAstNode scalar;
     scalar.expression_id = 1;
@@ -403,15 +672,17 @@ class NativeRelationalParser final {
                                  : NativeExpressionAstKind::kLiteral;
     if (scalar.expression_kind == NativeExpressionAstKind::kLiteral) {
       scalar.literal_kind = NativeLiteralAstKind::kNumeric;
-      scalar.spelling = scalar_token.text;
+      scalar.spelling = (sign_token != nullptr ? "-" : "") + scalar_token.text;
     }
-    scalar.range = TokenSourceRange(scalar_token);
+    scalar.range = sign_token != nullptr ? Span(*sign_token, scalar_token)
+                                         : TokenSourceRange(scalar_token);
+    const auto scalar_range = scalar.range;
     document_.expressions.push_back(std::move(scalar));
 
     NativeValuesRowAstNode row;
     row.row_id = 1;
     row.expression_ids = {1};
-    row.range = TokenSourceRange(scalar_token);
+    row.range = scalar_range;
     document_.values_rows.push_back(std::move(row));
 
     if (AtSymbol(";")) Consume();
@@ -6808,12 +7079,16 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
     std::vector<std::string> column_names;
+    std::vector<NativeIdentifierAstNode> column_alias_nodes;
     while (!AtEnd() && !AtSymbol(")")) {
       if (!IsNameToken(Current())) {
         Refuse("inline_values_column_invalid",
                "inline VALUES column alias must be an identifier");
         return FinishRefusal();
       }
+      // SB_ENGINE_OUTPUT_IDENTITY_BY_POSITION (2026-12-15): the declared alias list rides the AST so the binder-side context maps NAMES to POSITIONS from it
+      // (OLD: the list was compared with the fixture names and dropped, and the context guessed positions from the text key_a / key_b / amount).
+      column_alias_nodes.push_back({Current().text, Current().quoted, TokenSourceRange(Current())});
       column_names.push_back(CanonicalTokenText(Consume()));
       if (AtSymbol(")")) break;
       if (!RequireSymbol(",", "inline_values_column_separator_required",
@@ -7658,6 +7933,7 @@ class NativeRelationalParser final {
     }
     values_relation.output_expression_ids =
         document_.values_rows.front().expression_ids;
+    values_relation.column_aliases = std::move(column_alias_nodes);
 
     NativeRelationAstNode aggregate_relation;
     aggregate_relation.relation_id = 2;
@@ -7896,6 +8172,22 @@ class NativeRelationalParser final {
     }
 
     const Token& first = Consume();
+    // SB_PARSER_NEGATIVE_LITERAL_FOLD (2026-12-15; owner 2026-11-26: the PARSER folds a unary minus into a signed numeric literal, no operator_call row).
+    // OLD: `-1` was always the unary-minus OPERATOR over the literal 1 (a scalar projection asking operator_call 1025, refused on the native route).
+    // NEW: a minus applied DIRECTLY to a numeric literal TOKEN is ONE signed numeric literal whose spelling is `-<digits>` (SQL's signed numeric
+    // literal; whitespace between the sign and the digits is allowed, as in the reference engines). A minus over anything else (a parenthesised
+    // expression, a column, another unary operator: `- -1` is the operator over the folded literal -1) stays the unary operator, unchanged.
+    if (word == "-" && !AtEnd() && Current().kind == TokenKind::kNumericLiteral) {
+      const Token& digits = Consume();
+      NativeExpressionAstNode literal;
+      literal.expression_id = NextExpressionId();
+      literal.expression_kind = NativeExpressionAstKind::kLiteral;
+      literal.literal_kind = NativeLiteralAstKind::kNumeric;
+      literal.spelling = "-" + digits.text;
+      literal.range = Span(first, digits);
+      document_.expressions.push_back(std::move(literal));
+      return document_.expressions.back().expression_id;
+    }
     const auto child_id = ParseUnary(depth + 1);
     if (!child_id.has_value()) return std::nullopt;
     const auto& child = document_.expressions[*child_id - 1];

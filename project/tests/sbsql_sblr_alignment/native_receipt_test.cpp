@@ -121,7 +121,12 @@ void Check(bool ok, const std::string& what, std::source_location at = std::sour
   ++checks;
   if (!ok) {
     std::fprintf(stderr, "FAIL %s (line %u)\n", what.c_str(), at.line());
-    std::exit(1);
+    // SB_NATIVE_TEST_CLEAN_FAILURE (2026-12-15; owner 2026-11-26 item 4). OLD: std::exit(1) ran static destruction while the child's served engine loop thread was
+    // still running (the global `served`), so a FAILED check ended as a SIGSEGV. NEW: report, flush and leave without static destruction (_Exit): the exit code is
+    // a plain failure (1). The parent owns the temp directory and still reports/cleans it; nothing the child holds needs an orderly teardown after a failure.
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(1);
   }
 }
 

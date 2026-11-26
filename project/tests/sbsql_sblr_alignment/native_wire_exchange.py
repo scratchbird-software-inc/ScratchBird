@@ -22,7 +22,7 @@ Steps and assertions:
      column carries the PARSER's default name `column1` (2026-12-12; OLD: `key_a`, a fixture-list name the parser's own binding gave the one
      column of a literal VALUES relation and that leaked into the user-visible result; NEW: the same rule as the unaliased scalar-projection
      route, column1, column2, ... by position; the engine sends no name) and the value; `-q -A -t` prints `1`. Refused shapes keep their machine tokens:
-     `SELECT 1 + 0 AS s` and bare `SELECT 1 + 0`, `SELECT -1` and CREATE TABLE are
+     `SELECT 1 + 0 AS s` and bare `SELECT 1 + 0`, `SELECT -1` (OLD, until 2026-12-15: NEW, the parser folds the minus and it RUNS; `SELECT - -1` is the refused operator) and CREATE TABLE are
      SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (OLD, 2026-12-13: `VALUES (1), (2)` was in this list; WIDER LITERALS: a literal VALUES TABLE now runs: ONE vector of R rows by
      C columns, the parser prints columns column1..columnC and the rows in the order written, no server cursor; the bound is 16 rows by 16 columns, no streaming exists,
      above it ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED; BOOLEAN literals in a VALUES table run too (the vector carries one byte per boolean, the parser prints true / false; a bare `SELECT TRUE` is a scalar projection and still stops in the parser); more than 32 literals in one statement stops in the PARSER (the statement cohort's 32 numeric slots)), `SELECT 'a' AS t` is ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT, `SELECT 1 FROM t` is
@@ -427,6 +427,9 @@ def run(args, work):
     # vector of R rows by C columns; the parser builds the table (columns column1..columnC, rows in the order written; no server cursor over a native vector). ---
     def column_values(output, index):
         return [cells[index] for cells in (re.findall(r"\|\s*([^|\s]+)\s*", line) for line in output.splitlines() if re.match(r"^\|\s*-?\d", line))]
+    def table_rows_plain(output):
+        lines = [l for l in output.splitlines() if l.startswith("|")]
+        return [[c.strip() for c in l.strip().strip("|").split("|")] for l in lines[1:]]
     tbl = sbsql(args, work, port, "tbl-2x1", "VALUES (1), (2)"); logins += 1
     check(tbl.returncode == 0 and re.search(r"^\|\s*column1\s*\|\s*$", tbl.stdout, re.M) and column_values(tbl.stdout, 0) == ["1", "2"]
           and "(2 rows)" in tbl.stdout, f"VALUES (1), (2): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
@@ -444,6 +447,23 @@ def run(args, work):
     tbl = sbsql(args, work, port, "tbl-16", sixteen); logins += 1
     check(tbl.returncode == 0 and column_values(tbl.stdout, 0) == [str(i) for i in range(1, 17)] and "(16 rows)" in tbl.stdout,
           f"the 16-row bound itself runs: rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    # NEGATIVE LITERALS (2026-12-15): the PARSER folds a minus applied directly to a numeric literal into a signed literal; the engine sees an int64 value.
+    for label, sql, value in (("neg1", "SELECT -1", "-1"), ("neg-space", "SELECT - 1", "-1"), ("neg-min", "SELECT -9223372036854775808", "-9223372036854775808"),
+                              ("neg-values", "VALUES (-1)", "-1")):
+        neg = sbsql(args, work, port, label, sql); logins += 1
+        check(neg.returncode == 0 and re.search(r"^\|\s*column1\s*\|\s*$", neg.stdout, re.M) and re.search(r"^\|\s*" + value + r"\s*\|\s*$", neg.stdout, re.M)
+              and "(1 row)" in neg.stdout, f"{sql!r}: rc={neg.returncode} {neg.stdout!r} {neg.stderr!r}")
+    neg = sbsql(args, work, port, "neg-table", "VALUES (-1, -2), (3, -4)"); logins += 1
+    check(neg.returncode == 0 and table_rows_plain(neg.stdout) == [["-1", "-2"], ["3", "-4"]] and "(2 rows)" in neg.stdout,
+          f"VALUES (-1, -2), (3, -4): rc={neg.returncode} {neg.stdout!r} {neg.stderr!r}")
+    # VALUES DERIVED-TABLE COLUMN LIST (2026-12-15; owner: implement now if simple). OLD: `SELECT * FROM (VALUES (1)) AS t(x)` was refused by the parser
+    # (QOW-DIAG-QRY-001-AST-MALFORMED). NEW: it runs and the PARSER names the columns from the alias list; the engine is sent no name.
+    alias = sbsql(args, work, port, "alias-one", "SELECT * FROM (VALUES (1)) AS t(x)"); logins += 1
+    check(alias.returncode == 0 and re.search(r"^\|\s*x\s*\|\s*$", alias.stdout, re.M) and table_rows_plain(alias.stdout) == [["1"]] and "(1 row)" in alias.stdout
+          and "column1" not in alias.stdout, f"SELECT * FROM (VALUES (1)) AS t(x): rc={alias.returncode} {alias.stdout!r} {alias.stderr!r}")
+    alias = sbsql(args, work, port, "alias-two", "SELECT * FROM (VALUES (1, 2), (3, 4)) AS t(a, b)"); logins += 1
+    check(alias.returncode == 0 and re.search(r"^\|\s*a\s*\|\s*b\s*\|\s*$", alias.stdout, re.M) and table_rows_plain(alias.stdout) == [["1", "2"], ["3", "4"]]
+          and "(2 rows)" in alias.stdout, f"VALUES (1, 2), (3, 4) with t(a, b): rc={alias.returncode} {alias.stdout!r} {alias.stderr!r}")
     # BOOLEAN literals in a VALUES table (2026-12-13; OLD: `VALUES (TRUE)` failed in the PARSER's binding context). The engine's vector carries ONE byte per boolean
     # (the cohort's boolean identity); the PARSER renders the client text true / false.
     def table_rows(output):
@@ -461,11 +481,20 @@ def run(args, work):
                               ("text", "SELECT 'a' AS t", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
                               # ROUTE B (2026-12-11). OLD: ("bare", "SELECT 1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED") -- bare SELECT 1 now RUNS (above).
                               ("bare-plus", "SELECT 1 + 0", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
-                              ("bare-neg", "SELECT -1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+                              # NEGATIVE LITERALS (2026-12-15; owner: the PARSER folds a minus applied to a numeric literal). OLD: ("bare-neg", "SELECT -1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED").
+                              # NEW: `SELECT -1` RUNS (below); a minus over a non-literal is still the operator (refused with the same token), and the digits one below the int64 minimum
+                              # still stop in the parser (decimal promotion is queued).
+                              ("bare-neg-op", "SELECT - -1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+                              # VALUES derived-table alias list (2026-12-15): the count mismatch and a projection subset/reorder are refused by the PARSER (counts ride as data fields)
+                              ("alias-count", "SELECT * FROM (VALUES (1)) AS t(x, y)", "does not match the VALUES column count"),  # the client prints the parser message + code; the reason and count fields are pinned in native_route_b_test.cpp
+                              ("alias-subset", "SELECT x FROM (VALUES (1, 2)) AS t(x, y)", "subsets or reorders the VALUES derived-table columns"),
+                              ("bare-neg-overflow", "SELECT -9223372036854775809", "DATATYPE.DESCRIPTOR.INVALID"),
                               # WIDER LITERALS (2026-12-13). OLD: ("values2", "VALUES (1), (2)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"). NEW: it runs (above); the bound is pinned instead.
                               ("values17", "VALUES " + ", ".join(f"({i})" for i in range(1, 18)), "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED"),
                               ("values-17col", "VALUES (" + ", ".join(str(i) for i in range(1, 18)) + ")", "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED"),
-                              ("values33", "VALUES " + ", ".join(f"({i})" for i in range(1, 34)), "DATATYPE.DESCRIPTOR.INVALID"),
+                              # OLD (2026-12-13): ("values33", ..., "DATATYPE.DESCRIPTOR.INVALID"). NEW (2026-12-15, owner yes): the DISTINCT parser token for more literals than the
+                              # statement cohort carries slots for (32); its fields slot_limit / literal_count are checked in native_route_b_test.cpp (route_b2).
+                              ("values33", "VALUES " + ", ".join(f"({i})" for i in range(1, 34)), "SBSQL.RESOURCE.LITERAL_SLOT_LIMIT_EXCEEDED"),
                               ("bare-text", "SELECT 'a'", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
                               ("bare-dec", "SELECT 1.5", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"),
                               ("bare-from", "SELECT 1 FROM t", "ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5"),
@@ -538,9 +567,16 @@ def run(args, work):
     payload_t = bytes.fromhex(results[4][0].split("canonical_binary_payload_hex=", 1)[1].strip())
     check(payload_t.startswith(b"SBRES002") and b"scalar_projection_rows" in payload_t and payload_t.endswith(b"column1:int64:not_null")
           and len(re.findall(rb"row\[\d\]", payload_t)) == 2, f"route B line VALUES (1), (2) payload is not the two-row table built by the parser: {payload_t[:160]!r}")
-    for index, token in ((2, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"), (3, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+    # OLD (before 2026-12-15): statement 4 `SELECT -1` was SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED. NEW: the parser folds the minus; it answers RESULT query.execute.
+    check(results[3][0].startswith("RESULT query.execute 1 "), f"route B line statement 4 (SELECT -1): {results[3]!r}")
+    for index, token in ((2, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
                          (5, "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1")):
         check(any(token in line for line in results[index]), f"route B line statement {index + 1}: expected {token}, got {results[index]!r}")
+    # SB_NATIVE_REFUSAL_FIELDS_FORWARDED (2026-12-15; owner yes). OLD: the server dropped the engine diagnostic's fields: the parser got only `detail=status=...;
+    # engine_diagnostic_detail_absent`. NEW: the engine's own opcode_code reaches the PARSER through the real SBsrv -> SBParser message vector (existing SBMV v1 text
+    # field, no wire change) and the line client renders it as a data field (statement 3: SELECT 1 + 0 is the operator-call row, opcode 1025).
+    check(any("opcode_code=1025" in line for line in results[2]), f"route B line statement 3: the engine's opcode_code=1025 must reach the parser as a message-vector field: {results[2]!r}")
+    check(not any("opcode_code=" in line for line in results[5]), f"route B line statement 6 (a decimal literal, the executor's own code): no opcode field is registered for it: {results[5]!r}")
 
     # --- shutdown, listener first, then the server ---
     listener_process = listener

@@ -9026,7 +9026,19 @@ BuildEngineProjectedNativeBindingContext(
     if (!value->has_value()) *value = allocate_descriptor(kind);
     return *value;
   };
+  // SB_ENGINE_OUTPUT_IDENTITY_BY_POSITION (2026-12-15; owner 2026-11-26 item 2): a VALUES column is identified by its POSITION. The parser maps the NAME a
+  // statement used to that position from the alias list it parsed (`AS input(c1, c2, c3)`, in relation.column_aliases, folded as the parser folds those
+  // names: ASCII upper). OLD: the text constants "key_a" / "key_b" / "amount" were the mapping (any other name silently became column 0). The old constant
+  // mapping remains ONLY for a VALUES relation that carries no alias list.
+  const NativeRelationAstNode* aliased_values = nullptr;
+  for (const auto& relation : ast.relations)
+    if (relation.relation_kind == NativeRelationAstKind::kValues && !relation.column_aliases.empty()) aliased_values = &relation;
   const auto values_column_for_name = [&](std::string_view name) -> std::size_t {
+    if (aliased_values != nullptr) {
+      for (std::size_t position = 0; position < aliased_values->column_aliases.size(); ++position)
+        if (ToUpperAscii(aliased_values->column_aliases[position].spelling) == ToUpperAscii(std::string(name))) return position;
+      return std::numeric_limits<std::size_t>::max();  // not a column of the relation: the caller refuses (identifier_column_out_of_range)
+    }
     if (name == "key_a") return 0;
     if (name == "key_b" && values_arity > 1) return 1;
     if (name == "amount") return values_arity - 1;
@@ -9695,6 +9707,32 @@ bool IsExactDecimalLiteralSpelling(const std::string_view spelling) {
   const auto upper = ToUpperAscii(spelling);
   return upper.ends_with("DECIMAL") || upper.ends_with("DEC") ||
          upper.ends_with("D");
+}
+
+// SEARCH_KEY: SB_PARSER_LITERAL_SLOT_LIMIT (2026-12-15; owner 2026-11-26: a DISTINCT token for more literals than the statement cohort carries slots for).
+// OLD: a statement with more numeric (or boolean) literals than the cohort's slots (32 each, public_abi.cpp kDescriptorSlotsPerProfile) failed inside
+// EncodeLiteralPrebindRequest with the undifferentiated DATATYPE.DESCRIPTOR.INVALID. NEW: this check runs first and the parser refuses with
+// SBSQL.RESOURCE.LITERAL_SLOT_LIMIT_EXCEEDED carrying the limit and the count as DATA fields (literal_class, slot_limit, literal_count); the parser's
+// user-facing text is built from them. The slot count is the CONTEXT's (never a literal 32 here) and is NOT raised.
+struct LiteralSlotLimitExceeded {
+  std::string literal_class;
+  std::size_t slot_limit{0};
+  std::size_t literal_count{0};
+};
+std::optional<LiteralSlotLimitExceeded> FindLiteralSlotLimitExceeded(const NativeRelationalAstDocument& ast,
+                                                                      const ParserStatementContext& context) {
+  const struct { const char* name; NativeLiteralAstKind kind; std::uint8_t profile_kind; } classes[] = {
+      {"numeric", NativeLiteralAstKind::kNumeric, 1}, {"boolean", NativeLiteralAstKind::kBoolean, 5}};
+  for (const auto& literal_class : classes) {
+    const auto count = static_cast<std::size_t>(std::ranges::count_if(ast.expressions, [&](const auto& expression) {
+      return expression.expression_kind == NativeExpressionAstKind::kLiteral && expression.literal_kind == literal_class.kind;
+    }));
+    const auto slots = static_cast<std::size_t>(std::ranges::count_if(context.descriptor_profiles, [&](const auto& profile) {
+      return profile.profile_kind == literal_class.profile_kind && !profile.nullable;
+    }));
+    if (slots != 0 && count > slots) return LiteralSlotLimitExceeded{literal_class.name, slots, count};
+  }
+  return std::nullopt;
 }
 
 std::optional<std::pair<CanonicalBytes, LiteralPrebindState>>
@@ -20874,6 +20912,20 @@ std::vector<std::string> NativeRootOutputNames(const NativeRelationalBindingCont
   return names;
 }
 
+// SEARCH_KEY: SB_PARSER_VALUES_DERIVED_TABLE_ALIAS (2026-12-15; owner 2026-11-26): `SELECT * FROM (VALUES (1)) AS t(x)`. The alias list is PARSER data
+// (relation.column_aliases, parsed and count-checked by the parser). It names the result columns here, in the parser's OWN output, after the engine has
+// answered; it is deliberately NOT put into the binding context (whose output names are lowered into the statement the engine receives), so the engine's
+// request is byte for byte the bare `VALUES` request. The spelling is kept as written (a quoted alias's content). OLD: the list was refused.
+std::vector<std::string> ApplyValuesDerivedColumnAliases(std::vector<std::string> names, const NativeRelationalAstDocument& ast) {
+  for (const auto& relation : ast.relations) {
+    if (relation.relation_id != ast.root_relation_id || relation.relation_kind != NativeRelationAstKind::kValues) continue;
+    if (relation.column_aliases.empty() || relation.column_aliases.size() != names.size()) break;
+    for (std::size_t ordinal = 0; ordinal < names.size(); ++ordinal) names[ordinal] = relation.column_aliases[ordinal].spelling;
+    break;
+  }
+  return names;
+}
+
 struct ExactAnonymousParameterProjectionRoute {
   std::string output_name;
 };
@@ -29308,10 +29360,20 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           return result;
         }
         if (requires_ordinary_literal_finalization) {
-          const auto prebind = EncodeLiteralPrebindRequest(
-              ast.native_relational, *native_statement_context, false,
-              scalar_literal_demands ? &*scalar_literal_demands : nullptr);
-          if (!prebind.has_value()) {
+          const auto slot_limit = FindLiteralSlotLimitExceeded(ast.native_relational, *native_statement_context);
+          const auto prebind = slot_limit.has_value()
+              ? std::nullopt
+              : EncodeLiteralPrebindRequest(
+                    ast.native_relational, *native_statement_context, false,
+                    scalar_literal_demands ? &*scalar_literal_demands : nullptr);
+          if (slot_limit.has_value()) {
+            AddResourceDiagnostic(
+                &result.messages, "SBSQL.RESOURCE.LITERAL_SLOT_LIMIT_EXCEEDED",
+                "statement literal count exceeds the statement descriptor cohort's literal slots",
+                {{"literal_class", slot_limit->literal_class},
+                 {"slot_limit", std::to_string(slot_limit->slot_limit)},
+                 {"literal_count", std::to_string(slot_limit->literal_count)}});
+          } else if (!prebind.has_value()) {
             result.messages.diagnostics.push_back(MakeDiagnostic(
                 "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                 "The native ordinary literal negotiation request was unavailable.",
@@ -31423,7 +31485,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               lowered.operation_id == "query.evaluate_projection"
                   ? LoweredProjectionNames(lowered)
                   : (native_binding_context.has_value()
-                         ? NativeRootOutputNames(*native_binding_context, ast.native_relational.root_relation_id)
+                         ? ApplyValuesDerivedColumnAliases(
+                               NativeRootOutputNames(*native_binding_context, ast.native_relational.root_relation_id), ast.native_relational)
                          : std::vector<std::string>{}));
           if (native_row.status == NativeVectorConversionStatus::refused) {
             result.accepted = false;

@@ -33952,8 +33952,14 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
               "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED", "engine.native.result_row_bound_exceeded", {}, true);
           refusal.fields.push_back({"rows", std::to_string(produced_rows)});
           refusal.fields.push_back({"row_bound", std::to_string(scratchbird::engine::sblr::kNativeLiteralValuesMaxRows)});
+          // SEARCH_KEY: SB_NATIVE_REFUSAL_FIELDS_FORWARDED (2026-12-15). OLD: `{}` here, so the source diagnostic's fields (rows, row_bound) were never stored
+          // in the result's diagnostic (add_diagnostic copies only the source's detail, message key, occurrence and metadata, not its fields) and no snapshot
+          // reader, the server included, could see them. NEW: the same fields are passed as the stored fields too.
           return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED",
-                             "engine.native.result_row_bound_exceeded", {}, {}, nullptr, &refusal);
+                             "engine.native.result_row_bound_exceeded", {},
+                             {{"rows", std::to_string(produced_rows)},
+                              {"row_bound", std::to_string(scratchbird::engine::sblr::kNativeLiteralValuesMaxRows)}},
+                             nullptr, &refusal);
         }
         native_result_vector = native_scalar_projection_vector(dispatched.api_result, receipt->engine_context);
         if (!native_result_vector) {
@@ -33962,8 +33968,10 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
               "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT", "engine.native.result_vector_type_not_built", {}, true);
           refusal.fields.push_back({"operation", dispatched.api_result.operation_id});
           refusal.fields.push_back({"requires", "native_result_vector_types"});
+          // SB_NATIVE_REFUSAL_FIELDS_FORWARDED (2026-12-15): OLD `{}` (the fields of `refusal` were dropped, see above). NEW: stored too.
           return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT",
-                             "engine.native.result_vector_type_not_built", {}, {}, nullptr, &refusal);
+                             "engine.native.result_vector_type_not_built", {},
+                             {{"operation", dispatched.api_result.operation_id}, {"requires", "native_result_vector_types"}}, nullptr, &refusal);
         }
       } else {
       result->row_values = api_row_values(dispatched.api_result);

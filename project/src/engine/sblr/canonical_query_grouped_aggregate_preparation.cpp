@@ -1212,16 +1212,16 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       exact_grouping_sets_metadata_not_sum_profile ||
       exact_rollup_metadata_not_sum_profile ||
       exact_cube_metadata_not_sum_profile) {
-    constexpr std::array<std::string_view, 7> kOutputNames = {
-        "key_a",      "key_b",     "row_count", "total_amount",
-        "grouping_a", "grouping_b", "grouping_id"};
-    for (std::size_t ordinal = 0; ordinal < kOutputNames.size(); ++ordinal) {
+    // SEARCH_KEY: SB_ENGINE_OUTPUT_IDENTITY_BY_POSITION (2026-12-15; owner 2026-11-26: the aggregate/filter route takes positions, never the text names
+    // key_a & siblings). OLD: each output's output_name_utf8 was compared with the text constants {"key_a", "key_b", "row_count", "total_amount",
+    // "grouping_a", "grouping_b", "grouping_id"}: an engine dependency on text names. NEW: the identity is the output's POSITION (its ordinal, which is also
+    // what the output_id arithmetic below already pins); names are data the parser chose and the engine never compares with a constant.
+    constexpr std::size_t kOutputCount = 7;
+    for (std::size_t ordinal = 0; ordinal < kOutputCount; ++ordinal) {
       if (aggregate_outputs[ordinal]->output_id != 4U + ordinal ||
           filter_outputs[ordinal]->output_id != 11U + ordinal ||
-          aggregate_outputs[ordinal]->output_name_utf8 !=
-              kOutputNames[ordinal] ||
-          filter_outputs[ordinal]->output_name_utf8 !=
-              kOutputNames[ordinal]) {
+          aggregate_outputs[ordinal]->ordinal != ordinal ||
+          filter_outputs[ordinal]->ordinal != ordinal) {
         result.detail =
             "metadata NOT-SUM output identity is not exact";
         return result;
@@ -1239,15 +1239,13 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       !exact_grouping_sets_metadata_not_count_sum_and_profile &&
       !exact_rollup_metadata_not_count_sum_and_profile &&
       !exact_cube_metadata_not_count_sum_and_profile) {
-    constexpr std::array<std::string_view, 4> kOutputNames = {
-        "key_a", "key_b", "row_count", "total_amount"};
-    for (std::size_t ordinal = 0; ordinal < kOutputNames.size(); ++ordinal) {
+    // SB_ENGINE_OUTPUT_IDENTITY_BY_POSITION (2026-12-15): OLD compared the names {"key_a", "key_b", "row_count", "total_amount"}; NEW the position.
+    constexpr std::size_t kOutputCount = 4;
+    for (std::size_t ordinal = 0; ordinal < kOutputCount; ++ordinal) {
       if (aggregate_outputs[ordinal]->output_id != 4U + ordinal ||
           filter_outputs[ordinal]->output_id != 8U + ordinal ||
-          aggregate_outputs[ordinal]->output_name_utf8 !=
-              kOutputNames[ordinal] ||
-          filter_outputs[ordinal]->output_name_utf8 !=
-              kOutputNames[ordinal] ||
+          aggregate_outputs[ordinal]->ordinal != ordinal ||
+          filter_outputs[ordinal]->ordinal != ordinal ||
           !aggregate_outputs[ordinal]->visible ||
           !filter_outputs[ordinal]->visible) {
         result.detail =

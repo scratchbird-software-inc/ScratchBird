@@ -487,6 +487,11 @@ struct NativeRelationAstNode {
   std::vector<std::uint32_t> table_function_argument_expression_ids;
   std::vector<std::uint32_t> window_invocation_ids;
   std::vector<NativeOrderingAstTerm> ordering_terms;
+  // SEARCH_KEY: SB_PARSER_VALUES_DERIVED_TABLE_ALIAS (2026-12-15; owner 2026-11-26: `SELECT * FROM (VALUES ...) AS t(x)`). The derived-table alias and its column
+  // list ride the AST as PARSER data only: the column NAMES are applied by the parser when it builds the result (never sent to the engine, which names nothing).
+  // Empty for every relation that does not come from the VALUES derived-table route.
+  std::optional<NativeIdentifierAstNode> relation_alias;
+  std::vector<NativeIdentifierAstNode> column_aliases;
   SourceRange range;
 };
 
