@@ -28,6 +28,7 @@ from plan_import_rows_generated_evidence import (
     is_central_import_refusal_surface,
     is_plan_import_rows_surface,
 )
+import engine_reached_refusal_generated_evidence as engine_reached_refusal
 
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
@@ -168,6 +169,30 @@ def selectable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict[
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
         )
 
+    if engine_reached_refusal.is_engine_reached_refusal(surface_id):
+        return (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+            and manifest.get("final_state") == "exact_refusal_passed"
+            and round_trip_required == engine_reached_refusal.NOT_APPLICABLE_ROUND_TRIP
+            and bool(operation_id)
+            and not operation_id.startswith("not_")
+            and not engine_reached_refusal.refusal_kind_errors(
+                surface_id, manifest.values(), None)
+        )
+
+    if engine_reached_refusal.is_package_refusal(surface_id):
+        return (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+            and manifest.get("final_state") == "exact_refusal_passed"
+            and round_trip_required == "not_applicable_pre_sblr_exact_refusal"
+            and operation_id == (
+                "not_admitted_package_pgcrypto_" + engine_reached_refusal.PACKAGE_CODE)
+            and not engine_reached_refusal.refusal_kind_errors(
+                surface_id, manifest.values(), None)
+        )
+
     if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
         return (
             auth.get("status") == "native_now"
@@ -227,6 +252,30 @@ def refreshable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict
             manifest.get("final_state") in {"exact_refusal_passed", "cluster_provider_route_passed"}
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
         )
+    if engine_reached_refusal.is_engine_reached_refusal(surface_id):
+        return (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+            and manifest.get("final_state") == "exact_refusal_passed"
+            and round_trip_required == engine_reached_refusal.NOT_APPLICABLE_ROUND_TRIP
+            and bool(operation_id)
+            and not operation_id.startswith("not_")
+            and not engine_reached_refusal.refusal_kind_errors(
+                surface_id, manifest.values(), None)
+        )
+
+    if engine_reached_refusal.is_package_refusal(surface_id):
+        return (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+            and manifest.get("final_state") == "exact_refusal_passed"
+            and round_trip_required == "not_applicable_pre_sblr_exact_refusal"
+            and operation_id == (
+                "not_admitted_package_pgcrypto_" + engine_reached_refusal.PACKAGE_CODE)
+            and not engine_reached_refusal.refusal_kind_errors(
+                surface_id, manifest.values(), None)
+        )
+
     if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
         return (
             auth.get("status") == "native_now"

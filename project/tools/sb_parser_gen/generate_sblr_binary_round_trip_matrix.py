@@ -108,6 +108,10 @@ from core_unavailable_command_refusal_generated_evidence import (
     normalize_fixture_status as normalize_unavailable_command_fixture_status,
     validate_authoritative_runtime_inputs as validate_unavailable_command_inputs,
 )
+from engine_reached_refusal_generated_evidence import (
+    binary_round_trip_override as engine_reached_binary_round_trip_override,
+    validate_authoritative_runtime_inputs as validate_engine_reached_refusal_inputs,
+)
 
 
 REGISTRY_CSV = (
@@ -436,6 +440,7 @@ def main() -> int:
     validate_core_root_refusal_inputs(root)
     validate_sbsfc078_refusal_inputs(root)
     validate_unavailable_command_inputs(root)
+    validate_engine_reached_refusal_inputs(root)
     validate_procedural_lifecycle_inputs(root)
     validate_match_recognize_inputs(root)
     validate_acceleration_inputs(root)
@@ -541,6 +546,7 @@ def main() -> int:
         ledger_row = procedural_lifecycle_binary_round_trip_override(ledger_row)
         ledger_row = match_recognize_binary_round_trip_override(ledger_row)
         ledger_row = acceleration_binary_round_trip_override(ledger_row)
+        ledger_row = engine_reached_binary_round_trip_override(ledger_row)
         ledger_row["fixture_status"] = normalize_fixture_status(
             surface_id,
             fixture_status_for(root, ledger_row["fixture_path"], surface_id),
@@ -557,8 +563,9 @@ def main() -> int:
         output_rows.append(ledger_row)
 
         status_counts[status] = status_counts.get(status, 0) + 1
-        round_trip_required_counts[phases["byte_identical_round_trip_required"]] = (
-            round_trip_required_counts.get(phases["byte_identical_round_trip_required"], 0) + 1
+        final_round_trip_required = ledger_row["byte_identical_round_trip_required"]
+        round_trip_required_counts[final_round_trip_required] = (
+            round_trip_required_counts.get(final_round_trip_required, 0) + 1
         )
 
     output_path = artifact_root / OUTPUT_NAME

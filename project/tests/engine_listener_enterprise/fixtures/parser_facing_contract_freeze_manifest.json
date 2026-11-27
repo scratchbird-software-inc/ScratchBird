@@ -43,7 +43,7 @@
     {
             "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
             "resource_kind": "parser_facing_strict_row_coverage_ledger",
-            "sha256": "893700253663e516b999e1a76e98d4d41a706a8732529ee776f21d855d079ccf"
+            "sha256": "afeecee0149f275496d51cc8249d05bd5f48c7ac98187d124f3df8bd1c2df004"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",

@@ -95,6 +95,7 @@ from core_unavailable_command_refusal_generated_evidence import (
     per_row_manifest_override as unavailable_command_per_row_manifest_override,
     validate_authoritative_runtime_inputs as validate_unavailable_command_inputs,
 )
+import engine_reached_refusal_generated_evidence as engine_reached_refusal
 
 
 PUBLIC_SURFACE_INPUT = (
@@ -5575,7 +5576,7 @@ SBSFC068_PREPARED_STATEMENT_CONTROL_ROW_EVIDENCE = {
         "test_id": "CSC-TEST-003577;CSC-TEST-003593",
         "sql_fixture": "EXECUTE prep_one",
         "row_role": "execute_prepared_stmt",
-        "runtime_proof": "CSC-TEST-003577;canonical_sblr=true;publication_barrier=passed;result_handle=validated;nested_row=key_a:1;CSC-TEST-003593;parameterized_named_prepare_bind_execute=true;typed_value=7;durable_bind_consumed=true",
+        "runtime_proof": "CSC-TEST-003577;canonical_sblr=true;publication_barrier=passed;result_handle=validated;nested_row=column1:1;CSC-TEST-003593;parameterized_named_prepare_bind_execute=true;typed_value=7;durable_bind_consumed=true",
     },
     "SBSQL-FB03794952FB": {
         "canonical_name": "deallocate_stmt",
@@ -10997,6 +10998,12 @@ SBSFC057_CRYPTO_HASH_CTEST_LABEL = (
     "sbsql_parser_worker;SBSFC-057-crypto-hash;"
     "sbsql_e2e_passed"
 )
+SBSFC057_PGP_REFUSAL_CTEST_LABEL = (
+    "sbsql_surface_to_sblr_full_implementation_closure;"
+    "sbsql_parser_worker;SBSFC-057-crypto-hash;"
+    f"{engine_reached_refusal.ROUTE_CTEST};"
+    "sbsql_exact_refusal_passed"
+)
 
 
 def _sbsfc057_evidence(function_id: str, engine_entrypoint: str, proof: str, dependency: bool = False) -> dict[str, str]:
@@ -11007,9 +11014,14 @@ def _sbsfc057_evidence(function_id: str, engine_entrypoint: str, proof: str, dep
         "sblr_binding": (f"sblr.expr.crypto_{engine_entrypoint}.v3" if native_pgp
                          else f"sblr.expr.crypto_hash.{engine_entrypoint}.v3"),
         "engine_entrypoint": engine_entrypoint,
-        "proof": "pending_native_core_pgp_row_qualification" if native_pgp else proof,
+        "proof": proof,
         "dependency": "yes" if dependency else "no",
-        "qualification": "evidence_required" if native_pgp else "legacy_row_evidence",
+        "qualification": (
+            ("engine_reached_refusal"
+             if engine_entrypoint in {"pgp_pub_decrypt", "pgp_pub_encrypt",
+                                      "pgp_sym_decrypt", "pgp_sym_encrypt"}
+             else "package_parser_refusal")
+            if native_pgp else "legacy_row_evidence"),
     }
 
 
@@ -19344,8 +19356,9 @@ def classify(
 
     crypto_hash_evidence = SBSFC057_CRYPTO_HASH_ROW_EVIDENCE.get(surface_id)
     if crypto_hash_evidence is not None:
-        pending_native_pgp = crypto_hash_evidence["qualification"] == "evidence_required"
-        if status != "native_now" and not (pending_native_pgp and status == "evidence_required"):
+        native_pgp_refusal = crypto_hash_evidence["qualification"] in {
+            "engine_reached_refusal", "package_parser_refusal"}
+        if status != "native_now" and not (native_pgp_refusal and status == "evidence_required"):
             fail(f"{surface_id} SBSFC-057 crypto/hash manifest override requires native_now status")
         if cluster_scope != "noncluster_or_profile_scoped":
             fail(f"{surface_id} SBSFC-057 crypto/hash manifest override requires noncluster/profile scope")
@@ -19355,9 +19368,9 @@ def classify(
             fail(f"{surface_id} SBSFC-057 crypto/hash SBLR family drift")
         if ledger_row is None:
             fail(f"{surface_id} SBSFC-057 crypto/hash manifest override requires strict ledger row")
-        required_state = "lowering_family_mapped" if pending_native_pgp else "e2e_passed"
+        required_state = "exact_refusal_passed" if native_pgp_refusal else "e2e_passed"
         if ledger_row.get("current_state") != required_state:
-            fail(f"{surface_id} SBSFC-057 crypto/hash manifest override requires e2e_passed strict ledger state")
+            fail(f"{surface_id} SBSFC-057 crypto/hash manifest override requires {required_state} strict ledger state")
         if oracle_row is None:
             fail(f"{surface_id} SBSFC-057 crypto/hash manifest override requires oracle matrix row")
         if oracle_row.get("oracle_authority_status") != "full_oracle":
@@ -19373,18 +19386,10 @@ def classify(
         sblr_binding = crypto_hash_evidence["sblr_binding"]
         engine_entrypoint = crypto_hash_evidence["engine_entrypoint"]
         proof = crypto_hash_evidence["proof"]
-        if pending_native_pgp:
-            return {
-                "final_state": "pending",
-                "ctest_label": SBSFC057_CRYPTO_HASH_CTEST_LABEL,
-                "fixture_path": SBSFC057_CRYPTO_HASH_FIXTURE_CSV,
-                "implementation_refs": f"function_id={function_id};sblr_binding={sblr_binding};engine_entrypoint={engine_entrypoint};status=evidence_required;execution_admission=refused_until_exact_semantics",
-                "diagnostic_proof": "pending_exact_native_CRYPTO.PGP_or_CRYPTO.PACKAGE.NOT_CALLABLE_diagnostics",
-                "result_proof": proof,
-                "evidence_collected_utc": "",
-                "promoter_slice": "native_core_pgp_exact_typed_full_route_qualification_required",
-                "notes": "Core native OpenPGP/package contract metadata is not execution evidence. Legacy envelope fixtures cannot prove RFC9580 packet behavior, exact bytea/text overloads, protected custody, typed NULL, or end-to-end execution. Only pgp_pub_decrypt admits the explicit four-argument passphrase form; the third argument of its legacy form remains options. No runtime completion or successful package scalar is claimed.",
-            }
+        if native_pgp_refusal:
+            return engine_reached_refusal.per_row_manifest_classification(
+                surface, function_id, sblr_binding, engine_entrypoint,
+                SBSFC057_PGP_REFUSAL_CTEST_LABEL)
         diagnostic = (
             "SB_DIAG_FUNCTION_DEPENDENCY_UNAVAILABLE_for_unpinned_argon2_bcrypt_blake3_or_crypt_provider"
             if crypto_hash_evidence["dependency"] == "yes"
@@ -19413,7 +19418,7 @@ def classify(
             "evidence_collected_utc": "static_existing_ctest_evidence",
             "promoter_slice": "SBSFC-057-crypto-hash-batch",
             "notes": (
-                "Legacy non-PGP SBSFC-057 crypto/hash row evidence; native PGP and package rows remain evidence_required pending exact Core qualification. "
+                "Legacy non-PGP SBSFC-057 crypto/hash row evidence; the four native PGP rows are engine-reached refusals and pgcrypto is a parser package refusal (both exact_refusal_passed, neither a positive route). "
                 "Legacy evidence covers OpenSSL EVP SHA3 and BLAKE2b digests, OpenSSL HMAC, RAND-backed random bytes and UUIDs with deterministic fixture overrides, bounded OpenSSL EVP_PBE_scrypt, in-core xxhash64 and ASCII armor/dearmor. "
                 "Argon2, bcrypt, blake3, and crypt rows are exact dependency-unavailable fail-closed runtime behavior because local pinned core providers/headers are unavailable. "
                 "No parser SQL execution, reference execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
@@ -25883,6 +25888,7 @@ def main() -> int:
     validate_core_route_reconciliation_inputs(root)
     validate_sbsfc078_refusal_inputs(root)
     validate_unavailable_command_inputs(root)
+    engine_reached_refusal.validate_authoritative_runtime_inputs(root)
     validate_procedural_lifecycle_inputs(root)
     validate_match_recognize_inputs(root)
     validate_acceleration_inputs(root)

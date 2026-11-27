@@ -146,14 +146,33 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def load_engine_reached_refusal(repo: Path):
+    generator_root = str(repo.resolve() / "project/tools/sb_parser_gen")
+    if generator_root not in sys.path:
+        sys.path.insert(0, generator_root)
+    import engine_reached_refusal_generated_evidence as module  # pylint: disable=import-outside-toplevel
+
+    return module
+
+
 def validate_exact_refusal(
     row: dict[str, str],
     index: int,
     row_kind: str,
     diagnostic_column: str,
     result_column: str,
+    repo: Path,
 ) -> list[str]:
     errors: list[str] = []
+    engine_reached_refusal = load_engine_reached_refusal(repo)
+    surface_id = row.get("surface_id", "")
+    # closed SBSFC-057 refusal kinds: every token of the closed vector is required (see
+    # engine_reached_refusal_generated_evidence.py); the engine-reached kind emits
+    # executable SBLR so the pre-SBLR marker vector below does not apply to it.
+    for kind_error in engine_reached_refusal.refusal_kind_errors(surface_id, row.values(), repo):
+        errors.append(f"{row_kind} row {index}: {kind_error}")
+    if engine_reached_refusal.is_engine_reached_refusal(surface_id):
+        return errors
     diagnostic_proof = row.get(diagnostic_column, "")
     joined = ";".join(row.values())
     diagnostic_tokens = (token.strip() for token in diagnostic_proof.split(";"))
@@ -244,6 +263,7 @@ def validate_surface_evidence(repo: Path) -> tuple[list[str], int]:
                     "evidence",
                     "diagnostic_proof",
                     "result_proof",
+                    repo,
                 )
             )
         joined = ";".join(row.get(column, "") for column in row)
@@ -263,6 +283,7 @@ def validate_surface_evidence(repo: Path) -> tuple[list[str], int]:
                     "release",
                     "diagnostic_refs",
                     "result_refs",
+                    repo,
                 )
             )
             if not row["auth_route_ref"].endswith("#exact_refusal_passed"):

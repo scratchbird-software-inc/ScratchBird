@@ -127,7 +127,10 @@ def main() -> int:
         validate_authoritative_runtime_inputs as validate_unavailable_commands,
     )
 
+    import engine_reached_refusal_generated_evidence as engine_reached_refusal  # pylint: disable=import-outside-toplevel
+
     try:
+        engine_reached_refusal.validate_authoritative_runtime_inputs(root)
         validate_core_root_refusals(root)
         validate_sbsfc078_refusals(root)
         validate_unavailable_commands(root)
@@ -213,6 +216,16 @@ def main() -> int:
             ):
                 if token not in authority:
                     errors.append(f"{surface_id} pre-SBLR refusal authority model missing {token}")
+        elif engine_reached_refusal.is_package_refusal(surface_id):
+            for token in (
+                "parser_package_probe_only",
+                "no_executable_sblr",
+                "no_engine_execution",
+                "no_mutation",
+                "no_wal_authority",
+            ):
+                if token not in authority:
+                    errors.append(f"{surface_id} package refusal authority model missing {token}")
         elif "no_wal_authority" not in authority or "sblr_envelope_with_uuid_and_descriptor_authority_only" not in authority:
             errors.append(f"{surface_id} fixture lost SBLR/MGA authority model")
         if "sbsql_parser_worker" not in fields.get("per_row_ctest_label", ""):
@@ -240,6 +253,59 @@ def main() -> int:
                     "cluster_provider_route_passed",
                     "SBLR.CLUSTER.STUB_RESPONSE",
                     "UDR.BRIDGE.UNLICENSED",
+                )
+            elif engine_reached_refusal.is_package_refusal(surface_id):
+                required = (
+                    "not_admitted_package_pgcrypto_CRYPTO.PACKAGE.NOT_CALLABLE",
+                    "CRYPTO.PACKAGE.NOT_CALLABLE",
+                    "callable_function=false",
+                    "pre_sblr_refusal=true",
+                    "executable_sblr_emitted=false",
+                    "not_applicable_pre_sblr_exact_refusal",
+                    "not_applicable_no_sblr_envelope_to_serialize",
+                    "not_applicable_no_server_or_engine_dispatch",
+                    "fixture_status=exact_refusal_passed",
+                )
+                forbidden = (
+                    "byte_identical_round_trip_required=yes",
+                    "executable_sblr_emitted=true",
+                    "engine_reached=true",
+                    "server_dispatch=true",
+                    "engine_mutation=true",
+                )
+                errors.extend(
+                    engine_reached_refusal.refusal_kind_errors(
+                        surface_id,
+                        list(row.values()) + list(fields.values()),
+                        root,
+                    )
+                )
+            elif engine_reached_refusal.is_engine_reached_refusal(surface_id):
+                # closed engine_reached_refusal kind: executable SBLR IS emitted and the
+                # engine IS reached (in process); no byte-identical round trip is claimed.
+                required = (
+                    "refusal_kind=engine_reached_refusal",
+                    "executable_sblr_emitted=true",
+                    "engine_reached=true",
+                    "CRYPTO.PGP.PROFILE_UNAVAILABLE",
+                    "not_applicable_engine_reached_refusal_no_byte_identical_round_trip_claimed",
+                    "fixture_status=exact_refusal_passed",
+                )
+                forbidden = (
+                    "byte_identical_round_trip_required=yes",
+                    "executable_sblr_emitted=false",
+                    "pre_sblr_refusal=true",
+                    "not_applicable_no_sblr_envelope_to_serialize",
+                    "not_applicable_no_server_or_engine_dispatch",
+                    "engine_dispatch_not_reached=true",
+                    "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
+                )
+                errors.extend(
+                    engine_reached_refusal.refusal_kind_errors(
+                        surface_id,
+                        list(row.values()) + list(fields.values()),
+                        root,
+                    )
                 )
             elif surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
                 required = (

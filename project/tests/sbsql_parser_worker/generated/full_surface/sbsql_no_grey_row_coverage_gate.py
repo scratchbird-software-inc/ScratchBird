@@ -26,6 +26,11 @@ function/API operation id and fixture evidence:
 - native_future rows MUST reach `e2e_passed` (after SBSFC-003 promotion) or
   must have been removed from the canonical SBsql surface registry by spec
   change.
+- the SBSFC-057 PGP/package rows reach `exact_refusal_passed` through two
+  CLOSED refusal kinds (engine_reached_refusal, parser_package_refusal) defined
+  in `project/tools/sb_parser_gen/engine_reached_refusal_generated_evidence.py`;
+  a row of those ids must carry the whole closed token vector (and a row that
+  claims a kind outside its closed set fails). They are not `e2e_passed`.
 - cluster_private rows MUST reach `exact_refusal_passed` for the public
   build, and may additionally carry `private_profile_implemented` evidence
   where private cluster authority is available.
@@ -55,6 +60,15 @@ import csv
 import sys
 from collections import Counter
 from pathlib import Path
+
+
+def load_engine_reached_refusal(root: Path):
+    generator_root = str(root.resolve() / "project/tools/sb_parser_gen")
+    if generator_root not in sys.path:
+        sys.path.insert(0, generator_root)
+    import engine_reached_refusal_generated_evidence as module  # pylint: disable=import-outside-toplevel
+
+    return module
 
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
@@ -105,6 +119,7 @@ def main() -> int:
     parser.add_argument("--artifact-root", default=DEFAULT_ARTIFACT_ROOT)
     args = parser.parse_args()
     root = Path(args.repo_root)
+    engine_reached_refusal = load_engine_reached_refusal(root)
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
@@ -174,6 +189,19 @@ def main() -> int:
             if row["fixture_evidence"] in FORBIDDEN_FIXTURE_VALUES:
                 fixture_violations.append(surface_id)
             if state == "exact_refusal_passed":
+                kind_errors = engine_reached_refusal.refusal_kind_errors(
+                    surface_id, row.values(), root.resolve()
+                )
+                for kind_error in kind_errors:
+                    print(f"  {kind_error}", file=sys.stderr)
+                if kind_errors:
+                    native_now_refusal_evidence_violations.append(surface_id)
+                if engine_reached_refusal.is_engine_reached_refusal(surface_id):
+                    # closed engine_reached_refusal kind: SBLR IS emitted, so the pre-SBLR
+                    # proof vector below must NOT be satisfied by this row.
+                    if row["evidence_complete"] != "yes":
+                        evidence_complete_violations.append(surface_id)
+                    continue
                 diagnostic = row["diagnostic_evidence"]
                 combined = ";".join(
                     row[column]

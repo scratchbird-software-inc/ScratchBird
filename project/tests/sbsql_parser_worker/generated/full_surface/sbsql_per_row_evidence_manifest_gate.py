@@ -28,6 +28,15 @@ from collections import Counter
 from pathlib import Path
 
 
+def load_engine_reached_refusal(root: Path):
+    generator_root = str(root.resolve() / "project/tools/sb_parser_gen")
+    if generator_root not in sys.path:
+        sys.path.insert(0, generator_root)
+    import engine_reached_refusal_generated_evidence as module  # pylint: disable=import-outside-toplevel
+
+    return module
+
+
 REGISTRY = "public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 STRICT_LEDGER_NAME = "STRICT_ROW_COVERAGE_LEDGER.csv"
@@ -163,6 +172,7 @@ def main() -> int:
     parser.add_argument("--artifact-root", default=DEFAULT_ARTIFACT_ROOT)
     args = parser.parse_args()
     root = Path(args.repo_root).resolve()
+    engine_reached_refusal = load_engine_reached_refusal(root)
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
@@ -281,7 +291,20 @@ def main() -> int:
                 row.get("status") != "native_now" or row.get("cluster_scope") == "cluster_private"
             ):
                 errors.append(f"{sid} e2e_passed requires noncluster native_now status")
-            if final_state == "exact_refusal_passed":
+            if final_state == "exact_refusal_passed" and (
+                engine_reached_refusal.is_engine_reached_refusal(sid)
+            ):
+                # closed engine_reached_refusal kind: executable SBLR IS emitted and the
+                # engine IS reached, so the pre-SBLR marker vector must not be applied.
+                for kind_error in engine_reached_refusal.refusal_kind_errors(
+                    sid, row.values(), root
+                ):
+                    errors.append(f"{sid} exact_refusal_passed lacks closed refusal evidence: {kind_error}")
+            elif final_state == "exact_refusal_passed":
+                for kind_error in engine_reached_refusal.refusal_kind_errors(
+                    sid, row.values(), root
+                ):
+                    errors.append(f"{sid} exact_refusal_passed lacks closed refusal evidence: {kind_error}")
                 diagnostic = row.get("diagnostic_proof", "")
                 result = row.get("result_proof", "")
                 diagnostic_tokens = (token.strip() for token in diagnostic.split(";"))

@@ -8,6 +8,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 
+import engine_reached_refusal_generated_evidence as refusal
 import generate_function_semantic_oracle_matrix as oracle
 import generate_per_row_evidence_manifest as manifest
 import generate_strict_row_coverage_ledger as ledger
@@ -91,13 +92,17 @@ class NativePgpMetadataTest(unittest.TestCase):
                 expected = f"sblr.expr.crypto_{name}.v3"
                 self.assertEqual(record["sblr_binding"], expected)
                 self.assertIn("status=evidence_required", self.row(surface_id)["notes"])
+                kind = ("package_parser_refusal" if refusal.is_package_refusal(surface_id)
+                        else "engine_reached_refusal")
                 for module in (manifest, ledger):
                     evidence = module.SBSFC057_CRYPTO_HASH_ROW_EVIDENCE[surface_id]
                     self.assertEqual(evidence["sblr_binding"], expected)
-                    self.assertEqual(evidence["qualification"], "evidence_required")
-                    self.assertEqual(evidence["proof"], "pending_native_core_pgp_row_qualification")
+                    # owner 2026-11-27: the pgp_* rows are engine-reached refusals and pgcrypto is a
+                    # parser package refusal (both exact_refusal_passed); neither is a positive route
+                    self.assertEqual(evidence["qualification"], kind)
+                    self.assertEqual(evidence["proof"], refusal.fixture_id_for(surface_id))
 
-    def test_actual_classifiers_do_not_promote_legacy_envelope_evidence(self):
+    def test_actual_classifiers_never_promote_pgp_rows_to_e2e_or_pre_sblr_evidence(self):
         for surface_id in PGP:
             for status in ("native_now", "evidence_required"):
                 with self.subTest(surface_id=surface_id, status=status):
@@ -106,16 +111,27 @@ class NativePgpMetadataTest(unittest.TestCase):
                     classified = ledger.sbsfc057_crypto_hash_classification(
                         surface, {"status": status},
                         {"sblr_operation_family": "sblr.expression.runtime.v3"}, row)
-                    self.assertEqual(classified["current_state"], "lowering_family_mapped")
-                    self.assertEqual(classified["evidence_complete"], "no")
+                    # never the positive state, never the legacy envelope evidence
+                    self.assertEqual(classified["current_state"], "exact_refusal_passed")
+                    self.assertEqual(classified["evidence_complete"], "yes")
+                    text = ";".join(classified.values())
+                    self.assertNotIn("SBPGP1", text)
+                    self.assertNotIn("bounded_crypto_hash_route", text)
+                    package = refusal.is_package_refusal(surface_id)
+                    # engine-reached rows must NOT carry the false pre-SBLR token; pgcrypto must
+                    self.assertEqual("executable_sblr_emitted=false" in text.split(";"), package)
+                    self.assertEqual("executable_sblr_emitted=true" in text.split(";"), not package)
+                    self.assertEqual([], refusal.refusal_kind_errors(
+                        surface_id, classified.values(), None))
                     # Exercise the actual production manifest classifier without
                     # loading ledgers, running fixtures, or writing generated CSV.
                     arguments = {key: None for key in inspect.signature(manifest.classify).parameters}
                     arguments.update(surface=surface, ledger_row=classified, oracle_row=row)
                     result = manifest.classify(**arguments)
-                    self.assertEqual(result["final_state"], "pending")
-                    self.assertEqual(result["evidence_collected_utc"], "")
-                    self.assertIn("pending", result["result_proof"])
+                    self.assertEqual(result["final_state"], "exact_refusal_passed")
+                    self.assertEqual([], refusal.refusal_kind_errors(
+                        surface_id, result.values(), None))
+                    self.assertNotIn("sbsql_e2e_passed", result["ctest_label"])
 
     def test_non_pgp_evidence_not_reclassified_by_this_repair(self):
         for module in (manifest, ledger):

@@ -24,10 +24,10 @@
   ],
   "replay_source_contract": {
     "surface_identity_sha256": "8d20c5d06e430813793f6a46b508f4d3b04a16a0aa8741000c557122ee42ee37",
-    "surface_disposition_sha256": "32063856ef3afcd8bf00e1e931e45940c741bfee62cc42f303685ea3acae248d",
+    "surface_disposition_sha256": "e20ce664cdc1f3de2269fb0339fc7c9ca19950c8868908889bcf086c00ebf577",
     "disposition_counts": {
-      "e2e_passed": 2481,
-      "exact_refusal_passed": 82,
+      "e2e_passed": 2476,
+      "exact_refusal_passed": 87,
       "cluster_provider_route_passed": 56
     }
   },

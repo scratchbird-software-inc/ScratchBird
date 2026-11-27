@@ -39,6 +39,7 @@ from sbsfc078_procedural_refusal_generated_evidence import (
 from core_unavailable_command_refusal_generated_evidence import (
     CORE_UNAVAILABLE_COMMAND_REFUSAL_SURFACE_IDS,
 )
+import engine_reached_refusal_generated_evidence as engine_reached_refusal
 
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
@@ -276,7 +277,9 @@ def require_common(surface_id: str, fields: dict[str, str], manifest: dict[str, 
     ):
         fail(f"{surface_id} fixture is missing executable result proof")
     diagnostic_proof = fields.get("diagnostic_proof", "")
-    if manifest["final_state"] == "exact_refusal_passed" and not any(
+    if manifest["final_state"] == "exact_refusal_passed" and not (
+        engine_reached_refusal.is_engine_reached_or_package_refusal(surface_id)
+    ) and not any(
         code in diagnostic_proof
         for code in (
             "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
@@ -362,6 +365,8 @@ def validate_auth(surface_id: str, fields: dict[str, str], manifest: dict[str, s
     elif manifest["final_state"] == "exact_refusal_passed":
         if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
             expected_refusal = "SBSQL.SURFACE.NOT_ADMITTED"
+        elif engine_reached_refusal.is_engine_reached_or_package_refusal(surface_id):
+            expected_refusal = engine_reached_refusal.refusal_code_for(surface_id)
         else:
             expected_refusal = (
                 "SBSQL.IMPL.NOT_AVAILABLE"
@@ -423,6 +428,18 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
             )
         ):
             fail(f"{surface_id} diagnostic-identity refusal authority model drifted")
+    elif engine_reached_refusal.is_package_refusal(surface_id):
+        if not all(
+            token in authority
+            for token in (
+                "parser_package_probe_only",
+                "no_executable_sblr",
+                "no_engine_execution",
+                "no_mutation",
+                "no_wal_authority",
+            )
+        ):
+            fail(f"{surface_id} package refusal authority model drifted")
     elif surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
         if not all(
             token in authority
@@ -474,6 +491,37 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
                 or "no_server_or_engine_dispatch" not in fields.get("dispatch_phase_expectation", "")
             ):
                 fail(f"{surface_id} diagnostic-identity refusal proof drifted")
+        elif engine_reached_refusal.is_package_refusal(surface_id):
+            not_applicable = "not_applicable_pre_sblr_exact_refusal"
+            if (
+                manifest["final_state"] != "exact_refusal_passed"
+                or any(
+                    fields.get(key, "") != not_applicable
+                    for key in (
+                        "byte_identical_round_trip_required",
+                        "canonical_container_magic",
+                        "canonical_container_header_size_bytes",
+                        "crc32c_check_required",
+                        "engine_anchored_uuids_required",
+                    )
+                )
+                or op_id != "not_admitted_package_pgcrypto_" + engine_reached_refusal.PACKAGE_CODE
+                or "no_executable_sblr" not in fields.get("lower_phase_expectation", "")
+                or "no_server_or_engine_dispatch" not in fields.get("dispatch_phase_expectation", "")
+            ):
+                fail(f"{surface_id} package refusal proof drifted")
+        elif engine_reached_refusal.is_engine_reached_refusal(surface_id):
+            if (
+                manifest["final_state"] != "exact_refusal_passed"
+                or fields.get("byte_identical_round_trip_required", "")
+                != engine_reached_refusal.NOT_APPLICABLE_ROUND_TRIP
+                or not op_id
+                or op_id.startswith("not_")
+                or "executable_sblr_emitted=false" in ";".join(fields.values())
+                or "reaches_the_crypto_function_in_process"
+                not in fields.get("dispatch_phase_expectation", "")
+            ):
+                fail(f"{surface_id} engine-reached refusal round-trip proof drifted")
         elif surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
             expected_parent_operation = (
                 "not_admitted_diagnostic_refusal"
@@ -588,6 +636,11 @@ def main() -> int:
 
         auth_fields = parse_fixture(auth_path)
         round_fields = parse_fixture(round_path)
+        if engine_reached_refusal.is_engine_reached_or_package_refusal(surface_id):
+            kind_errors = engine_reached_refusal.refusal_kind_errors(
+                surface_id, manifest.values(), root)
+            if kind_errors:
+                fail("; ".join(kind_errors))
         expected_auth = expected_auth_fields(auth_row, manifest)
         expected_round = expected_round_fields(round_row, manifest)
         auth_validation_fields = dict(auth_fields)
@@ -602,11 +655,14 @@ def main() -> int:
         pre_sblr_refusal = (
             surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS
             or surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID
+            or engine_reached_refusal.is_package_refusal(surface_id)
         )
+        engine_reached = engine_reached_refusal.is_engine_reached_refusal(surface_id)
         if not args.dry_run and write_fixture(
                 auth_path,
                 auth_fields,
-                PRE_SBLR_REFUSAL_AUTH_NOTE if pre_sblr_refusal else AUTH_NOTE,
+                PRE_SBLR_REFUSAL_AUTH_NOTE if pre_sblr_refusal
+                else engine_reached_refusal.NOTE_AUTH if engine_reached else AUTH_NOTE,
                 expected_auth,
                 target_status):
             promoted_auth += 1
@@ -618,7 +674,8 @@ def main() -> int:
         if not args.dry_run and write_fixture(
                 round_path,
                 round_fields,
-                PRE_SBLR_REFUSAL_ROUND_NOTE if pre_sblr_refusal else ROUND_NOTE,
+                PRE_SBLR_REFUSAL_ROUND_NOTE if pre_sblr_refusal
+                else engine_reached_refusal.NOTE_ROUND if engine_reached else ROUND_NOTE,
                 expected_round,
                 target_status):
             promoted_round += 1

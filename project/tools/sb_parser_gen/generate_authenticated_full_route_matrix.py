@@ -87,6 +87,10 @@ from core_unavailable_command_refusal_generated_evidence import (
     normalize_fixture_status as normalize_unavailable_command_fixture_status,
     validate_authoritative_runtime_inputs as validate_unavailable_command_inputs,
 )
+from engine_reached_refusal_generated_evidence import (
+    authenticated_route_override as engine_reached_authenticated_route_override,
+    validate_authoritative_runtime_inputs as validate_engine_reached_refusal_inputs,
+)
 
 
 REGISTRY_CSV = (
@@ -496,6 +500,7 @@ def main() -> int:
     validate_core_root_refusal_inputs(root)
     validate_sbsfc078_refusal_inputs(root)
     validate_unavailable_command_inputs(root)
+    validate_engine_reached_refusal_inputs(root)
     validate_procedural_lifecycle_inputs(root)
     validate_match_recognize_inputs(root)
     validate_acceleration_inputs(root)
@@ -526,6 +531,9 @@ def main() -> int:
             surface, classification
         )
         classification = acceleration_authenticated_route_override(
+            surface, classification
+        )
+        classification = engine_reached_authenticated_route_override(
             surface, classification
         )
         ledger_row = {

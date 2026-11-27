@@ -1854,6 +1854,20 @@ add_test(
 )
 endif()
 
+# SBSFC-057 closed refusal kinds (engine_reached_refusal for pgp_*, parser_package_refusal for pgcrypto): negative self-tests of the
+# validator and of every gate that enumerates the refusal states (a deliberately malformed row must FAIL each gate).
+if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
+  NAME sbsql_engine_reached_refusal_authority_test
+  COMMAND "${SBSQL_PYTHON3}" -B
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_engine_reached_refusal_authority_test.py"
+)
+set_tests_properties(sbsql_engine_reached_refusal_authority_test PROPERTIES
+  LABELS "sbsql_engine_reached_refusal_authority_test;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-057;sbsql_parser_worker"
+  TIMEOUT 600
+)
+endif()
+
 
 if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
