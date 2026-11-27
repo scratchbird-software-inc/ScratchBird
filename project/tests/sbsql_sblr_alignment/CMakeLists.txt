@@ -4786,6 +4786,18 @@ if(TRUE)
       LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;native_route_b2;binary_uuid"
       TIMEOUT 190)
   endforeach()
+  # SB_NATIVE_VALUE_TYPES (2026-12-24): the same executable's `value_types` state (the bare boolean projection, exact-decimal literals, int64-overflow promotion to the
+  # exact-decimal literal profile, their pinned refusals), its own target per page size so route_b's largest target does not grow.
+  foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_rb_parts "${sb_rb_size}")
+    list(GET sb_rb_parts 0 sb_rb_bytes)
+    list(GET sb_rb_parts 1 sb_rb_label)
+    add_test(NAME sbsql_sblr_alignment_native_value_types_${sb_rb_label}
+      COMMAND sbsql_sblr_alignment_native_route_b size ${sb_rb_bytes} value_types)
+    set_tests_properties(sbsql_sblr_alignment_native_value_types_${sb_rb_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;native_value_types;binary_uuid"
+      TIMEOUT 190)
+  endforeach()
   # SB_SBMV_TYPED_UUID_FIELDS (2026-12-17): the same executable's `typed_uuid` state (the engine identity UUIDs reach the parser as typed binary fields; the encoder,
   # the registry and the decoder's refusals), its own target per page size.
   foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)

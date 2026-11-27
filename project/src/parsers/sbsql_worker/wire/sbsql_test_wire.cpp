@@ -1159,6 +1159,12 @@ bool ExactTimeSeriesPreResolutionAst(
          input->expression_kind == NativeExpressionAstKind::kIdentifier;
 }
 
+// SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24): the generation of the exact-decimal CODEC PROFILE (the occurrence-local DecimalCodecProfile{uuid, generation}), NOT the cohort
+// codec_generation of the literal's SBLP profile (a different identity that happens to be 1 as well). The negotiated SBLP profile does not carry the decimal codec profile's
+// uuid at all (it names codec_id datatype.decimal.base1e9.le.v1, i.e. the 24-byte codec); the parser takes the uuid from core (kExactDecimal24CodecUuid: precision <= 38, which the
+// literal codec enforces) and the generation 1 that ExactDecimalCodecProfileMatches and the catalog column path (PublicDecimalColumnProjectionProofForTest) use.
+constexpr std::uint64_t kExactDecimalCodecProfileGeneration = 1;
+
 std::optional<NativeRelationalBindingContext>
 BuildEngineProjectedNativeBindingContext(
     const NativeRelationalAstDocument& ast,
@@ -8951,6 +8957,11 @@ BuildEngineProjectedNativeBindingContext(
     if (exact_decimal_codec) {
       descriptor.width_precision_scale.precision = decimal.precision;
       descriptor.width_precision_scale.scale = decimal.scale;
+      // SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24, owner 2026-11-26 item 3): the decimal literal's descriptor carries the cohort's exact-decimal
+      // codec profile (24-byte base-1e9, generation from the negotiated literal profile), exactly as a catalog DECIMAL column's does; without it
+      // the engine's bound-DECIMAL validation refuses the VALUES descriptor ("DECIMAL column profile or nullability is invalid").
+      descriptor.decimal_codec_profile = core::datatypes::DecimalCodecProfile{
+          core::datatypes::kExactDecimal24CodecUuid, kExactDecimalCodecProfileGeneration};
     }
     context.descriptors.push_back(std::move(descriptor));
     return context.descriptors.back().descriptor_id;
@@ -9702,8 +9713,23 @@ core::platform::Uuid LiteralReadUuid(const CanonicalBytes& bytes, std::size_t of
   return identity;
 }
 
+// SEARCH_KEY: SB_PARSER_INT64_OVERFLOW_PROMOTION (2026-12-24; owner 2026-11-26 item 2 = yes: an integer literal that does not fit int64 is the
+// exact-decimal literal profile's: PostgreSQL promotes it to numeric, MySQL to DECIMAL, Firebird to NUMERIC/INT128). A digits-only literal (one optional
+// sign, then digits) whose value is outside int64 is classified as exact decimal HERE, where the literal profile is negotiated; INT64_MIN and INT64_MAX
+// stay int64. OLD: an all-digit literal was always negotiated as int64, and the SBXN encoder's from_chars failed ("SBXN proof could not be encoded").
+bool DigitsOnlyExceedsInt64(const std::string_view spelling) {
+  std::size_t cursor = (!spelling.empty() && (spelling.front() == '-' || spelling.front() == '+')) ? 1 : 0;
+  if (cursor >= spelling.size()) return false;
+  for (std::size_t index = cursor; index < spelling.size(); ++index)
+    if (spelling[index] < '0' || spelling[index] > '9') return false;
+  std::int64_t ignored = 0;
+  const auto parsed = std::from_chars(spelling.data(), spelling.data() + spelling.size(), ignored);
+  return parsed.ec == std::errc::result_out_of_range;
+}
+
 bool IsExactDecimalLiteralSpelling(const std::string_view spelling) {
   if (spelling.find_first_of(".eE") != std::string_view::npos) return true;
+  if (DigitsOnlyExceedsInt64(spelling)) return true;
   const auto upper = ToUpperAscii(spelling);
   return upper.ends_with("DECIMAL") || upper.ends_with("DEC") ||
          upper.ends_with("D");
@@ -9731,6 +9757,65 @@ std::optional<LiteralSlotLimitExceeded> FindLiteralSlotLimitExceeded(const Nativ
       return profile.profile_kind == literal_class.profile_kind && !profile.nullable;
     }));
     if (slots != 0 && count > slots) return LiteralSlotLimitExceeded{literal_class.name, slots, count};
+  }
+  return std::nullopt;
+}
+
+// SEARCH_KEY: SB_PARSER_DECIMAL_LITERAL_PRECISION (2026-12-24; owner 2026-11-26 item 3). A decimal literal beyond the exact-decimal literal profile's precision (the
+// 24-byte base-1e9 codec: 38 digits, sbl_numeric) is refused with its OWN token SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED carrying literal_class, precision (the
+// literal's EFFECTIVE precision: max(coefficient digits, scale) after the exponent is applied, the codec's own definition) and limit as DATA. The codec decides what is an
+// overflow (its diagnostic DATATYPE.DESCRIPTOR.INVALID; a malformed lexical is SBLR.OPERAND_INVALID and keeps its old stop). OLD: DATATYPE.DESCRIPTOR.INVALID from the SBXN encoder.
+constexpr std::size_t kExactDecimalLiteralPrecisionLimit = 38;
+// The effective precision of an exact-decimal lexical (optional sign, digits with `_` separators, optional fraction, optional exponent, optional D / DEC / DECIMAL suffix).
+std::optional<std::size_t> EffectiveExactDecimalPrecision(std::string_view spelling) {
+  std::string text(spelling);
+  for (const std::string_view suffix : {std::string_view("DECIMAL"), std::string_view("DEC"), std::string_view("D")}) {
+    if (text.size() > suffix.size() && ToUpperAscii(text).ends_with(suffix)) { text.resize(text.size() - suffix.size()); break; }
+  }
+  std::size_t at = (!text.empty() && (text[0] == '-' || text[0] == '+')) ? 1 : 0;
+  std::string coefficient;
+  std::size_t fraction_digits = 0;
+  bool in_fraction = false;
+  for (; at < text.size(); ++at) {
+    const char ch = text[at];
+    if (ch == '_') continue;
+    if (ch == '.') { if (in_fraction) return std::nullopt; in_fraction = true; continue; }
+    if (ch == 'e' || ch == 'E') break;
+    if (ch < '0' || ch > '9') return std::nullopt;
+    coefficient.push_back(ch);
+    if (in_fraction) ++fraction_digits;
+  }
+  long long exponent = 0;
+  if (at < text.size()) {
+    ++at;
+    bool negative = false;
+    if (at < text.size() && (text[at] == '-' || text[at] == '+')) negative = text[at++] == '-';
+    if (at >= text.size()) return std::nullopt;
+    for (; at < text.size(); ++at) {
+      if (text[at] < '0' || text[at] > '9') return std::nullopt;
+      exponent = std::min<long long>(exponent * 10 + (text[at] - '0'), 1000000);
+    }
+    if (negative) exponent = -exponent;
+  }
+  const auto first_nonzero = coefficient.find_first_not_of('0');
+  std::size_t digits = first_nonzero == std::string::npos ? 1 : coefficient.size() - first_nonzero;
+  long long scale = static_cast<long long>(fraction_digits) - exponent;
+  if (scale < 0) { digits += static_cast<std::size_t>(-scale); scale = 0; }
+  return std::max(digits, static_cast<std::size_t>(scale));
+}
+struct DecimalLiteralPrecisionExceeded {
+  std::size_t precision{0};
+  std::size_t limit{kExactDecimalLiteralPrecisionLimit};
+};
+std::optional<DecimalLiteralPrecisionExceeded> FindDecimalLiteralPrecisionExceeded(const NativeRelationalAstDocument& ast) {
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_kind != NativeExpressionAstKind::kLiteral || expression.literal_kind != NativeLiteralAstKind::kNumeric ||
+        !IsExactDecimalLiteralSpelling(expression.spelling)) continue;
+    const auto encoded = scratchbird::engine::sblr::EncodeSblrLiteralExactDecimalV1(expression.spelling);
+    if (encoded.ok) continue;
+    const auto precision = EffectiveExactDecimalPrecision(expression.spelling);
+    if (precision && (encoded.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID" || *precision > kExactDecimalLiteralPrecisionLimit))
+      return DecimalLiteralPrecisionExceeded{*precision, kExactDecimalLiteralPrecisionLimit};
   }
   return std::nullopt;
 }
@@ -11494,6 +11579,9 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
         if (!encoded.ok) return std::nullopt;
         numeric_descriptor.width_precision_scale.precision = encoded.precision;
         numeric_descriptor.width_precision_scale.scale = encoded.scale;
+        // SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24): the lowered decimal literal descriptor carries the cohort codec profile
+        numeric_descriptor.decimal_codec_profile = core::datatypes::DecimalCodecProfile{
+            core::datatypes::kExactDecimal24CodecUuid, kExactDecimalCodecProfileGeneration};
         node.body.assign(encoded.canonical_bytes.begin(),
                          encoded.canonical_bytes.end());
       }
@@ -29361,7 +29449,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         }
         if (requires_ordinary_literal_finalization) {
           const auto slot_limit = FindLiteralSlotLimitExceeded(ast.native_relational, *native_statement_context);
-          const auto prebind = slot_limit.has_value()
+          const auto decimal_precision = slot_limit.has_value() ? std::nullopt : FindDecimalLiteralPrecisionExceeded(ast.native_relational);
+          const auto prebind = (slot_limit.has_value() || decimal_precision.has_value())
               ? std::nullopt
               : EncodeLiteralPrebindRequest(
                     ast.native_relational, *native_statement_context, false,
@@ -29373,6 +29462,13 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 {{"literal_class", slot_limit->literal_class},
                  {"slot_limit", std::to_string(slot_limit->slot_limit)},
                  {"literal_count", std::to_string(slot_limit->literal_count)}});
+          } else if (decimal_precision.has_value()) {
+            AddResourceDiagnostic(
+                &result.messages, "SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED",
+                "decimal literal precision exceeds the exact-decimal literal profile",
+                {{"literal_class", "decimal"},
+                 {"precision", std::to_string(decimal_precision->precision)},
+                 {"limit", std::to_string(decimal_precision->limit)}});
           } else if (!prebind.has_value()) {
             result.messages.diagnostics.push_back(MakeDiagnostic(
                 "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
@@ -29941,6 +30037,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                     projected.width_precision_scale.precision =
                         decimal.precision;
                     projected.width_precision_scale.scale = decimal.scale;
+                    // SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24): see the binding-context site; the finalized descriptor keeps the cohort's profile.
+                    projected.decimal_codec_profile = core::datatypes::DecimalCodecProfile{
+                        core::datatypes::kExactDecimal24CodecUuid, kExactDecimalCodecProfileGeneration};
                   }
                   if (!PreserveNativeDescriptorAuthority(
                           &projected, *native_statement_context)) {

@@ -112,11 +112,11 @@ MaterializedValues MaterializeValues(
            !expression_descriptor->second->timezone_profile_id.has_value() &&
            !output_descriptor->second->timezone_profile_id.has_value() &&
            !expression_descriptor->second->width.has_value() &&
-           !expression_descriptor->second->precision.has_value() &&
-           !expression_descriptor->second->scale.has_value() &&
            !output_descriptor->second->width.has_value() &&
-           !output_descriptor->second->precision.has_value() &&
-           !output_descriptor->second->scale.has_value();
+           // SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): precision, scale and codec profile EQUAL (absent on both for int64 and boolean); OLD: both had to be absent
+           expression_descriptor->second->precision == output_descriptor->second->precision &&
+           expression_descriptor->second->scale == output_descriptor->second->scale &&
+           expression_descriptor->second->decimal_codec_profile == output_descriptor->second->decimal_codec_profile;
   };
 
   std::vector<const api::RelationalOutputRecord*> outputs;

@@ -25,9 +25,8 @@ Steps and assertions:
      `SELECT 1 + 0 AS s` and bare `SELECT 1 + 0`, `SELECT -1` (OLD, until 2026-12-15: NEW, the parser folds the minus and it RUNS; `SELECT - -1` is the refused operator) and CREATE TABLE are
      SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (OLD, 2026-12-13: `VALUES (1), (2)` was in this list; WIDER LITERALS: a literal VALUES TABLE now runs: ONE vector of R rows by
      C columns, the parser prints columns column1..columnC and the rows in the order written, no server cursor; the bound is 16 rows by 16 columns, no streaming exists,
-     above it ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED; BOOLEAN literals in a VALUES table run too (the vector carries one byte per boolean, the parser prints true / false; a bare `SELECT TRUE` is a scalar projection and still stops in the parser); more than 32 literals in one statement stops in the PARSER (the statement cohort's 32 numeric slots)), `SELECT 'a' AS t` is ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT, `SELECT 1 FROM t` is
-     ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5 (the parser's own refusal), `SELECT 1.5` is QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1 (refused by the
-     executor after the gate). Inside ONE open line-protocol session every statement, accepted or refused, leaves the data file byte-identical
+     above it ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED; BOOLEAN literals in a VALUES table run too (the vector carries one byte per boolean, the parser prints true / false; a bare `SELECT TRUE` also runs since 2026-12-24 (OLD: it was a scalar projection and stopped in the parser), as do decimal literals and int64-overflow literals); more than 32 literals in one statement stops in the PARSER (the statement cohort's 32 numeric slots)), `SELECT 'a' AS t` is ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT, `SELECT 1 FROM t` is
+     ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5 (the parser's own refusal), `SELECT 1.5` (OLD, until 2026-12-24: QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1) now RUNS. Inside ONE open line-protocol session every statement, accepted or refused, leaves the data file byte-identical
      (route B check). A WRONG password gives the generic
      SECURITY.AUTHENTICATION.LOGIN_FAILED and the database file is byte-identical before and after it.
      The line client (AUTH / EXECUTE over the same TCP port) gets RESULT query.evaluate_projection with row one = 1.
@@ -479,6 +478,30 @@ def run(args, work):
     check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["1", "true"], ["2", "false"]] and "(2 rows)" in tbl.stdout,
           f"VALUES (1, TRUE), (2, FALSE): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
 
+    # BARE BOOLEAN PROJECTION (2026-12-24; owner 2026-11-26 item 5). OLD: `SELECT TRUE` stopped in the parser (DATATYPE.DESCRIPTOR.INVALID, bound literal occurrence inventory
+    # changed). NEW: it is the same typed VALUES relation the numeric bare projection is: one boolean column named column1 printing true / false.
+    for label, sql, expect in (("bare-true", "SELECT TRUE", [["true"]]), ("bare-false", "select false;", [["false"]]), ("bare-bool-list", "SELECT TRUE, FALSE", [["true", "false"]]),
+                               ("bare-bool-int", "SELECT TRUE, 1", [["true", "1"]]), ("bare-int-bool", "SELECT 1, TRUE", [["1", "true"]])):
+        tbl = sbsql(args, work, port, label, sql); logins += 1
+        check(tbl.returncode == 0 and re.search(r"^\|\s*column1\s*\|", tbl.stdout, re.M) and table_rows(tbl.stdout) == expect and "(1 row)" in tbl.stdout,
+              f"{sql!r}: rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    # EXACT-DECIMAL LITERALS (2026-12-24; owner item 3). OLD: `SELECT 1.5` was QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1. NEW: the vector carries the cohort's 24-byte decimal
+    # codec body and the PARSER renders it (the codec's canonical fixed-point spelling: 0.10 shows 0.1, a numbered owner question). INT64 OVERFLOW (item 2) is the same profile.
+    for label, sql, expect in (("dec1", "SELECT 1.5", [["1.5"]]), ("dec2", "SELECT 0.1", [["0.1"]]), ("dec-neg", "SELECT -1.5", [["-1.5"]]),
+                               ("dec-values", "VALUES (1.5, 2)", [["1.5", "2"]]), ("dec-list", "SELECT 1.5, 2.5", [["1.5", "2.5"]]), ("dec-bool", "VALUES (TRUE, 0.25)", [["true", "0.25"]]),
+                               ("ovf-pos", "SELECT 9223372036854775808", [["9223372036854775808"]]), ("ovf-neg", "SELECT -9223372036854775809", [["-9223372036854775809"]]),
+                               ("ovf-values", "VALUES (9223372036854775808)", [["9223372036854775808"]]), ("int64-max", "SELECT 9223372036854775807", [["9223372036854775807"]]),
+                               ("int64-min", "SELECT -9223372036854775808", [["-9223372036854775808"]])):
+        tbl = sbsql(args, work, port, label, sql); logins += 1
+        check(tbl.returncode == 0 and re.search(r"^\|\s*column1\s*\|", tbl.stdout, re.M) and table_rows(tbl.stdout) == expect and "(1 row)" in tbl.stdout,
+              f"{sql!r}: rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    # a decimal COLUMN across rows whose literals share the column's exact precision and scale runs (equality, not coercion); the first and the original-scale rows keep the order written
+    tbl = sbsql(args, work, port, "dec-rows", "VALUES (1.5), (2.5)"); logins += 1
+    check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["1.5"], ["2.5"]] and "(2 rows)" in tbl.stdout, f"VALUES (1.5), (2.5): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    # the codec's canonical form drops trailing fractional zeros (0.10 shows 0.1): pinned as the CURRENT behaviour, pending the owner question about preserving the written scale
+    tbl = sbsql(args, work, port, "dec-scale", "SELECT 0.10"); logins += 1
+    check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["0.1"]], f"SELECT 0.10 (current behaviour, pending the scale-preservation owner question): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+
     # --- the refused shapes: machine tokens, a failed exit ---
     for label, sql, token in (("plus", "SELECT 1 + 0 AS s", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
                               ("text", "SELECT 'a' AS t", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
@@ -491,7 +514,8 @@ def run(args, work):
                               # VALUES derived-table alias list (2026-12-15): the count mismatch and a projection subset/reorder are refused by the PARSER (counts ride as data fields)
                               ("alias-count", "SELECT * FROM (VALUES (1)) AS t(x, y)", "does not match the VALUES column count"),  # the client prints the parser message + code; the reason and count fields are pinned in native_route_b_test.cpp
                               ("alias-subset", "SELECT x FROM (VALUES (1, 2)) AS t(x, y)", "subsets or reorders the VALUES derived-table columns"),
-                              ("bare-neg-overflow", "SELECT -9223372036854775809", "DATATYPE.DESCRIPTOR.INVALID"),
+                              # OLD (until 2026-12-24): ("bare-neg-overflow", "SELECT -9223372036854775809", "DATATYPE.DESCRIPTOR.INVALID"). NEW: it RUNS (decimal promotion, below); a literal
+                              # beyond the exact-decimal profile's 38 digits has its own token (pinned below).
                               # WIDER LITERALS (2026-12-13). OLD: ("values2", "VALUES (1), (2)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"). NEW: it runs (above); the bound is pinned instead.
                               ("values17", "VALUES " + ", ".join(f"({i})" for i in range(1, 18)), "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED"),
                               ("values-17col", "VALUES (" + ", ".join(str(i) for i in range(1, 18)) + ")", "ENGINE.NATIVE.RESULT_ROW_BOUND_EXCEEDED"),
@@ -499,7 +523,11 @@ def run(args, work):
                               # statement cohort carries slots for (32); its fields slot_limit / literal_count are checked in native_route_b_test.cpp (route_b2).
                               ("values33", "VALUES " + ", ".join(f"({i})" for i in range(1, 34)), "SBSQL.RESOURCE.LITERAL_SLOT_LIMIT_EXCEEDED"),
                               ("bare-text", "SELECT 'a'", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
-                              ("bare-dec", "SELECT 1.5", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"),
+                              # OLD (until 2026-12-24): ("bare-dec", "SELECT 1.5", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"). NEW: decimal literals RUN (below); a decimal COLUMN across rows
+                              # of different literal descriptors is still refused by the lowering.
+                              ("dec-column", "VALUES (1.5), (2.25)", "SBLR.PLAN_TREE.INVALID_HANDLE"),  # a decimal column of different scales,
+                              ("dec-precision", "SELECT 123456789012345678901234567890123456789", "SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED"),
+                              ("dec-precision-exp", "SELECT 1e39", "SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED"),
                               ("bare-from", "SELECT 1 FROM t", "ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5"),
                               ("ddl", "CREATE TABLE x (a int)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED")):
         refused = sbsql(args, work, port, label, sql); logins += 1
@@ -572,14 +600,19 @@ def run(args, work):
           and len(re.findall(rb"row\[\d\]", payload_t)) == 2, f"route B line VALUES (1), (2) payload is not the two-row table built by the parser: {payload_t[:160]!r}")
     # OLD (before 2026-12-15): statement 4 `SELECT -1` was SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED. NEW: the parser folds the minus; it answers RESULT query.execute.
     check(results[3][0].startswith("RESULT query.execute 1 "), f"route B line statement 4 (SELECT -1): {results[3]!r}")
-    for index, token in ((2, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
-                         (5, "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1")):
+    for index, token in ((2, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),):
         check(any(token in line for line in results[index]), f"route B line statement {index + 1}: expected {token}, got {results[index]!r}")
+    # OLD (until 2026-12-24): statement 6 `SELECT 1.5` was QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1 (the executor's decimal column validation). NEW: it answers RESULT query.execute
+    # with the parser-built one-column row `column1:decimal:not_null` holding the codec-rendered 1.5.
+    check(results[5][0].startswith("RESULT query.execute 1 "), f"route B line statement 6 (SELECT 1.5): {results[5]!r}")
+    payload_d = bytes.fromhex(results[5][0].split("canonical_binary_payload_hex=", 1)[1].strip())
+    check(payload_d.startswith(b"SBRES002") and payload_d.endswith(b"column1:decimal:not_null") and b"1.5" in payload_d,
+          f"route B line SELECT 1.5 payload is not the one-column decimal row built by the parser: {payload_d[:160]!r}")
     # SB_NATIVE_REFUSAL_FIELDS_FORWARDED (2026-12-15; owner yes). OLD: the server dropped the engine diagnostic's fields: the parser got only `detail=status=...;
     # engine_diagnostic_detail_absent`. NEW: the engine's own opcode_code reaches the PARSER through the real SBsrv -> SBParser message vector (existing SBMV v1 text
     # field, no wire change) and the line client renders it as a data field (statement 3: SELECT 1 + 0 is the operator-call row, opcode 1025).
     check(any("opcode_code=1025" in line for line in results[2]), f"route B line statement 3: the engine's opcode_code=1025 must reach the parser as a message-vector field: {results[2]!r}")
-    check(not any("opcode_code=" in line for line in results[5]), f"route B line statement 6 (a decimal literal, the executor's own code): no opcode field is registered for it: {results[5]!r}")
+    check(not any("opcode_code=" in line for line in results[5]), f"route B line statement 6 (a decimal literal, now accepted): no refusal field: {results[5]!r}")
     # SB_SBMV_TYPED_UUID_FIELDS (2026-12-17; owner 2026-11-26 "yes, native-only"). OLD: the engine's identity UUIDs (availability_table_uuid, database_uuid) never reached the parser
     # (SBMV v1 text TLVs refuse uuid-named fields). NEW: a native session's refusal carries them as SBMV v1 type 5 (system_uuid) TLVs through the real SBsrv -> SBParser exchange. The
     # public rendering shows no identity (the line client's output holds none of the bytes); the parser's trace names the exact 16 bytes it received: the database UUID is the one

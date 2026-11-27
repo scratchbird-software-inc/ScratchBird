@@ -13,6 +13,7 @@
 // descriptor UUIDs through the compiled datatype cohort. The vectors here are built byte for byte to the layout the engine documents
 // (public_abi.cpp, SB_NATIVE_RESULT_MESSAGE_VECTOR); native_select_one_test feeds the REAL engine's vector through the same converter.
 #include "datatype_catalog_manifest.hpp"
+#include "engine/sblr/sblr_literal_runtime.hpp"
 #include "wire/native_result_vector.hpp"
 #include "wire/public_result_packet.hpp"
 #include "wire/sbsql_test_wire.hpp"
@@ -26,6 +27,7 @@
 namespace dt = scratchbird::core::datatypes;
 namespace pr = scratchbird::wire::public_result;
 namespace sbsql = scratchbird::parser::sbsql;
+namespace sblr = scratchbird::engine::sblr;
 
 namespace {
 int checks = 0;
@@ -246,6 +248,85 @@ int main() {
     Check(sbsql::ParseNativeTransactionBoundary("", true, nullptr) == S::not_native_boundary, "an empty payload is not a boundary");
     Check(sbsql::ParseNativeTransactionBoundary(Encode(std::vector<pr::Field>{{"operation_id", pr::Kind::text, "x"}, {"result_kind", pr::Kind::text, "bound_projection"}}), true, nullptr) == S::not_native_boundary,
           "another result_kind is not a boundary");
+  }
+
+  // ---- SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): an exact DECIMAL column. The value is the cohort's own 24-byte base-1e9 codec body (Kind::bytes, never text),
+  // produced HERE by the engine's own codec (EncodeSblrLiteralExactDecimalV1) from a lexical; the parser decodes it with the same codec and renders the codec's
+  // canonical fixed-point spelling. Round trip: lexical -> engine codec bytes -> vector -> parser conversion -> client text. Sign, scale, zero and the maximum
+  // precision (38) are each covered; the header bytes (sign bit + scale, precision) are asserted against constants written out here, not read from the codec. ----
+  {
+    const dt::DatatypeTypeCodecIdentityRowV1* decimal = nullptr;
+    for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3())
+      if (entry.legacy_fields.codec_id == "datatype.decimal.base1e9.le.v1" && entry.legacy_fields.canonical_name == "decimal") { decimal = &entry.legacy_fields; break; }
+    Check(decimal != nullptr, "the compiled cohort has the exact-decimal identity (datatype.decimal.base1e9.le.v1)");
+    if (decimal) {
+      const auto decimal_vector = [&](const std::string& body, pr::Kind kind) {
+        auto fields = Vector({{0}}, 1, *decimal);
+        fields.back() = {"value[0.0]", kind, body};
+        return fields;
+      };
+      struct Case { const char* lexical; const char* shown; unsigned sign_and_scale; unsigned precision; };
+      const Case cases[] = {
+          {"1.5", "1.5", 1, 2}, {"-1.5", "-1.5", 0x81, 2}, {"0.1", "0.1", 1, 1}, {"-0.1", "-0.1", 0x81, 1}, {"0", "0", 0, 1},
+          {"123.456", "123.456", 3, 6}, {"-9223372036854775809", "-9223372036854775809", 0x80, 19}, {"9223372036854775808", "9223372036854775808", 0, 19},
+          {"99999999999999999999999999999999999999", "99999999999999999999999999999999999999", 0, 38},
+          {"0.00000000000000000000000000000000000001", "0.00000000000000000000000000000000000001", 38, 38},
+          {"1e2", "100", 0, 3}, {"5e-1", "0.5", 1, 1},
+          // the engine codec's canonical form drops trailing fractional zeros and a negative zero (pinned by ia01_literal_runtime_test): shown, not changed here
+          {"0.10", "0.1", 1, 1}, {"-0.000", "0", 0, 1}};
+      for (const auto& c : cases) {
+        const auto encoded = sblr::EncodeSblrLiteralExactDecimalV1(c.lexical);
+        Check(encoded.ok, std::string("the engine codec accepts ") + c.lexical);
+        if (!encoded.ok) continue;
+        const std::string body(reinterpret_cast<const char*>(encoded.canonical_bytes.data()), encoded.canonical_bytes.size());
+        Check(body.size() == 24 && static_cast<unsigned char>(body[0]) == c.sign_and_scale && static_cast<unsigned char>(body[1]) == c.precision,
+              std::string(c.lexical) + ": header byte 0 (sign bit | scale) and byte 1 (precision) are the constants written here");
+        const auto converted = sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(body, pr::Kind::bytes)), {"d"});
+        Check(converted.status == sbsql::NativeVectorConversionStatus::converted, std::string(c.lexical) + " converts: " + converted.refusal_code + " " + converted.refusal_detail);
+        const auto rows = Decode(converted.payload);
+        Check(rows.ok && rows.rows.size() == 1 && rows.rows[0].size() == 1 && rows.rows[0][0] && *rows.rows[0][0] == c.shown,
+              std::string(c.lexical) + ": the client row is the codec's fixed-point spelling `" + c.shown + "`");
+        Check(converted.payload.find("d:decimal:not_null") != std::string::npos, std::string(c.lexical) + ": the parser's row metadata names the column type decimal");
+        // the same body through a signed_integer / text carrier or reversed is NOT a decimal value
+        Check(sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(body, pr::Kind::text)), {"d"}).refusal_code == "SBSQL.NATIVE_RESULT.VALUE_INVALID",
+              std::string(c.lexical) + ": a text carrier for a decimal column is refused (VALUE_INVALID)");
+      }
+      const auto good = sblr::EncodeSblrLiteralExactDecimalV1("-1.5");
+      const std::string body(reinterpret_cast<const char*>(good.canonical_bytes.data()), good.canonical_bytes.size());
+      const auto code_of = [&](const std::string& value) {
+        const auto r = sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(value, pr::Kind::bytes)), {"d"});
+        return r.status == sbsql::NativeVectorConversionStatus::refused ? r.refusal_code : std::string("(not refused)");
+      };
+      Check(code_of(std::string(body.rbegin(), body.rend())) == "SBSQL.NATIVE_RESULT.VALUE_INVALID", "the codec body reversed is refused (VALUE_INVALID), never rendered");
+      Check(code_of(body.substr(0, 23)) == "SBSQL.NATIVE_RESULT.VALUE_INVALID", "a 23-byte body is refused");
+      Check(code_of(body + std::string(1, '\0')) == "SBSQL.NATIVE_RESULT.VALUE_INVALID", "a 25-byte body is refused");
+      auto flipped = body;
+      flipped[0] = static_cast<char>(static_cast<unsigned char>(flipped[0]) ^ 0x80);  // sign flipped: still canonical (-1.5 -> 1.5), so it decodes: the carrier IS the sign
+      Check(sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(flipped, pr::Kind::bytes)), {"d"}).status == sbsql::NativeVectorConversionStatus::converted &&
+                *Decode(sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(flipped, pr::Kind::bytes)), {"d"}).payload).rows[0][0] == "1.5",
+            "the sign bit is the sign: flipping it in the body gives 1.5 (so a vector test must pin the sign, which route_b does)");
+      auto noncanonical = body;
+      noncanonical[1] = 9;  // precision byte disagrees with the coefficient
+      Check(code_of(noncanonical) == "SBSQL.NATIVE_RESULT.VALUE_INVALID", "a non-canonical header (precision) is refused");
+      // a decimal body under the int64 identity (and the int64 carrier under the decimal identity) is refused
+      Check(sbsql::ConvertNativeScalarProjectionVector(Encode([&] { auto f = Vector({{0}}, 1, *int64); f.back() = {"value[0.0]", pr::Kind::bytes, body}; return f; }()), {"d"}).refusal_code ==
+                "SBSQL.NATIVE_RESULT.VALUE_INVALID", "a decimal body under the int64 identity is refused");
+      Check(sbsql::ConvertNativeScalarProjectionVector(Encode(Vector({{1}}, 1, *decimal)), {"d"}).refusal_code == "SBSQL.NATIVE_RESULT.VALUE_INVALID",
+            "an int64 carrier under the decimal identity is refused");
+      // two columns: int64 and decimal in ONE row, each with its own identity (the group is four fields per column either way)
+      auto mixed = Vector({{7, 0}}, 2, *int64);
+      for (auto& f : mixed) {
+        if (f.name == "column_datatype[1]") f.value = Bytes16(decimal->type_uuid);
+        if (f.name == "column_datatype_descriptor[1]") f.value = Bytes16(decimal->descriptor_uuid);
+        if (f.name == "column_datatype_generation[1]") f.value = U64(decimal->descriptor_generation);
+        if (f.name == "value[0.1]") f = {"value[0.1]", pr::Kind::bytes, body};
+      }
+      const auto mixed_converted = sbsql::ConvertNativeScalarProjectionVector(Encode(mixed), {"a", "b"});
+      const auto mixed_rows = Decode(mixed_converted.payload);
+      Check(mixed_converted.status == sbsql::NativeVectorConversionStatus::converted && mixed_rows.ok && *mixed_rows.rows[0][0] == "7" && *mixed_rows.rows[0][1] == "-1.5" &&
+                mixed_converted.payload.find("a:int64:not_null;b:decimal:not_null") != std::string::npos,
+            "an int64 column and a decimal column in one row each render by their own identity");
+    }
   }
 
   std::cout << "native_result_vector_parse: " << checks << " checks, " << failures << " failures\n";

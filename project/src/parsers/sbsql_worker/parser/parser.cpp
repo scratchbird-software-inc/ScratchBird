@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <functional>
@@ -633,19 +634,54 @@ class NativeRelationalParser final {
     return std::move(document_);
   }
 
+  // SB_PARSER_BARE_BOOLEAN_PROJECTION (2026-12-24, owner 2026-11-26 item 5): a bare projection of literals is the same typed VALUES relation as
+  // `VALUES (..)`. Items: `[-] <numeric>`, a boolean literal, and (a lone item only) a parameter. A LIST of two or more items takes this route only
+  // when it holds a boolean literal or an exact-decimal literal: an all-integer list (`SELECT 1, 2`) keeps its existing scalar-projection route (found, not changed: its
+  // recorder rows and gate path are pinned). OLD: only one `SELECT [-] <numeric|parameter>`; a boolean fell to the scalar-syntax route and failed
+  // prebind (DATATYPE.DESCRIPTOR.INVALID, "bound literal occurrence inventory changed").
+  struct BoundedScalarItem { std::size_t first{0}; std::size_t last{0}; bool negative{false}; bool boolean{false}; bool parameter{false}; bool decimal{false}; };
+  // A numeric token the exact-decimal literal profile owns (the wire layer's IsExactDecimalLiteralSpelling rule: a `.`, an exponent, a DECIMAL / DEC / D
+  // suffix, or a digits-only value outside int64). SB_PARSER_BARE_DECIMAL_PROJECTION (2026-12-24): a bare LIST holding one is VALUES-routed too, because the
+  // scalar-projection route has no decimal vector carrier (`SELECT 1.5, 2.5` stopped at ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT).
+  static bool NumericTokenIsExactDecimal(const std::string& text) {
+    if (text.find_first_of(".eE") != std::string::npos) return true;
+    std::string upper;
+    for (const char ch : text) upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ch))));
+    if (upper.ends_with("DECIMAL") || upper.ends_with("DEC") || upper.ends_with("D")) return true;
+    std::int64_t ignored = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), ignored);
+    return parsed.ec == std::errc::result_out_of_range;
+  }
+  bool BoundedObjectFreeScalarItems(std::vector<BoundedScalarItem>* items) const {
+    if (tokens_.size() < 2 || !IsWord(*tokens_[0], "SELECT")) return false;
+    std::size_t at = 1;
+    bool any_boolean = false, any_decimal = false;
+    while (true) {
+      if (at >= tokens_.size()) return false;
+      BoundedScalarItem item;
+      item.first = at;
+      if (CanonicalTokenText(*tokens_[at]) == "-" && at + 1 < tokens_.size() && tokens_[at + 1]->kind == TokenKind::kNumericLiteral) {
+        item.negative = true; ++at;
+      }
+      if (tokens_[at]->kind == TokenKind::kBooleanLiteral) { item.boolean = true; any_boolean = true; }
+      else if (tokens_[at]->kind == TokenKind::kParameter) item.parameter = true;
+      else if (tokens_[at]->kind != TokenKind::kNumericLiteral) return false;
+      else if (NumericTokenIsExactDecimal((item.negative ? "-" : "") + tokens_[at]->text)) { item.decimal = true; any_decimal = true; }
+      item.last = at;
+      ++at;
+      items->push_back(item);
+      if (at < tokens_.size() && tokens_[at]->text == ",") { ++at; continue; }
+      break;
+    }
+    if (at < tokens_.size() && tokens_[at]->text == ";") ++at;
+    if (at != tokens_.size()) return false;
+    if (items->size() == 1) return true;
+    return (any_boolean || any_decimal) && std::ranges::none_of(*items, [](const auto& item) { return item.parameter; });
+  }
+
   bool LooksLikeBoundedObjectFreeScalarSelect() const {
-    // SB_PARSER_NEGATIVE_LITERAL_FOLD (2026-12-15): `SELECT -<numeric>` (a minus directly applied to a numeric literal token, optionally followed by `;`)
-    // is the same bounded shape as `SELECT <numeric>`: the minus folds into the signed literal (see ParseUnary). OLD: only SELECT <numeric|parameter>.
-    if (tokens_.size() < 2 || tokens_.size() > 4) return false;
-    if (!IsWord(*tokens_[0], "SELECT")) return false;
-    const bool negative = tokens_.size() >= 3 && CanonicalTokenText(*tokens_[1]) == "-" &&
-                          tokens_[2]->kind == TokenKind::kNumericLiteral;
-    const std::size_t value_index = negative ? 2 : 1;
-    const std::size_t plain_size = value_index + 1;
-    return (negative || tokens_[1]->kind == TokenKind::kNumericLiteral ||
-            tokens_[1]->kind == TokenKind::kParameter) &&
-           (tokens_.size() == plain_size ||
-            (tokens_.size() == plain_size + 1 && tokens_[plain_size]->text == ";"));
+    std::vector<BoundedScalarItem> items;
+    return BoundedObjectFreeScalarItems(&items);
   }
 
   NativeRelationalAstDocument ParseObjectFreeScalarSelect() {
@@ -658,46 +694,39 @@ class NativeRelationalParser final {
       Refuse("token_limit_exceeded", "native relational token limit exceeded");
       return FinishRefusal();
     }
-
-    const Token& select_token = Consume();
-    const Token* sign_token = nullptr;
-    if (CanonicalTokenText(Current()) == "-" && Current().kind != TokenKind::kNumericLiteral) {
-      sign_token = &Consume();
-    }
-    const Token& scalar_token = Consume();
-    NativeExpressionAstNode scalar;
-    scalar.expression_id = 1;
-    scalar.expression_kind = scalar_token.kind == TokenKind::kParameter
-                                 ? NativeExpressionAstKind::kParameter
-                                 : NativeExpressionAstKind::kLiteral;
-    if (scalar.expression_kind == NativeExpressionAstKind::kLiteral) {
-      scalar.literal_kind = NativeLiteralAstKind::kNumeric;
-      scalar.spelling = (sign_token != nullptr ? "-" : "") + scalar_token.text;
-    }
-    scalar.range = sign_token != nullptr ? Span(*sign_token, scalar_token)
-                                         : TokenSourceRange(scalar_token);
-    const auto scalar_range = scalar.range;
-    document_.expressions.push_back(std::move(scalar));
-
-    NativeValuesRowAstNode row;
-    row.row_id = 1;
-    row.expression_ids = {1};
-    row.range = scalar_range;
-    document_.values_rows.push_back(std::move(row));
-
-    if (AtSymbol(";")) Consume();
-    if (!AtEnd()) {
+    std::vector<BoundedScalarItem> items;
+    if (!BoundedObjectFreeScalarItems(&items)) {
       Refuse("object_free_scalar_select_trailing_input",
              "bounded object-free scalar SELECT has unexpected trailing input");
       return FinishRefusal();
     }
 
+    const Token& select_token = *tokens_[0];
+    NativeValuesRowAstNode row;
+    row.row_id = 1;
+    for (const auto& item : items) {
+      const Token& scalar_token = *tokens_[item.last];
+      NativeExpressionAstNode scalar;
+      scalar.expression_id = static_cast<std::uint32_t>(document_.expressions.size() + 1);
+      scalar.expression_kind = item.parameter ? NativeExpressionAstKind::kParameter : NativeExpressionAstKind::kLiteral;
+      if (scalar.expression_kind == NativeExpressionAstKind::kLiteral) {
+        scalar.literal_kind = item.boolean ? NativeLiteralAstKind::kBoolean : NativeLiteralAstKind::kNumeric;
+        scalar.spelling = (item.negative ? "-" : "") + scalar_token.text;
+      }
+      scalar.range = item.negative ? Span(*tokens_[item.first], scalar_token) : TokenSourceRange(scalar_token);
+      row.expression_ids.push_back(scalar.expression_id);
+      document_.expressions.push_back(std::move(scalar));
+    }
+    row.range = Span(*tokens_[items.front().first], *tokens_[items.back().last]);
+    document_.values_rows.push_back(std::move(row));
+    cursor_ = tokens_.size();  // the whole statement was recognized by BoundedObjectFreeScalarItems
+
     NativeRelationAstNode relation;
     relation.relation_id = 1;
     relation.relation_kind = NativeRelationAstKind::kValues;
     relation.values_row_ids = {1};
-    relation.output_expression_ids = {1};
-    relation.range = Span(select_token, scalar_token);
+    for (std::uint32_t id = 1; id <= items.size(); ++id) relation.output_expression_ids.push_back(id);
+    relation.range = Span(select_token, *tokens_[items.back().last]);
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
     document_.status = NativeRelationalParseStatus::kAccepted;

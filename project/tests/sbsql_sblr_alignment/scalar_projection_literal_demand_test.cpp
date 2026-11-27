@@ -74,7 +74,9 @@ void NumericAndIndependentOrigins() {
 void ContextualBooleanOrigins() {
   for (const std::string sql : {
        "SELECT IIF(TRUE,NULL,FALSE);", "SELECT COALESCE(NULL,TRUE);",
-       "SELECT CAST(NULL AS BOOLEAN);", "SELECT TRUE,FALSE,TRUE;",
+       // OLD (before 2026-12-24): "SELECT TRUE,FALSE,TRUE;" was a scalar-syntax inventory. NEW: a bare list of boolean literals is the typed literal VALUES relation (owner 2026-11-26
+       // item 5), no longer a scalar inventory; the aliased form stays one and exercises the same machinery (three Boolean occurrences, in source order)
+       "SELECT CAST(NULL AS BOOLEAN);", "SELECT TRUE AS a,FALSE AS b,TRUE AS c;",
        "SELECT IIF(TRUE,CAST(NULL AS BOOLEAN),FALSE);"}) {
     Fixture f(sql);
     const auto result = f.describe(); Origins(f, result);
@@ -94,7 +96,7 @@ void ContextualBooleanOrigins() {
         result.entries[1].canonical_type_name == "character" && result.entries[1].is_null &&
         result.entries[1].structural_path == "projection_0_arg_1_" &&
         result.entries[2].canonical_type_name == "character", "condition/result contextual types or paths wrong");
-  Fixture repeated("SELECT TRUE,FALSE,TRUE;");
+  Fixture repeated("SELECT TRUE AS a,FALSE AS b,TRUE AS c;");  // OLD: "SELECT TRUE,FALSE,TRUE;" (see above)
   const auto repeated_result = repeated.describe(); Origins(repeated, repeated_result);
   Check(repeated_result.entries.size() == 3 &&
         repeated_result.entries[0].structural_literal_occurrence_id !=
@@ -113,7 +115,7 @@ void FailureAndLimits() {
   for (std::string sql : {"SELECT NULL;", "SELECT COALESCE(NULL,NULL);", "SELECT IIF(TRUE,NULL,NULL);"}) {
     Fixture invalid(sql); NoPartial(invalid.describe(), Error::invalid_scalar);
   }
-  Fixture multiple("SELECT TRUE,FALSE;");
+  Fixture multiple("SELECT TRUE AS a,FALSE AS b;");  // OLD: "SELECT TRUE,FALSE;" (a bare boolean list is now the VALUES relation, not a scalar inventory)
   NoPartial(multiple.describe({1, 256}), Error::resource_limit);
   Fixture deep("SELECT IIF(TRUE,NULL,FALSE);");
   NoPartial(deep.describe({16, 1}), Error::resource_limit);
@@ -151,7 +153,9 @@ void FailureAndLimits() {
   NoPartial(missing_child.describe(), Error::invalid_scalar);
 }
 void ActualParserInventory() {
-  for (const std::string sql : {"SELECT TRUE;", "SELECT IIF(NULL,TRUE,FALSE);",
+  // OLD (before 2026-12-24): "SELECT TRUE;" was in the list below (a scalar inventory that must not become an executable graph). NEW (owner 2026-11-26 item 5): a bare projection of
+  // boolean (and exact-decimal) LITERALS is the typed literal VALUES relation, exactly like the numeric one; the checks after the loop pin that, and the aliased boolean forms stay inventories.
+  for (const std::string sql : {"SELECT IIF(NULL,TRUE,FALSE);",
        "SELECT CAST(NULL AS BOOLEAN);", "SELECT CAST(3 AS DECIMAL(18,2));",
        "SELECT CAST(3 AS DOUBLE PRECISION);", "SELECT TRUE AS flag,FALSE other;",
        "SELECT 'FROM',\"FROM\";", "SELECT 'DOCUMENT_SOURCE';",
@@ -197,6 +201,21 @@ void ActualParserInventory() {
   Check(numeric.native.accepted() && numeric.native.recognized() &&
         !numeric.native.scalar_syntax_accepted() && numeric.native.root_relation_id,
         "existing executable single numeric SELECT route changed");
+  for (const std::string sql : {"SELECT TRUE;", "SELECT FALSE", "select true;", "SELECT TRUE,FALSE;", "SELECT TRUE,1;", "SELECT 1,TRUE;", "SELECT 1.5;", "SELECT 1.5,2.5;", "SELECT 1,2.5;",
+                                "SELECT 9223372036854775808;", "SELECT -1.5;"}) {
+    Fixture bare(sql);
+    Check(bare.native.accepted() && bare.native.recognized() && !bare.native.scalar_syntax_accepted() && bare.native.root_relation_id &&
+              bare.native.relations.size() == 1 && bare.native.relations[0].relation_kind == p::NativeRelationAstKind::kValues,
+          ("a bare projection of boolean/decimal literals is the typed literal VALUES relation: " + sql).c_str());
+  }
+  // a plain integer list keeps its scalar-projection route (found, not changed: its recorder rows and gate path are pinned elsewhere)
+  Fixture plain_list("SELECT 1,2;");
+  Check(plain_list.native.scalar_syntax_accepted() && !plain_list.native.recognized(), "an all-integer bare list keeps the scalar-projection route");
+  // an expression or a parameter beside a boolean is not the literal list
+  for (const std::string sql : {"SELECT TRUE,?;", "SELECT NOT TRUE;", "SELECT TRUE AND FALSE;"}) {
+    Fixture not_list(sql);
+    Check(!(not_list.native.recognized() && not_list.native.accepted()), ("not a bare literal list: " + sql).c_str());
+  }
   Fixture parameter("SELECT ?;");
   Check(parameter.native.accepted() && parameter.native.recognized(),
         "existing executable parameter SELECT route changed");

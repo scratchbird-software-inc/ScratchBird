@@ -9,6 +9,7 @@
 #include "wire/native_result_vector.hpp"
 
 #include "datatype_catalog_manifest.hpp"
+#include "engine/sblr/sblr_literal_runtime.hpp"
 #include "wire/public_result_packet.hpp"
 
 #include <cstdint>
@@ -64,6 +65,7 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
 
   // ---- the type of each column, from its descriptor UUIDs through the compiled cohort identity table ----
   std::vector<bool> column_is_boolean;
+  std::vector<bool> column_is_decimal;  // SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): the decimal codec identity (datatype.decimal.base1e9.le.v1)
   for (std::uint64_t c = 0; c < columns; ++c) {
     const auto base = 4 + 4 * c;
     const auto index = Index(static_cast<std::size_t>(c));
@@ -82,7 +84,7 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
     // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): two codecs are built, int64 and boolean (datatype.boolean.u8.v1); the column's kind is the codec of the
     // identity rows it matches (every matching row must agree).
     bool matched = false;
-    bool all_int64 = true, all_boolean = true;
+    bool all_int64 = true, all_boolean = true, all_decimal = true;
     for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
       const auto& row = entry.legacy_fields;
       if (std::string_view(reinterpret_cast<const char*>(row.type_uuid.bytes.data()), 16) != datatype.value ||
@@ -92,10 +94,12 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
       matched = true;
       all_int64 = all_int64 && row.codec_id == "datatype.int64.le.v1";
       all_boolean = all_boolean && row.codec_id == "datatype.boolean.u8.v1";
+      all_decimal = all_decimal && row.codec_id == "datatype.decimal.base1e9.le.v1";
     }
     if (!matched) return Refuse("SBSQL.NATIVE_RESULT.TYPE_NOT_BUILT", "unknown_type");
-    if (!all_int64 && !all_boolean) return Refuse("SBSQL.NATIVE_RESULT.TYPE_NOT_BUILT", "type_codec");
+    if (!all_int64 && !all_boolean && !all_decimal) return Refuse("SBSQL.NATIVE_RESULT.TYPE_NOT_BUILT", "type_codec");
     column_is_boolean.push_back(all_boolean);
+    column_is_decimal.push_back(all_decimal);
   }
 
   // ---- the rows: value[r.c], row-major, each a signed 64-bit carrier ----
@@ -104,7 +108,9 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
   std::string metadata;
   for (std::uint64_t c = 0; c < columns; ++c) {
     if (c != 0) metadata += ';';
-    metadata += column_names[static_cast<std::size_t>(c)] + (column_is_boolean[static_cast<std::size_t>(c)] ? ":boolean:not_null" : ":int64:not_null");
+    metadata += column_names[static_cast<std::size_t>(c)] +
+                (column_is_boolean[static_cast<std::size_t>(c)] ? ":boolean:not_null"
+                 : column_is_decimal[static_cast<std::size_t>(c)] ? ":decimal:not_null" : ":int64:not_null");
   }
   const auto values_base = 4 + 4 * columns;
   for (std::uint64_t r = 0; r < rows; ++r) {
@@ -112,6 +118,19 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
     for (std::uint64_t c = 0; c < columns; ++c) {
       const auto& value = fields[values_base + r * columns + c];
       const bool boolean_column = column_is_boolean[static_cast<std::size_t>(c)];
+      const bool decimal_column = column_is_decimal[static_cast<std::size_t>(c)];
+      if (decimal_column) {
+        // an exact decimal value is the cohort's 24-byte codec body (Kind::bytes); the engine's own codec decodes it (sign, scale, precision are in
+        // its header) and the PARSER renders it: the codec's canonical fixed-point spelling (scale kept: 0.10 stays 0.10), never engine text.
+        const auto decoded = value.value.size() == scratchbird::engine::sblr::kSblrLiteralExactDecimalBytes
+            ? scratchbird::engine::sblr::DecodeSblrLiteralExactDecimalV1(reinterpret_cast<const std::uint8_t*>(value.value.data()), value.value.size())
+            : scratchbird::engine::sblr::SblrLiteralExactDecimalCodecResultV1{};
+        if (value.name != "value[" + Index(static_cast<std::size_t>(r)) + "." + Index(static_cast<std::size_t>(c)) + "]" ||
+            value.kind != pr::Kind::bytes || !decoded.ok)
+          return Refuse("SBSQL.NATIVE_RESULT.VALUE_INVALID", "value_" + Index(static_cast<std::size_t>(r)) + "_" + Index(static_cast<std::size_t>(c)));
+        row_fields.push_back({column_names[static_cast<std::size_t>(c)], pr::Kind::text, decoded.canonical_lexical});
+        continue;
+      }
       // an int64 value is a signed 64-bit carrier; a boolean value is ONE byte, 0 or 1 (the engine's vector carrier, Kind::bytes)
       if (value.name != "value[" + Index(static_cast<std::size_t>(r)) + "." + Index(static_cast<std::size_t>(c)) + "]" ||
           (boolean_column ? (value.kind != pr::Kind::bytes || value.value.size() != 1 || static_cast<unsigned char>(value.value[0]) > 1)

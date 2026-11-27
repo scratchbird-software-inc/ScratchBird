@@ -4767,8 +4767,10 @@ std::string api_result_payload(const scratchbird::engine::internal_api::EngineAp
 //                  column_datatype_descriptor[c] uuid  the cohort's datatype descriptor identity
 //                  column_datatype_generation[c] unsigned  u64 LE8, the cohort descriptor generation
 //   per row r, column c:  value[r.c]         signed_integer  int64 LE8 (the native carrier)
-// Only a non-null int64 (value[r.c] signed_integer) and, since 2026-12-13, a non-null BOOLEAN (value[r.c] bytes, one byte 0 or 1; the column's datatype
-// UUIDs name the boolean cohort row) are built; any other value is refused with ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT (before a byte of the
+// Only a non-null int64 (value[r.c] signed_integer), since 2026-12-13 a non-null BOOLEAN (value[r.c] bytes, one byte 0 or 1; the column's datatype
+// UUIDs name the boolean cohort row) and, since 2026-12-24 (SB_NATIVE_VALUES_DECIMAL_LITERAL), a non-null exact DECIMAL (value[r.c] bytes: the
+// cohort's own 24-byte base-1e9 codec body, datatype.decimal.base1e9.le.v1, which is SELF-DESCRIBING: sign, scale and precision are in its header, so
+// the layout gains NO field; the column's datatype UUIDs name the decimal cohort row; never text) are built; any other value is refused with ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT (before a byte of the
 // result exists), so no text carrier can reach a native client.
 std::optional<std::string> native_scalar_projection_vector(const scratchbird::engine::internal_api::EngineApiResult& api_result,
                                                            const scratchbird::engine::internal_api::EngineRequestContext& context) {
@@ -4799,15 +4801,18 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
   };
   const auto* int64_identity = cohort_identity("bigint", "datatype.int64.le.v1");
   const auto* boolean_identity = cohort_identity("boolean", "datatype.boolean.u8.v1");
+  const auto* decimal_identity = cohort_identity("decimal", "datatype.decimal.base1e9.le.v1");
   // a column's kind comes from its FIRST row's value descriptor; every other row of the column must agree (checked per value below)
-  enum class ColumnKind { int64, boolean };
+  enum class ColumnKind { int64, boolean, decimal };
   std::vector<ColumnKind> kinds;
   for (std::size_t c = 0; c < columns; ++c) {
     const auto& type = rows.front().fields[c].second.descriptor.canonical_type_name;
     if (scratchbird::engine::PublicBooleanScalarTypeV1(type)) kinds.push_back(ColumnKind::boolean);
+    else if (type == "decimal") kinds.push_back(ColumnKind::decimal);
     else if (type == "bigint" || scratchbird::engine::PublicInt64ScalarTypeV1(type)) kinds.push_back(ColumnKind::int64);
     else return std::nullopt;
-    if ((kinds.back() == ColumnKind::int64 ? int64_identity : boolean_identity) == nullptr) return std::nullopt;
+    if ((kinds.back() == ColumnKind::int64 ? int64_identity : kinds.back() == ColumnKind::decimal ? decimal_identity : boolean_identity) == nullptr)
+      return std::nullopt;
   }
   std::vector<public_result::Field> fields;
   // Route B (2026-12-11): the SAME vector serves the object-free literal VALUES relation (query.execute); operation_id names the operation that
@@ -4819,7 +4824,7 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
   for (std::size_t c = 0; c < columns; ++c) {
     const auto minted = scratchbird::core::uuid::IssueRuntimeIdentityV7();
     if (!minted) return std::nullopt;
-    const auto* identity = kinds[c] == ColumnKind::int64 ? int64_identity : boolean_identity;
+    const auto* identity = kinds[c] == ColumnKind::int64 ? int64_identity : kinds[c] == ColumnKind::decimal ? decimal_identity : boolean_identity;
     const std::string index = std::to_string(c);
     fields.push_back({"column_descriptor[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(*minted)});
     fields.push_back({"column_datatype[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(identity->type_uuid)});
@@ -4840,6 +4845,13 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
         if (!scratchbird::engine::PublicBooleanScalarTypeV1(type) || !scratchbird::engine::PublicBooleanScalarPayloadV1(value, &payload) || payload.size() != 1)
           return std::nullopt;
         bytes.assign(payload);
+        kind = public_result::Kind::bytes;
+      } else if (kinds[c] == ColumnKind::decimal) {
+        // an exact decimal: the cohort's 24-byte codec body as bytes (never text). The body must decode canonically with the engine's own decimal codec.
+        if (type != "decimal" || !value.encoded_value.empty() || value.binary_value.size() != scratchbird::engine::sblr::kSblrLiteralExactDecimalBytes ||
+            !scratchbird::engine::sblr::DecodeSblrLiteralExactDecimalV1(value.binary_value.data(), value.binary_value.size()).ok)
+          return std::nullopt;
+        bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size());
         kind = public_result::Kind::bytes;
       } else if (scratchbird::engine::PublicInt64ScalarTypeV1(type) && value.encoded_value.empty() && value.binary_value.size() == 8) {
         bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), 8);  // the native carrier (an operator result)

@@ -18,6 +18,7 @@
 #include "native_select_one_test.cpp"
 
 #include "embedded/embedded_engine_client.hpp"
+#include "engine/sblr/sblr_literal_runtime.hpp"  // the engine decimal codec (the value_types state's byte oracle)
 #include "sblr_dispatch_server.hpp"  // SB_SBMV_TYPED_UUID_FIELDS seams: RegisteredEngineDiagnosticIdentityFieldsForTest, PeerAcceptsTypedUuidDiagnosticFieldsForTest
 #include "wire/sbsql_test_wire.hpp"
 
@@ -424,7 +425,8 @@ void RouteBState() {
 
   // ---- (a3) BOOLEAN literals in a VALUES table (2026-12-13; OLD: `VALUES (TRUE)` failed in the PARSER's binding context with
   // numeric_literal_profile_bijection_invalid): the negotiated boolean profile is the literal's descriptor; the engine's vector names the boolean cohort row
-  // and carries ONE byte; the parser renders true / false. `SELECT TRUE` is NOT a VALUES relation (a scalar projection) and still stops in the parser.
+  // and carries ONE byte; the parser renders true / false. [OLD: `SELECT TRUE` is NOT a VALUES relation (a scalar projection) and still stops in the parser. NEW (2026-12-24): the bare
+  // `SELECT TRUE` IS the VALUES relation, see the `value_types` state.]
   {
     const auto boolean_cohort = CohortBooleanOf(CopyContext(direct_receipt));
     struct Mixed { std::string sql; std::string kinds; std::vector<std::vector<std::int64_t>> rows; };
@@ -556,26 +558,21 @@ void RouteBState() {
         // unary-minus OPERATOR over the literal 1 (no folding rule exists)"} and {"SELECT -9223372036854775808", the same, "the int64 minimum"}.
         // NEW (2026-12-15, owner: the PARSER folds a minus applied to a numeric literal): both run natively (see (A) in RouteB2State); `-9223372036854775809`
         // (one below the int64 minimum: the digits do not fit) is pinned instead, the same stop as the positive overflow below.
-        {"SELECT -9223372036854775809", "DATATYPE.DESCRIPTOR.INVALID", "engine.op.name_resolve#4865(listed) ",
-         "a negative int64-overflow literal: the PARSER cannot encode it under the int64 profile (the same stop as the positive overflow; decimal promotion is queued)"},
-        {"SELECT 1.5", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ",
-         "a decimal literal: passes the gate (the exact template) and stops in the executor's descriptor batch validation (DECIMAL column profile)"},
-        {"SELECT 0.1", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ",
-         "a decimal literal below one: the same executor refusal"},
-        {"SELECT TRUE", "DATATYPE.DESCRIPTOR.INVALID", "engine.op.name_resolve#4865(listed) ",
-         "a boolean literal as a bare SELECT: a scalar projection (not a VALUES relation); the PARSER's literal finalization stops it (bound literal occurrence inventory changed: the scalar-projection stopgap excludes boolean on purpose); the engine is never asked to finalize"},
-        {"SELECT 9223372036854775808", "DATATYPE.DESCRIPTOR.INVALID", "engine.op.name_resolve#4865(listed) ",
-         "an int64-overflow literal: the PARSER cannot encode it under the int64 profile it was negotiated (SBXN proof); the engine is never asked to finalize"},
+        // OLD (2026-12-15): {"SELECT -9223372036854775809", "DATATYPE.DESCRIPTOR.INVALID", [name_resolve], "a negative int64-overflow literal: the PARSER cannot encode it under the
+        // int64 profile (decimal promotion is queued)"}, {"SELECT 1.5" and "SELECT 0.1", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1", [name_resolve literal literal], "a decimal
+        // literal: stops in the executor's descriptor batch validation (DECIMAL column profile)"}, {"SELECT TRUE", "DATATYPE.DESCRIPTOR.INVALID", [name_resolve], "a boolean literal
+        // as a bare SELECT: the scalar-projection stopgap excludes boolean"} and {"SELECT 9223372036854775808", "DATATYPE.DESCRIPTOR.INVALID", [name_resolve], "an int64-overflow
+        // literal: the SBXN proof cannot encode it under the int64 profile"}.
+        // NEW (2026-12-24, owner rulings 2026-11-26 items 2, 3 and 5): ALL of these run natively (the `value_types` state of this executable: bare boolean projection, decimal
+        // literals, int64-overflow promotion to the exact-decimal literal profile); they are no longer refusals and are pinned there as accepted statements.
         // OLD (2026-12-13): {"VALUES (-1)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "name_resolve(listed) literal#3(listed)", "a negative literal in VALUES: the unary-minus
         // expression is not the literal template"}. NEW (2026-12-15): `VALUES (-1)` runs natively (the fold makes it the literal template; see (A) in RouteB2State).
         {"VALUES ('a')", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "engine.op.name_resolve#4865(listed) ",
          "a text literal in VALUES: no numeric or boolean literal profile exists for it, refused at the dispatch gate (the bare `SELECT 'a'` is a scalar projection with its own token, above)", "opcode_code=4615"},
         {"VALUES (NULL)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", "engine.op.name_resolve#4865(listed) ",
          "a NULL in VALUES: not the literal template, refused at the dispatch gate", "opcode_code=4615"},
-        {"VALUES (9223372036854775808)", "DATATYPE.DESCRIPTOR.INVALID", "engine.op.name_resolve#4865(listed) ",
-         "an int64-overflow literal in VALUES: the same PARSER stop as the bare SELECT form"},
-        {"VALUES (1.5)", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ",
-         "a decimal literal in VALUES: the same executor stop as the bare SELECT form"},
+        // OLD (2026-12-13): {"VALUES (9223372036854775808)", "DATATYPE.DESCRIPTOR.INVALID", [name_resolve], "an int64-overflow literal in VALUES"} and {"VALUES (1.5)",
+        // "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1", [name_resolve literal literal], "a decimal literal in VALUES"}. NEW (2026-12-24): both run natively (see `value_types`).
         {"SELECT NULL", "DATATYPE.CONTEXT_REQUIRED", "",
          "a bare NULL: the PARSER needs one concrete datatype context before SBLR; the engine is never asked anything"},
     };
@@ -1450,9 +1447,272 @@ void PgpRefusalState() {
   one.End();
 }
 
+// ============================================================================================================================================================
+// SB_NATIVE_VALUE_TYPES (2026-12-24; owner rulings 2026-11-26 items 2, 3 and 5): the `value_types` state. A bare `SELECT TRUE` / `SELECT FALSE` is the literal VALUES
+// relation (like the numeric bare projection), exact-decimal literals run natively (the vector carries the cohort's own 24-byte decimal codec body as bytes plus the
+// decimal cohort identity; the parser decodes it with the engine's codec and renders it), and an integer literal that does not fit int64 is the exact-decimal
+// literal profile's (INT64_MAX stays int64, INT64_MIN stays int64). Every accepted statement is checked for: the parser's client row and its column metadata, the
+// engine's ONE vector (per-column cohort identity and the exact value bytes, no name, no rendered text), the recorder's three rows, and (per group) a byte-identical
+// file / unchanged directory / unchanged Next / transaction still active and owned.
+// ============================================================================================================================================================
+CohortInt64 CohortDecimalOf(const api::EngineRequestContext& context) {
+  CohortInt64 out;
+  int found = 0;
+  for (const auto& row3 : scratchbird::core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+    const auto& row = row3.legacy_fields;
+    if (row.codec_id == "datatype.decimal.base1e9.le.v1" && row.canonical_name == "decimal" && row.catalog_snapshot_uuid == context.datatype_catalog_snapshot_uuid &&
+        row.catalog_generation == context.datatype_catalog_generation && row.registry_generation == context.datatype_registry_generation) {
+      out = {row.type_uuid, row.descriptor_uuid, row.descriptor_generation};
+      ++found;
+    }
+  }
+  Check(found == 1, "exactly one exact-decimal identity in the receipt's datatype cohort (" + std::to_string(found) + ")");
+  return out;
+}
+// One expected cell. 'i' int64 (shown = the decimal digits), 'b' boolean (shown true / false), 'd' exact decimal: the lexical the oracle encodes with the engine's own
+// codec, the parser's expected display, and the header constants written out here (byte 0 = sign bit | scale, byte 1 = precision).
+struct Cell {
+  char kind;
+  std::string shown;
+  std::string lexical;
+  unsigned sign_scale = 0;
+  unsigned precision = 0;
+};
+Cell I(std::int64_t value) { return {'i', std::to_string(value), "", 0, 0}; }
+Cell B(bool value) { return {'b', value ? "true" : "false", "", 0, 0}; }
+Cell D(std::string lexical, std::string shown, unsigned sign_scale, unsigned precision) { return {'d', std::move(shown), std::move(lexical), sign_scale, precision}; }
+
+void CheckAcceptedCells(const Ran& ran, const std::string& sql, const std::vector<std::vector<Cell>>& expected, const CohortInt64& int64_cohort, const CohortInt64& boolean_cohort,
+                        const CohortInt64& decimal_cohort) {
+  namespace pr = scratchbird::wire::public_result;
+  const auto& r = ran.result;
+  const std::string label = "'" + sql.substr(0, 60) + "'";
+  Check(r.accepted && !r.messages.has_errors(), label + " is accepted through the real pipeline: " + AllCodes(r));
+  Check(r.server_operation_id == "query.execute", label + ": the engine operation is query.execute: " + r.server_operation_id);
+  const std::size_t rows = expected.size(), columns = expected.front().size();
+  std::vector<std::uint32_t> oids;
+  std::vector<std::vector<std::optional<std::string>>> got;
+  Check(ps2::DecodePublicResultRowsForTest(r.server_result_payload, &oids, &got) && got.size() == rows && oids.size() == columns,
+        label + ": the parser-built table has " + std::to_string(rows) + " rows and " + std::to_string(columns) + " columns");
+  for (std::size_t row = 0; row < rows && row < got.size(); ++row)
+    for (std::size_t column = 0; column < columns && column < got[row].size(); ++column)
+      Check(got[row][column] && *got[row][column] == expected[row][column].shown,
+            label + ": parser row " + std::to_string(row) + " column " + std::to_string(column) + " displays `" + expected[row][column].shown + "`");
+  std::string meta;
+  for (std::size_t column = 0; column < columns; ++column) {
+    const char kind = expected.front()[column].kind;
+    meta += (column ? ";" : "") + std::string("column") + std::to_string(column + 1) + (kind == 'b' ? ":boolean:not_null" : kind == 'd' ? ":decimal:not_null" : ":int64:not_null");
+  }
+  Check(r.server_result_payload.ends_with(meta), label + ": the parser's row metadata is " + meta);
+  std::vector<pr::Field> fields;
+  Check(pr::Decode(ran.raw_vector, &fields), label + ": the engine's vector decodes");
+  const auto find = [&](const std::string& name) -> const pr::Field* {
+    const pr::Field* found = nullptr;
+    for (const auto& f : fields) if (f.name == name) { if (found) return nullptr; found = &f; }
+    return found;
+  };
+  Check(fields.size() == 4 + 4 * columns + columns * rows, label + ": the vector holds exactly the header, four fields per column and one value per cell (no name, no text): " + std::to_string(fields.size()));
+  const auto* kind_field = find("result_kind");
+  const auto* rows_field = find("row_count");
+  const auto* columns_field = find("column_count");
+  Check(kind_field && kind_field->value == "native_scalar_projection_vector" && rows_field && LE64(rows_field->value) == rows && columns_field && LE64(columns_field->value) == columns,
+        label + ": vector result_kind, row_count " + std::to_string(rows) + ", column_count " + std::to_string(columns));
+  for (std::size_t column = 0; column < columns; ++column) {
+    const char kind = expected.front()[column].kind;
+    const auto& cohort = kind == 'b' ? boolean_cohort : kind == 'd' ? decimal_cohort : int64_cohort;
+    const auto n = std::to_string(column);
+    const auto* t = find("column_datatype[" + n + "]");
+    const auto* td = find("column_datatype_descriptor[" + n + "]");
+    const auto* g = find("column_datatype_generation[" + n + "]");
+    Check(t && td && g && UuidOf(t->value) == cohort.type_uuid && UuidOf(td->value) == cohort.descriptor_uuid && LE64(g->value) == cohort.generation,
+          label + ": column " + n + " carries the cohort's " + (kind == 'b' ? "BOOLEAN" : kind == 'd' ? "exact-DECIMAL" : "int64") + " identity (type, descriptor, generation)");
+  }
+  for (std::size_t row = 0; row < rows; ++row)
+    for (std::size_t column = 0; column < columns; ++column) {
+      const auto& cell = expected[row][column];
+      const auto at = "value[" + std::to_string(row) + "." + std::to_string(column) + "]";
+      const auto* v = find(at);
+      if (cell.kind == 'b') {
+        Check(v && v->kind == pr::Kind::bytes && v->value.size() == 1 && (v->value[0] == '\1') == (cell.shown == "true") && (v->value[0] == '\0' || v->value[0] == '\1'),
+              label + ": " + at + " is ONE byte, 0 or 1 (a boolean, never text)");
+      } else if (cell.kind == 'd') {
+        const auto oracle = scratchbird::engine::sblr::EncodeSblrLiteralExactDecimalV1(cell.lexical);
+        Check(oracle.ok && v && v->kind == pr::Kind::bytes && v->value.size() == 24 && v->value == std::string(reinterpret_cast<const char*>(oracle.canonical_bytes.data()), 24),
+              label + ": " + at + " is the engine decimal codec's 24 bytes for " + cell.lexical + " (bytes kind, never text)");
+        Check(v && v->value.size() == 24 && static_cast<unsigned>(static_cast<unsigned char>(v->value[0])) == cell.sign_scale && static_cast<unsigned>(static_cast<unsigned char>(v->value[1])) == cell.precision,
+              label + ": " + at + " header byte 0 (sign bit | scale) is " + std::to_string(cell.sign_scale) + " and byte 1 (precision) is " + std::to_string(cell.precision) + " (constants, not the codec's)");
+      } else {
+        Check(v && v->kind == pr::Kind::signed_integer && v->value.size() == 8 && std::to_string(static_cast<std::int64_t>(LE64(v->value))) == cell.shown,
+              label + ": " + at + " is the int64 " + cell.shown);
+      }
+    }
+  Check(ran.raw_vector.find("true") == std::string::npos && ran.raw_vector.find("false") == std::string::npos && ran.raw_vector.find("column1") == std::string::npos &&
+            ran.raw_vector.find("key_a") == std::string::npos,
+        label + ": the engine's vector carries no rendered boolean, no rendered decimal digits as text and no column name");
+  (void)int64_cohort;
+}
+
+void ValueTypesState() {
+  (void)std::setvbuf(stdout, nullptr, _IONBF, 0);
+  const auto catalog_generation = served.facts->receipt_source->ReadCatalogEpochs().catalog_generation_id;
+  auto direct = Approve();
+  auto direct_public = OpenPublicFor(*direct);
+  auto direct_context = ContextFor(*direct, catalog_generation);
+  auto direct_receipt = Acquire(*direct_public, direct_context, direct->approval.transaction_uuid);
+  Check(direct_receipt.ok(), "a direct native receipt (for the cohort identities): " + direct_receipt.code);
+  const auto int64_cohort = CohortInt64Of(CopyContext(direct_receipt));
+  const auto boolean_cohort = CohortBooleanOf(CopyContext(direct_receipt));
+  const auto decimal_cohort = CohortDecimalOf(CopyContext(direct_receipt));
+  {
+    std::set<std::string> table;
+    for (const auto& row : api::NativeExecutorAvailabilityAllowList()) table.insert(RowKey(row));
+    Check(table == std::set<std::string>({"engine.op.literal#3", "engine.op.name_resolve#4865"}),
+          "(c) the production allow-list is exactly {name-resolve 0x1301 (4865), literal 3} (this batch adds NO row)");
+  }
+  srv::ServerSessionRegistry registry;
+  const auto active = [&](std::uint64_t order) { return off::ReadFile(served.path, served.facts->page_size_bytes).words.at(order).state == pgs::TipStateCode::active; };
+  Pipe one(registry);
+  const auto order1 = one.order();
+  const auto owner_of = [&](Pipe& pipe) {
+    const auto found = registry.sessions_by_uuid.find(pipe.session().session_uuid);
+    return found != registry.sessions_by_uuid.end() && found->second.local_transaction_id == pipe.order() &&
+           found->second.transaction_uuid == pipe.session().transaction_uuid && found->second.native_session_approved;
+  };
+  Check(order1 != 0 && active(order1) && owner_of(one), "session 1's transaction is active and owned after the login");
+  const auto asked_of = [](const Ran& ran) {
+    std::string asked;
+    for (const auto& r : ran.recorded) asked += RowKey(r.row) + (r.in_allow_list ? "(listed) " : "(NOT listed) ");
+    return asked;
+  };
+  const std::string kThree = "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ";
+  const std::string kBindOnly = "engine.op.name_resolve#4865(listed) ";
+  struct Accepted { std::string sql; std::vector<std::vector<Cell>> rows; };
+  const auto run_accepted = [&](const std::string& group, const std::vector<Accepted>& list) {
+    const FileEvidence group_before;  // evidence per group (see (a2) of the route_b state: per statement took minutes at 128k)
+    for (const auto& item : list) {
+      const auto ran = RunSql(one, item.sql, 2);
+      CheckAcceptedCells(ran, item.sql, item.rows, int64_cohort, boolean_cohort, decimal_cohort);
+      Check(asked_of(ran) == kThree, "(" + group + ") '" + item.sql + "' asks exactly [name_resolve (bind), literal (finalize), literal (execution)], all listed: " + asked_of(ran));
+      Check(owner_of(one) && one.order() == order1, "(e) the transaction is still owned after '" + item.sql + "'");
+    }
+    CheckUntouched(group_before, "the (" + group + ") statements, every one");
+    Check(active(order1), "(e) the transaction is still active after the (" + group + ") statements");
+  };
+  struct Refused { std::string sql; std::string code; std::string asked; std::string engine_fields; std::string what; };
+  const auto run_refused = [&](const std::string& group, const std::vector<Refused>& list) {
+    const FileEvidence group_before;
+    for (const auto& item : list) {
+      const auto ran = RunSql(one, item.sql, 2);
+      bool present = false;
+      for (const auto& d : ran.result.messages.diagnostics) if (d.code == item.code) present = true;
+      Check(!ran.result.accepted && present, "(" + group + ") '" + item.sql + "' (" + item.what + ") is refused with " + item.code + ": " + AllCodes(ran.result));
+      Check(asked_of(ran) == item.asked, "(" + group + ") '" + item.sql + "': the production table was asked exactly [" + item.asked + "], got [" + asked_of(ran) + "]");
+      CheckEngineFields(ran, item.sql, item.engine_fields, false);
+      Check(owner_of(one) && one.order() == order1, "(e) the transaction is still owned after the refused '" + item.sql + "'");
+    }
+    CheckUntouched(group_before, "the (" + group + ") refusals, every one");
+    Check(active(order1), "(e) the transaction is still active after the (" + group + ") refusals");
+  };
+
+  // ---- (1) BARE BOOLEAN PROJECTION. OLD (3916b9e35, pinned in route_b (d2)): `SELECT TRUE` -> DATATYPE.DESCRIPTOR.INVALID (bound literal occurrence inventory changed: a
+  // scalar projection, the S4h stopgap excludes boolean on purpose). NEW (owner 2026-11-26 item 5): the bare projection of boolean literals is the SAME typed VALUES
+  // relation the numeric bare projection is; one boolean column named column1 printing true / false; mixed columns in ONE row are fine.
+  run_accepted("1", {
+      {"SELECT TRUE", {{B(true)}}}, {"SELECT FALSE", {{B(false)}}}, {"select true", {{B(true)}}}, {"Select False", {{B(false)}}}, {"SELECT TRUE;", {{B(true)}}},
+      {"SELECT TRUE, FALSE", {{B(true), B(false)}}}, {"SELECT TRUE, 1", {{B(true), I(1)}}}, {"SELECT 1, TRUE", {{I(1), B(true)}}},
+      {"SELECT 1, TRUE, -2", {{I(1), B(true), I(-2)}}}, {"select false , true ;", {{B(false), B(true)}}},
+  });
+  // refused, unchanged by construction: the bare-projection route requires literal TOKENS, so a boolean EXPRESSION (`NOT TRUE`, `TRUE AND FALSE`) never reaches it and keeps
+  // the scalar-projection stopgap's stop (DATATYPE.DESCRIPTOR.INVALID, bound literal occurrence inventory changed). The task brief expected SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED
+  // (operator_call 1025): the token observed after this change is DATATYPE.DESCRIPTOR.INVALID (I did not probe the pre-change binary for these two statements); found, not
+  // changed. A mixed COLUMN across rows is refused by the lowering.
+  run_refused("1r", {
+      {"SELECT NOT TRUE", "DATATYPE.DESCRIPTOR.INVALID", kBindOnly, "", "a boolean expression over a literal: the scalar-projection stopgap still excludes boolean"},
+      {"SELECT TRUE AND FALSE", "DATATYPE.DESCRIPTOR.INVALID", kBindOnly, "", "a boolean operator over literals"},
+      {"VALUES (1), (TRUE)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a column mixing integer and boolean across rows"},
+      {"VALUES (TRUE), (1)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a column mixing boolean and integer across rows"},
+  });
+
+  // ---- (2) DECIMAL LITERALS run natively. OLD: QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1 (the executor's VALUES descriptor validation: DECIMAL column profile). NEW (owner
+  // 2026-11-26 item 3): the descriptor carries the cohort's exact-decimal codec profile; the value is the codec's 24 bytes; the parser renders the codec's fixed-point
+  // spelling. Scale/precision/sign are in the body header (constants asserted). The engine codec's CANONICAL form drops trailing fractional zeros (0.10 shows 0.1) and a
+  // negative zero (pinned by ia01_literal_runtime_test; the exact-decimal binary profile spec also defines the VALUE canonically without fractional trailing zeros, with the display scale a
+  // property of the DESCRIPTOR): so `0.10` -> `0.1` and `0.0` -> `0` are the CURRENT behaviour, pinned PENDING the owner question (reference engines keep the written scale; preserving it
+  // needs the literal descriptor's scale from the lexical and the column precision/scale in the vector). They are not claimed correct.
+  run_accepted("2", {
+      {"SELECT 1.5", {{D("1.5", "1.5", 1, 2)}}}, {"SELECT 0.1", {{D("0.1", "0.1", 1, 1)}}}, {"SELECT -1.5", {{D("-1.5", "-1.5", 0x81, 2)}}},
+      {"select 123.456;", {{D("123.456", "123.456", 3, 6)}}}, {"SELECT 1e2", {{D("1e2", "100", 0, 3)}}},
+      {"SELECT 0.10", {{D("0.10", "0.1", 1, 1)}}}, {"SELECT 0.0", {{D("0.0", "0", 0, 1)}}},
+      {"VALUES (1.5)", {{D("1.5", "1.5", 1, 2)}}}, {"VALUES (-0.25)", {{D("-0.25", "-0.25", 0x82, 2)}}},
+      // later rows whose decimal literal has EXACTLY the column's precision, scale and codec profile (OLD: every later row's precision and scale had to be absent)
+      {"VALUES (1.5), (2.5)", {{D("1.5", "1.5", 1, 2)}, {D("2.5", "2.5", 1, 2)}}}, {"VALUES (1.5), (-2.5), (9.9)", {{D("1.5", "1.5", 1, 2)}, {D("-2.5", "-2.5", 0x81, 2)}, {D("9.9", "9.9", 1, 2)}}},
+      {"VALUES (1.5, 2), (2.5, 3)", {{D("1.5", "1.5", 1, 2), I(2)}, {D("2.5", "2.5", 1, 2), I(3)}}},
+      {"VALUES (1.5, 2)", {{D("1.5", "1.5", 1, 2), I(2)}}}, {"VALUES (1, 2.25)", {{I(1), D("2.25", "2.25", 2, 3)}}},
+      {"VALUES (1.5, 2.25, TRUE)", {{D("1.5", "1.5", 1, 2), D("2.25", "2.25", 2, 3), B(true)}}},
+      {"SELECT 1.5, 2.5", {{D("1.5", "1.5", 1, 2), D("2.5", "2.5", 1, 2)}}}, {"SELECT 1, 2.5", {{I(1), D("2.5", "2.5", 1, 2)}}},
+      {"SELECT 1.5, TRUE", {{D("1.5", "1.5", 1, 2), B(true)}}},
+      {"VALUES (99999999999999999999999999999999999999)", {{D("99999999999999999999999999999999999999", "99999999999999999999999999999999999999", 0, 38)}}},
+      {"SELECT 0.00000000000000000000000000000000000001", {{D("0.00000000000000000000000000000000000001", "0.00000000000000000000000000000000000001", 38, 38)}}},
+  });
+  // refused, pinned: a decimal COLUMN across rows whose literals differ in precision or scale (each literal carries its own precision/scale descriptor; unifying them is a coercion rule nobody has ruled: owner
+  // question), a decimal mixed with an integer or a boolean across rows (same stop), and the alias form `SELECT 1.5 AS x` (a scalar projection: no decimal carrier there).
+  // A later row whose decimal literal has EXACTLY the column's precision, scale and codec profile IS admitted (accepted block above): that is equality, not coercion.
+  run_refused("2r", {
+      {"VALUES (1.5), (2.25)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal column of two different scales"},
+      {"VALUES (0.5), (1.5)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal column of two equal scales but different precisions (1 and 2)"},
+      {"VALUES (1.5), (12.5)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal column of equal scale and different precisions (2 and 3)"},
+      {"VALUES (1), (1.5)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "an integer then a decimal in one column"},
+      {"VALUES (1.5), (1)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal then an integer in one column"},
+      {"VALUES (1.5), (TRUE)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal then a boolean in one column"},
+      {"SELECT 1.5 AS x", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) ", "operation=query.evaluate_projection;requires=native_result_vector_types",
+       "the alias form is the scalar projection route (query.evaluate_projection): its literals ride the operands, one finalize row, and there is no decimal vector carrier on it"},
+  });
+
+  // ---- (3) INT64 OVERFLOW PROMOTION. OLD: DATATYPE.DESCRIPTOR.INVALID (the literal was negotiated int64 and the SBXN encoder's from_chars failed). NEW (owner 2026-11-26
+  // item 2, PostgreSQL's rule): a digits-only literal outside int64 is the exact-decimal literal profile's; INT64_MAX and INT64_MIN stay int64.
+  run_accepted("3", {
+      {"SELECT 9223372036854775807", {{I(INT64_MAX)}}}, {"SELECT -9223372036854775808", {{I(INT64_MIN)}}},
+      {"SELECT 9223372036854775808", {{D("9223372036854775808", "9223372036854775808", 0, 19)}}},
+      {"SELECT -9223372036854775809", {{D("-9223372036854775809", "-9223372036854775809", 0x80, 19)}}},
+      {"VALUES (9223372036854775808)", {{D("9223372036854775808", "9223372036854775808", 0, 19)}}},
+      {"VALUES (9223372036854775807, 9223372036854775808)", {{I(INT64_MAX), D("9223372036854775808", "9223372036854775808", 0, 19)}}},
+      {"SELECT 12345678901234567890123456789012345678", {{D("12345678901234567890123456789012345678", "12345678901234567890123456789012345678", 0, 38)}}},
+  });
+  // a literal beyond the exact-decimal profile's 38 digits is refused with its OWN token (data fields: precision = the mantissa digit count as written, limit = 38,
+  // literal_class); the engine is never asked to finalize (bind row only)
+  {
+    const FileEvidence group_before;
+    struct Over { std::string sql; const char* digits; };
+    // the precision field is the literal's EFFECTIVE precision (max(coefficient digits, scale) once the exponent is applied), the codec's own definition
+    const std::vector<Over> over = {{"SELECT 123456789012345678901234567890123456789", "39"}, {"VALUES (1234567890123456789012345678901234567890)", "40"},
+                                    {"SELECT -123456789012345678901234567890123456789", "39"}, {"SELECT 1234567890123456789012345678901234567.89", "39"},
+                                    {"SELECT 1e39", "40"}, {"SELECT 1e38", "39"}, {"SELECT 1e-39", "39"}, {"SELECT 0.000000000000000000000000000000000000001", "39"}};
+    for (const auto& item : over) {
+      const auto ran = RunSql(one, item.sql, 2);
+      Check(!ran.result.accepted && FirstCode(ran.result) == "SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED", "(3) '" + item.sql + "' is refused with the distinct token: " + AllCodes(ran.result));
+      Check(FieldNamed(ran.result, "precision") == item.digits && FieldNamed(ran.result, "limit") == "38" && FieldNamed(ran.result, "literal_class") == "decimal",
+            "(3) '" + item.sql + "' carries precision " + item.digits + ", limit 38 and the literal class as DATA fields: " + AllCodes(ran.result));
+      Check(ran.server_diagnostics.empty() && asked_of(ran) == kBindOnly, "(3) '" + item.sql + "' never asked the engine to finalize: [" + asked_of(ran) + "]");
+      bool undifferentiated = false;
+      for (const auto& d : ran.result.messages.diagnostics) if (d.code == "DATATYPE.DESCRIPTOR.INVALID") undifferentiated = true;
+      Check(!undifferentiated, "(3) '" + item.sql + "' no longer gives the undifferentiated DATATYPE.DESCRIPTOR.INVALID");
+      Check(owner_of(one) && one.order() == order1, "(e) the transaction is still owned after '" + item.sql + "'");
+    }
+    CheckUntouched(group_before, "the (3) precision refusals");
+    Check(active(order1), "(e) the transaction is still active after the (3) precision refusals");
+  }
+  // the 32-literal slot limit still has its own token and still counts decimal literals as numeric
+  run_refused("3s", {
+      {"VALUES (" + [] { std::string out; for (int i = 0; i < 33; ++i) out += std::string(i ? ", " : "") + "1.5"; return out; }() + ")", "SBSQL.RESOURCE.LITERAL_SLOT_LIMIT_EXCEEDED", kBindOnly, "",
+       "33 decimal literals in one row (also the 16-column bound: the slot token wins)"},
+  });
+  one.End();
+}
+
 std::optional<int> ExtraReceiptStateForTest(const std::string& state, const Offline&) {
   if (state == "route_b") { RouteBState(); return 0; }
   if (state == "route_b2") { RouteB2State(); return 0; }
+  if (state == "value_types") { ValueTypesState(); return 0; }
   if (state == "typed_uuid") { TypedUuidState(); return 0; }
   if (state == "pgp_refusal") { PgpRefusalState(); return 0; }
   if (state == "trace") { RouteBTraceState(); return 0; }
