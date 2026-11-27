@@ -1388,8 +1388,19 @@ std::string ReadTextFileOrEmpty(const std::filesystem::path& path, bool* ok) {
     return {};
   }
   *ok = true;
-  return std::string(std::istreambuf_iterator<char>(input),
-                     std::istreambuf_iterator<char>());
+  // SB_POLICY_PACK_READ_CHUNKED (2026-12-22). OLD: std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) (one streambuf call and
+  // one append per BYTE: 6.08% of the policy-assemble instruction count, 3,173 pack-file reads, 120 per database create). NEW: the same bytes, taken from
+  // the same streambuf in 64 KiB chunks until it stops yielding (EOF or a read error, exactly where the iterator stopped). The language (bytes) and the
+  // `ok` contract (false only when the file does not open; a directory opens and reads as empty) are unchanged.
+  std::string text;
+  char chunk[1 << 16];
+  std::streambuf* const buffer = input.rdbuf();
+  for (;;) {
+    const std::streamsize got = buffer->sgetn(chunk, static_cast<std::streamsize>(sizeof chunk));
+    if (got <= 0) break;
+    text.append(chunk, static_cast<std::size_t>(got));
+  }
+  return text;
 }
 
 std::string HexDigest(const unsigned char* digest, std::size_t size) {

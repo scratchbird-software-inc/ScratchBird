@@ -18,10 +18,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <fstream>
 #include <map>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace scratchbird::tests::offline {
@@ -36,11 +40,21 @@ inline void Require(bool ok, const char* what) {
   std::exit(1);
 }
 
+// SB_ROUTEB_COST_READALL (2026-12-22). OLD: an std::istreambuf_iterator copy of the file into an std::string, then a second copy into the vector
+// (one virtual call per byte, ~2 million read() calls and two whole-file copies for a 128K-page database; every FileEvidence and every `active` check of
+// native_route_b paid it). NEW: size the vector from the file and read it with ONE call; the bytes returned are identical (an unreadable or missing file
+// still yields an empty vector; a file that shrinks under the read yields what was read).
 inline std::vector<p::byte> ReadAll(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
-  const std::string bytes((std::istreambuf_iterator<char>(in)), {});
-  return std::vector<p::byte>(reinterpret_cast<const p::byte*>(bytes.data()),
-                              reinterpret_cast<const p::byte*>(bytes.data()) + bytes.size());
+  if (!in) return {};
+  in.seekg(0, std::ios::end);
+  const std::streamoff size = in.tellg();
+  if (size <= 0) return {};
+  in.seekg(0, std::ios::beg);
+  std::vector<p::byte> bytes(static_cast<std::size_t>(size));
+  in.read(reinterpret_cast<char*>(bytes.data()), size);
+  bytes.resize(static_cast<std::size_t>(in.gcount()));
+  return bytes;
 }
 
 // A read-only sink over the bytes the file had when it was read.
@@ -92,12 +106,47 @@ struct FileView {
   }
 };
 
-inline FileView ReadFile(const std::filesystem::path& path, std::uint32_t page_size) {
-  FileView view;
-  view.image = ReadAll(path);
+// SB_ROUTEB_COST_READALL (2026-12-22): a sink that reads the FILE itself with pread, page by page, for ReadInventory (no whole-file copy).
+class PreadSink final : public d::CarefulWriteSink {
+ public:
+  explicit PreadSink(const std::filesystem::path& path) : fd_(::open(path.c_str(), O_RDONLY | O_CLOEXEC)) {}
+  ~PreadSink() override { if (fd_ >= 0) ::close(fd_); }
+  PreadSink(const PreadSink&) = delete;
+  PreadSink& operator=(const PreadSink&) = delete;
+  bool open() const { return fd_ >= 0; }
+  d::BoundedIoResult ReadAt(p::u64 offset, std::span<p::byte> bytes) override {
+    d::BoundedIoResult r;
+    r.operation = d::BoundedIoOperation::read;
+    r.offset = offset;
+    r.requested_bytes = bytes.size();
+    std::size_t done = 0;
+    while (done < bytes.size()) {
+      const ssize_t n = ::pread(fd_, bytes.data() + done, bytes.size() - done, static_cast<off_t>(offset + done));
+      if (n <= 0) { r.error = d::BoundedIoError::native_failure; return r; }
+      done += static_cast<std::size_t>(n);
+    }
+    r.bytes_transferred = done;
+    return r;
+  }
+  d::BoundedIoResult WriteAt(p::u64, std::span<const p::byte>) override {
+    d::BoundedIoResult r;
+    r.error = d::BoundedIoError::native_failure;
+    return r;
+  }
+  d::BoundedIoResult Sync() override { return {}; }
+  bool forced_ordered() const noexcept override { return false; }
+
+ private:
+  int fd_;
+};
+
+// The decode, over any sink. `view.image` is filled by the caller (ReadFromImage) or left empty (ReadInventory).
+inline void DecodeThroughSink(FileView& view, d::CarefulWriteSink& sink, std::uint32_t page_size) {
   view.page_size = page_size;
-  Require(view.image.size() >= page_size, "the file holds page zero");
-  view.zero = d::DecodeFilespacePageZero(view.image.data(), page_size);
+  std::vector<p::byte> page_zero(page_size);
+  const auto zero_read = sink.ReadAt(0, page_zero);
+  Require(zero_read.bytes_transferred == page_size, "the file holds page zero");
+  view.zero = d::DecodeFilespacePageZero(page_zero.data(), page_size);
   Require(view.zero.ok(), "page zero decodes");
   pg::TransactionWriterBinding binding;
   binding.database_uuid = view.zero.record->bootstrap.database_uuid;
@@ -114,7 +163,6 @@ inline FileView ReadFile(const std::filesystem::path& path, std::uint32_t page_s
     }
   }
   Require(have_state && have_ledger, "page zero names the transaction inventory and the session ledger");
-  BytesSink sink(view.image);
   const auto chains = pg::ReadTransactionChainsThroughSink(sink, binding);
   Require(chains.error == pg::TransactionWriterError::none, "the transaction chains read and check");
   view.counters = chains.counters;
@@ -140,11 +188,34 @@ inline FileView ReadFile(const std::filesystem::path& path, std::uint32_t page_s
   p::u64 page = ledger_root.page_number;
   while (page != 0) {
     view.ledger_pages.push_back(page);
-    const auto decoded = pg::DecodeSessionLedgerPage(std::span<const p::byte>(view.image).subspan(page * page_size, page_size));
+    std::vector<p::byte> ledger_page(page_size);
+    Require(sink.ReadAt(page * page_size, ledger_page).bytes_transferred == page_size, "a ledger page is inside the file");
+    const auto decoded = pg::DecodeSessionLedgerPage(std::span<const p::byte>(ledger_page));
     Require(decoded.ok(), "a ledger page decodes");
     for (std::uint32_t s = 0; s < decoded.view->used; ++s) view.ledger.push_back(*pg::SessionLedgerRecordAt(*decoded.view, s));
     page = decoded.view->next_page;
   }
+}
+
+// The view of an image ALREADY read (view.image is that image): the decode every caller has always had.
+inline FileView ReadFromImage(std::vector<p::byte> image, std::uint32_t page_size) {
+  FileView view;
+  view.image = std::move(image);
+  BytesSink sink(view.image);
+  DecodeThroughSink(view, sink, page_size);
+  return view;
+}
+
+// unchanged behaviour for every other caller: read the file, then decode it
+inline FileView ReadFile(const std::filesystem::path& path, std::uint32_t page_size) { return ReadFromImage(ReadAll(path), page_size); }
+
+// The SAME decode (same chain readers, same checks) over the file read with pread, only the pages it needs (page zero, the transaction chains, the ledger
+// chain), `image` left EMPTY: for a caller that wants the inventory (words, headers, counters, ledger) and not the bytes; it is O(inventory), not O(file).
+inline FileView ReadInventory(const std::filesystem::path& path, std::uint32_t page_size) {
+  PreadSink sink(path);
+  Require(sink.open(), "the file opens");
+  FileView view;
+  DecodeThroughSink(view, sink, page_size);
   return view;
 }
 

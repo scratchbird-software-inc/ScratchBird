@@ -326,15 +326,35 @@ struct FileEvidence {
   FileEvidence() {
     image = Image(served.path);
     listing = ListingOf(served.directory);
-    next = off::ReadFile(served.path, served.facts->page_size_bytes).counters.next_transaction;
+    // SB_ROUTEB_COST_READALL (2026-12-22). OLD: Next came from a SECOND whole-file read (off::ReadFile(path): read + copy + decode). NEW: the same offline
+    // decode (same chain readers) over pread of only the pages it needs (off::ReadInventory); the byte-identity image above is read once, with one read().
+    next = off::ReadInventory(served.path, served.facts->page_size_bytes).counters.next_transaction;
   }
 };
 // `what`'s statement left the data file byte-identical, the directory listing unchanged (no TIP/ledger write, no side file) and Next unchanged.
+// SB_ROUTEB_COST_READALL (2026-12-22). OLD: CheckUntouched built a whole second FileEvidence (a second 64 MB image at 128K pages, allocated, zero-filled and
+// compared with operator==). NEW: the file is read again in 1 MiB chunks, each compared byte for byte with the same range of the earlier image (the same
+// comparison, every byte, plus the size; no second whole-file allocation); the listing and Next are read exactly as before.
+bool FileEqualsImage(const std::filesystem::path& path, const std::vector<p::byte>& image) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return image.empty();
+  std::vector<char> chunk(1u << 20);
+  std::size_t at = 0;
+  while (in) {
+    in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    const auto got = static_cast<std::size_t>(in.gcount());
+    if (got == 0) break;
+    if (at + got > image.size() || std::memcmp(chunk.data(), image.data() + at, got) != 0) return false;
+    at += got;
+  }
+  return at == image.size();
+}
 void CheckUntouched(const FileEvidence& before, const std::string& what) {
-  const FileEvidence after;
-  Check(after.image == before.image, what + ": the data file is byte-identical");
-  Check(after.listing == before.listing && after.listing.size() == 1, what + ": the directory listing is unchanged (only the data file)");
-  Check(after.next == before.next, what + ": the transaction counter (Next) is unchanged");
+  const auto listing = ListingOf(served.directory);
+  const auto next = off::ReadInventory(served.path, served.facts->page_size_bytes).counters.next_transaction;
+  Check(FileEqualsImage(served.path, before.image), what + ": the data file is byte-identical");
+  Check(listing == before.listing && listing.size() == 1, what + ": the directory listing is unchanged (only the data file)");
+  Check(next == before.next, what + ": the transaction counter (Next) is unchanged");
 }
 
 std::string FieldOf(const bridge::EngineDiagnosticSnapshot& snapshot, const std::string& key) {
@@ -625,7 +645,7 @@ void RecordState() {
 
 // THE TEST (production table: no recorder is active).
 void SelectOneState() {
-  const auto g0 = off::ReadFile(served.path, served.facts->page_size_bytes);
+  const auto g0 = off::ReadInventory(served.path, served.facts->page_size_bytes);
   (void)g0;
   const auto catalog_generation = served.facts->receipt_source->ReadCatalogEpochs().catalog_generation_id;
   // the production tables, pinned
@@ -644,7 +664,7 @@ void SelectOneState() {
   Check(r1.ok(), "a native receipt for session 1: " + r1.code);
   const auto cohort = CohortInt64Of(CopyContext(r1));
   const auto order1 = s1->approval.transaction_order;
-  const auto active = [&](std::uint64_t order) { return off::ReadFile(served.path, served.facts->page_size_bytes).words.at(order).state == pgs::TipStateCode::active; };
+  const auto active = [&](std::uint64_t order) { return off::ReadInventory(served.path, served.facts->page_size_bytes).words.at(order).state == pgs::TipStateCode::active; };
   Check(active(order1), "session 1's transaction is active before the statements");
 
   // ---- the allow-listed shape runs, repeatedly, and returns the message vector -----------------------------------------------
@@ -839,7 +859,7 @@ void SelectOneState() {
     const auto order3 = s3->approval.transaction_order;
     ps3.reset();       // the engine session ends: it rolls its transaction back and drops the receipt
     Disconnect(*s3);   // the loop ends the session (S4e): the transaction is rolled back in the file
-    const auto word = off::ReadFile(served.path, served.facts->page_size_bytes).words.at(order3).state;
+    const auto word = off::ReadInventory(served.path, served.facts->page_size_bytes).words.at(order3).state;
     Check(word != pgs::TipStateCode::active, "the disconnected session's transaction is no longer active in the file");
     prepared.dispatch.engine_session = nullptr;
     const FileEvidence before;
@@ -855,7 +875,7 @@ void SelectOneState() {
   ps2.reset();
   Disconnect(*s1);
   Disconnect(*s2);
-  const auto end = off::ReadFile(served.path, served.facts->page_size_bytes);
+  const auto end = off::ReadInventory(served.path, served.facts->page_size_bytes);
   Check(end.words.at(order1).state != pgs::TipStateCode::active && end.words.at(s2->approval.transaction_order).state != pgs::TipStateCode::active,
         "both transactions are ended by the disconnects");
 }
