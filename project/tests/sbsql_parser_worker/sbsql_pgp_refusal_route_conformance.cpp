@@ -267,16 +267,50 @@ void CheckRegistry() {
 }
 
 void CheckPgcrypto() {
-  // pgcrypto is the package capability spelling with NO scalar result (spec: invocation always refuses). Through the parser it has no scalar route.
-  const auto artifacts = RunPipeline("SELECT pgcrypto() AS out_value;");
-  std::string codes;
-  for (const auto& d : artifacts.envelope.messages.diagnostics) codes += d.code + " ";
-  for (const auto& d : artifacts.bound.messages.diagnostics) codes += d.code + " ";
-  Check(!artifacts.envelope.messages.diagnostics.empty() || !artifacts.bound.messages.diagnostics.empty() || !artifacts.verifier.admitted,
-        "pgcrypto(): the parser pipeline refuses it before any engine call");
-  Check(!Contains(artifacts.envelope.payload, "sb.crypto.pgcrypto\""), "pgcrypto(): no lowered function call to sb.crypto.pgcrypto reaches an engine envelope");
-  Check(!HasScalarProjectionDemand(BuildCst("SELECT pgcrypto();")), "pgcrypto(): no scalar projection route");
-  std::cout << "pgcrypto() parser diagnostics: " << codes << " verifier_admitted=" << artifacts.verifier.admitted << '\n';
+  // pgcrypto is the package capability spelling with NO scalar result (spec: invocation always refuses with CRYPTO.PACKAGE.NOT_CALLABLE).
+  // OLD (to 2026-12-20): the parser had no scalar route for it and the user saw the generic SBSQL.QUERY.PROJECTION_INVALID (this check only required "some refusal").
+  // NEW (owner 2026-12-21; lowering.cpp SB_PGCRYPTO_PACKAGE_PROBE): the call spelling is answered at the parser as the capability probe, with the engine's own code
+  // CRYPTO.PACKAGE.NOT_CALLABLE and the function name as DATA; the arguments are never evaluated. Every argument shape gives the SAME specific outcome.
+  const std::vector<std::string> shapes = {
+      "SELECT pgcrypto() AS out_value;", "SELECT pgcrypto();", "SELECT pgcrypto('" + kPlain + "');", "SELECT pgcrypto(NULL);", "SELECT PGCRYPTO(1, 2, 3);",
+      "SELECT \"pgcrypto\"();", "SELECT pgcrypto (X'" + Hex(kKey) + "') AS k;", "SELECT upper(pgcrypto());", "SELECT 1, pgcrypto();", "SELECT pgcrypto(pgcrypto());"};
+  for (const auto& sql : shapes) {
+    const auto artifacts = RunPipeline(sql);
+    std::string codes;
+    for (const auto& d : artifacts.envelope.messages.diagnostics) codes += d.code + " ";
+    for (const auto& d : artifacts.bound.messages.diagnostics) codes += d.code + " ";
+    const std::string label = "`" + sql.substr(0, 40) + "`";
+    std::size_t probe = 0;
+    std::size_t found_at = 0;
+    for (std::size_t i = 0; i < artifacts.envelope.messages.diagnostics.size(); ++i)
+      if (artifacts.envelope.messages.diagnostics[i].code == "CRYPTO.PACKAGE.NOT_CALLABLE") { ++probe; found_at = i; }
+    Check(probe == 1, label + ": exactly one CRYPTO.PACKAGE.NOT_CALLABLE reaches the user: " + codes);
+    Check(codes.find("SBSQL.QUERY.PROJECTION_INVALID") == std::string::npos, label + ": the generic SBSQL.QUERY.PROJECTION_INVALID is NOT what the user sees: " + codes);
+    if (probe == 1) {
+      const auto& found = artifacts.envelope.messages.diagnostics[found_at];
+      Check(found.fields.size() == 1 && found.fields.front().name == "function" && found.fields.front().value == "pgcrypto",
+            label + ": the function name rides as DATA in the one field `function`");
+      Check(found.severity == "ERROR", label + ": it is an error");
+    }
+    Check(!artifacts.verifier.admitted, label + ": the verifier does not admit the statement");
+    Check(!Contains(artifacts.envelope.payload, "sb.crypto.pgcrypto\""), label + ": no lowered function call to sb.crypto.pgcrypto reaches an engine envelope");
+    Check(!artifacts.envelope.parser_executes_sql, label + ": the parser executes nothing");
+    // argument material is never echoed
+    for (const auto& d : artifacts.envelope.messages.diagnostics) {
+      Check(!Contains(d.message, kPlain) && !Contains(d.message, Hex(kKey)), label + ": no argument material in the diagnostic message");
+      for (const auto& f : d.fields) Check(!Contains(f.value, kPlain) && !Contains(f.value, Hex(kKey)), label + ": no argument material in a diagnostic field");
+    }
+  }
+  // spellings that are NOT the call stay as they were: a qualified name, and the name used where a table function would be
+  for (const std::string sql : {"SELECT x.pgcrypto();", "SELECT 1 FROM pgcrypto();", "SELECT pgcrypto;"}) {
+    const auto artifacts = RunPipeline(sql);
+    bool probe = false;
+    for (const auto& d : artifacts.envelope.messages.diagnostics) probe = probe || d.code == "CRYPTO.PACKAGE.NOT_CALLABLE";
+    Check(!probe, "`" + sql + "` is not the pgcrypto call spelling and does not claim the capability probe");
+  }
+  Check(!HasScalarProjectionDemand(BuildCst("SELECT pgcrypto();")), "pgcrypto(): still no scalar projection route (the probe is not a scalar)");
+  // the other crypto functions still lower as scalar calls (the probe branch is specific to pgcrypto)
+  Check(RunPipeline("SELECT gen_random_uuid();").verifier.admitted, "gen_random_uuid() still lowers and verifies (the pgcrypto probe does not capture other crypto functions)");
 }
 
 }  // namespace

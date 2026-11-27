@@ -1227,12 +1227,16 @@ int ReceiptState(const std::string& state, const Offline& offline) {
         const auto& pl = accepted.payload;
         std::size_t ext_at = 0;
         for (std::size_t i = 43000; i + 4 < pl.size() && i < 50000; ++i)
-          if (pl[i] == 75 && pl[i + 1] == 0 && pl[i + 2] == 0 && pl[i + 3] == 0) { ext_at = i; break; }
-        Check(ext_at != 0, "a native session's V11 receipt is announced as wire extension 75");
+          if (pl[i] == 76 && pl[i + 1] == 0 && pl[i + 2] == 0 && pl[i + 3] == 0) { ext_at = i; break; }
+        // OLD (to 2026-12-20): the native receipt was announced as wire extension 75 (the pin here was `pl[i] == 75`). NEW (owner 2026-12-21): 76. The layout is
+        // identical; the value now also IS the typed-UUID-diagnostic-field capability (wire/message_vector_typed_uuid_registry.hpp).
+        Check(ext_at != 0, "a native session's V11 receipt is announced as wire extension 76");
         std::string why;
         scratchbird::parser::ipc::ParserStatementContext parsed;
         Check(scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(pl, &parsed),
-              "the parser's V11 decoder ADMITS the native payload (extension 75)");
+              "the parser's V11 decoder ADMITS the native payload (extension 76)");
+        Check(parsed.preliminary_native_variant && parsed.typed_uuid_diagnostics_negotiated && parsed.preliminary_extension_version == 26,
+              "extension 76 is the native variant AND negotiates the typed UUID diagnostic fields in the decoded context");
         Check(parsed.preliminary_parameter_executor_availability_generation == 0 && parsed.preliminary_transaction_commit_executor_availability_generation == 0 &&
                   parsed.preliminary_transaction_rollback_executor_availability_generation == 0 &&
                   parsed.preliminary_transaction_isolation_profile_generation != 0 && parsed.preliminary_transaction_executor_availability_generation != 0 &&
@@ -1253,10 +1257,45 @@ int ReceiptState(const std::string& state, const Offline& offline) {
           scratchbird::parser::ipc::ParserStatementContext torn_context;
           Check(!scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(torn, &torn_context),
                 "a native commit block with an out-of-range mode is refused");
+          // OLD (to 2026-12-20): `unknown[ext_at] = 76` and "an unknown extension (76) is refused" (76 was the first value past the native 75).
+          // NEW (owner 2026-12-21): 76 is the native receipt, 75 the native receipt WITHOUT typed UUID fields, and the first unknown value is 77.
           auto unknown = pl;
-          unknown[ext_at] = 76;
+          unknown[ext_at] = 77;
           scratchbird::parser::ipc::ParserStatementContext unknown_context;
-          Check(!scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(unknown, &unknown_context), "an unknown extension (76) is refused");
+          Check(!scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(unknown, &unknown_context), "an unknown extension (77) is refused");
+          auto without_typed = pl;
+          without_typed[ext_at] = 75;
+          scratchbird::parser::ipc::ParserStatementContext without_typed_context;
+          Check(scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(without_typed, &without_typed_context) &&
+                    without_typed_context.preliminary_native_variant && !without_typed_context.typed_uuid_diagnostics_negotiated &&
+                    without_typed_context.preliminary_diagnostic_identities.size() == parsed.preliminary_diagnostic_identities.size(),
+                "the SAME bytes as extension 75 decode as a native receipt that did NOT negotiate typed UUID fields (decoded values identical)");
+          // The capability chain end to end: a type 5 typed UUID field built by the server's own encoder for a negotiating peer decodes under the 76 context
+          // and is REFUSED (typed_uuid_not_negotiated) under the 75 context, the SAME receipt bytes apart from the one extension value.
+          {
+            srv::ServerDiagnostic typed;
+            typed.code = "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED";
+            typed.message_key = "sblr.executor.native_not_implemented";
+            typed.safe_message = "refused";
+            typed.typed_uuid_fields = {{"availability_table_uuid", {0x01, 0x9e, 0x5a, 0x11, 0x22, 0x33, 0x70, 0x44, 0x80, 0x55, 1, 1, 1, 1, 1, 1}},
+                                       {"database_uuid", {0x01, 0x9e, 0x5a, 0x11, 0x22, 0x33, 0x70, 0x44, 0x80, 0x55, 2, 2, 2, 2, 2, 2}}};
+            const auto request = sbps::MakeUuidV7Bytes();
+            const auto wire = srv::sbps::EncodeMessageVectorSet({typed}, request, true);
+            std::string reason_76, reason_75;
+            scratchbird::parser::ipc::MessageVectorSet messages_76, messages_75;
+            Check(scratchbird::parser::ipc::DecodeTypedMessageVectorForTest(wire, request, parsed.typed_uuid_diagnostics_negotiated, &reason_76, &messages_76),
+                  "a type 5 field decodes under a session that negotiated extension 76: " + reason_76);
+            Check(!scratchbird::parser::ipc::DecodeTypedMessageVectorForTest(wire, request, without_typed_context.typed_uuid_diagnostics_negotiated, &reason_75, &messages_75) &&
+                      reason_75 == "typed_uuid_not_negotiated",
+                  "the SAME type 5 field is refused (typed_uuid_not_negotiated) under a session that negotiated extension 75: " + reason_75);
+          }
+          for (const std::uint16_t refused_value : {std::uint16_t{0}, std::uint16_t{73}, std::uint16_t{78}, std::uint16_t{255}}) {
+            auto other = pl;
+            other[ext_at] = static_cast<std::uint8_t>(refused_value);
+            scratchbird::parser::ipc::ParserStatementContext other_context;
+            Check(!scratchbird::parser::ipc::DecodeAcquireStatementContextResultPayloadV11ForTest(other, &other_context),
+                  "extension " + std::to_string(refused_value) + " is refused (only 74 legacy-strict, 75 and 76 native are known)");
+          }
         }
       }
       if (accepted.accepted && accepted.payload.size() >= 19) {

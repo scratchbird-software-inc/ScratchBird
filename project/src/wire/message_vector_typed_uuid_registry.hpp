@@ -6,8 +6,8 @@
 // The SBMV v1 registered value type 5 (system_uuid: 16 bytes, non-nil RFC-variant UUIDv7; Core registries/message-vector-wire-v1.yaml, and
 // wire/message_vector_value_codec.hpp ValueType::system_uuid) as a message-vector FIELD of the SBPS typed execute diagnostic trailer. The text TLV
 // (type 1) stays what it was: IsPublicDiagnosticFieldAllowed still refuses a uuid-named text field. A typed UUID field is carried ONLY for a
-// (diagnostic code, field name) pair registered here, ONLY to a peer that is a NATIVE session (the receipt announced as wire extension 75, the
-// native admission), and is never text. The server encoder (server/sbps.cpp) and the parser decoder (parser_server_client.cpp) read this ONE table.
+// (diagnostic code, field name) pair registered here, ONLY to a peer that is a NATIVE session (the receipt announced as wire extension 76, the
+// native admission; see kNativeReceiptWireExtension), and is never text. The server encoder (server/sbps.cpp) and the parser decoder (parser_server_client.cpp) read this ONE table.
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +16,24 @@
 namespace scratchbird::wire::message_vector {
 
 inline constexpr std::uint16_t kTypedUuidFieldTypeCode = 5;  // ValueType::system_uuid
+
+// The receipt wire extension IS the capability (owner 2026-12-21; OLD: capability = "native session", extension 75). One layout, three values, no
+// separate negotiation: the SERVER announces the value from its session record, the PARSER decoder accepts the values it knows and refuses any other.
+//   74 = legacy session receipt (strict legacy checks, no typed UUID fields)
+//   75 = native receipt, same layout as 74 with generation 0 admitted as "not installed natively" (S4h part 1); NO typed UUID diagnostic fields
+//   76 = the 75 layout, byte for byte, plus the typed binary UUID diagnostic fields: a peer that received 76 knows type 5 and negotiated it
+// Native admission is unreleased: no released binary announces 75, so a build's server emits only 74 or 76. 75 stays a decodable native value (and a
+// session record may carry it) so that "a session that negotiated 75 is never sent type 5, and a type 5 under 75 is refused" is a testable fact.
+inline constexpr std::uint16_t kLegacyReceiptWireExtension = 74;
+inline constexpr std::uint16_t kNativeReceiptWireExtensionWithoutTypedUuid = 75;
+inline constexpr std::uint16_t kNativeReceiptWireExtension = 76;
+
+[[nodiscard]] constexpr bool ReceiptExtensionIsNative(std::uint16_t extension) noexcept {
+  return extension == kNativeReceiptWireExtensionWithoutTypedUuid || extension == kNativeReceiptWireExtension;
+}
+[[nodiscard]] constexpr bool ReceiptExtensionNegotiatesTypedUuid(std::uint16_t extension) noexcept {
+  return extension >= kNativeReceiptWireExtension && ReceiptExtensionIsNative(extension);
+}
 
 struct TypedUuidFieldRegistration {
   std::string_view diagnostic_code;

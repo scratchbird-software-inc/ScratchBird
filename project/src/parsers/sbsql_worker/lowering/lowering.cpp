@@ -17314,6 +17314,28 @@ ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst,
   return info;
 }
 
+// SEARCH_KEY: SB_PGCRYPTO_PACKAGE_PROBE (owner 2026-12-21). `pgcrypto` is a package/capability spelling, not a scalar function: the spec gives it no result
+// descriptor and no executor, and its invocation ALWAYS refuses with CRYPTO.PACKAGE.NOT_CALLABLE (the same code the engine's function landing zone returns
+// for a direct dispatch of sb.crypto.pgcrypto). The function lowering therefore has no scalar route for it (CanonicalFunctionForScalarProjection returns
+// nothing for a declaration with no result type), and a native database would stop a lowered call at the executor-availability gate with
+// NATIVE_NOT_IMPLEMENTED, which says "not built" about something that is never callable. OLD (to 2026-12-20): the user saw the generic
+// SBSQL.QUERY.PROJECTION_INVALID. NEW: the call spelling `pgcrypto(<anything>)` in a SELECT projection list is answered at the parser as the capability probe
+// the spec describes, with the engine's own code; the arguments are never parsed, evaluated or forwarded, and the function name rides as DATA (field
+// `function`). Matches an unquoted `pgcrypto` (any case) or the quoted exact `"pgcrypto"`, followed by `(`, not qualified by a preceding `.`, before the first
+// FROM of the statement.
+bool IsPgcryptoPackageProbeProjection(const CstDocument& cst) {
+  const auto tokens = MeaningfulTokens(cst);
+  if (tokens.size() < 3 || !TokenTextEquals(tokens, 0, "SELECT")) return false;
+  for (std::size_t at = 1; at + 1 < tokens.size(); ++at) {
+    if (TokenTextEquals(tokens, at, "FROM")) return false;
+    const bool spelled = tokens[at]->quoted ? tokens[at]->text == "pgcrypto" : TokenTextEquals(tokens, at, "pgcrypto");
+    if (!spelled || tokens[at + 1]->text != "(") continue;
+    if (tokens[at - 1]->text == ".") continue;
+    return true;
+  }
+  return false;
+}
+
 bool IsNonCallablePolicyBlockedDiagnosticProjection(const CstDocument& cst) {
   const auto tokens = MeaningfulTokens(cst);
   if (tokens.size() < 4 || !TokenTextEquals(tokens, 0, "SELECT")) return false;
@@ -44949,6 +44971,10 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         {{"surface_id", "SBSQL-CE3790BA0486"},
          {"diagnostic_identity", "SBSQL.POLICY_BLOCKED"},
          {"observer_builtin", "sb.scalar.policy_blocked_diagnostic"}});
+  } else if (IsPgcryptoPackageProbeProjection(cst)) {
+    AddVerifierError(&envelope.messages, "CRYPTO.PACKAGE.NOT_CALLABLE",
+                     "pgcrypto is a package capability, not a scalar function",
+                     {{"function", "pgcrypto"}});
   } else if (scalar_projection.active && !scalar_projection.valid) {
     if (!scalar_projection.null_context_occurrence.empty()) {
       AddVerifierError(&envelope.messages, "DATATYPE.CONTEXT_REQUIRED",

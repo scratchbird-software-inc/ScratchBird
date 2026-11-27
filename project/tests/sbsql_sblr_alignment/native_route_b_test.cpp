@@ -1221,6 +1221,35 @@ void TypedUuidState() {
     Check(found != registry.sessions_by_uuid.end() && found->second.native_session_approved, "(tu) the pipeline's session is a native session");
     Check(found != registry.sessions_by_uuid.end() && srv::PeerAcceptsTypedUuidDiagnosticFieldsForTest(found->second), "(tu) a native session negotiated typed UUID fields");
     Check(!legacy.native_session_approved && !srv::PeerAcceptsTypedUuidDiagnosticFieldsForTest(legacy), "(tu) a legacy session did NOT negotiate them");
+    // OLD (to 2026-12-20): the capability was `native_session_approved` alone (receipt extension 75). NEW (owner 2026-12-21): the capability is the receipt extension
+    // the session announced: 76 negotiates the typed UUID fields, a native session that announced 75 did NOT, and no other value does.
+    Check(found != registry.sessions_by_uuid.end() && found->second.native_receipt_wire_extension == 76, "(tu) the pipeline's native session announced receipt extension 76");
+    for (const auto& [extension, negotiates] : std::vector<std::pair<std::uint16_t, bool>>{{76, true}, {75, false}, {74, false}, {77, false}, {0, false}}) {
+      srv::ServerSessionRecord native;
+      native.native_session_approved = true;
+      native.native_receipt_wire_extension = extension;
+      Check(srv::PeerAcceptsTypedUuidDiagnosticFieldsForTest(native) == negotiates,
+            "(tu) a native session that announced extension " + std::to_string(extension) + (negotiates ? " negotiated" : " did NOT negotiate") + " typed UUID fields");
+    }
+    {
+      // a legacy session never negotiates, whatever its (unused) extension field says
+      srv::ServerSessionRecord legacy_with_76;
+      legacy_with_76.native_receipt_wire_extension = 76;
+      Check(!srv::PeerAcceptsTypedUuidDiagnosticFieldsForTest(legacy_with_76), "(tu) a non-native session never negotiates typed UUID fields, even with extension 76 recorded");
+    }
+    // The real pipeline under a session that announced 75: the receipt the parser decodes is the 75 variant (it did not negotiate) and the server sends NO type 5, so
+    // the refusal is the same specific refusal with its text field and carries no binary field; with 76 restored the two identity fields return.
+    if (found != registry.sessions_by_uuid.end()) {
+      found->second.native_receipt_wire_extension = 75;
+      const auto ran75 = RunSql(one, "SELECT 1 + 0", 0);
+      Check(!ran75.result.accepted && FirstCode(ran75.result) == "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED" && FieldNamed(ran75.result, "opcode_code") == "1025" &&
+                all_binary(ran75.result) == 0,
+            "(tu) under a session that announced extension 75 the gate refusal arrives without any binary identity field: " + AllCodes(ran75.result));
+      found->second.native_receipt_wire_extension = 76;
+      const auto ran76 = RunSql(one, "SELECT 1 + 0", 0);
+      Check(!ran76.result.accepted && binary_of(ran76.result, "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED").size() == 2,
+            "(tu) with extension 76 restored the same refusal carries the two binary identity fields again: " + AllCodes(ran76.result));
+    }
   }
 
   // ---- (3) THE ENCODER: typed fields only to a negotiating peer, only registered, never text -------------------------------------------------------------------
@@ -1398,11 +1427,20 @@ void PgpRefusalState() {
   }
   CheckUntouched(group_before, "the pgp_* statements on a native database");
   {
-    const auto ran = RunSql(one, "SELECT pgcrypto()", 2);
-    Check(!ran.result.accepted && FirstCode(ran.result) == "SBSQL.QUERY.PROJECTION_INVALID" && ran.recorded.empty() && ran.server_diagnostics.empty(),
-          "(pgp) `SELECT pgcrypto()` is refused by the PARSER with SBSQL.QUERY.PROJECTION_INVALID (no scalar route; the engine is never asked): " + AllCodes(ran.result));
-    Check(AllCodes(ran.result).find("CRYPTO.PACKAGE.NOT_CALLABLE") == std::string::npos,
-          "(pgp) the user does NOT see CRYPTO.PACKAGE.NOT_CALLABLE for pgcrypto through the parser (that code is the engine's, reachable only by a direct function dispatch)");
+    // OLD (to 2026-12-20): `SELECT pgcrypto()` was refused by the PARSER with the generic SBSQL.QUERY.PROJECTION_INVALID (no scalar route) and the test asserted the user
+    // did NOT see CRYPTO.PACKAGE.NOT_CALLABLE. NEW (owner 2026-12-21, lowering.cpp SB_PGCRYPTO_PACKAGE_PROBE): the parser answers the call spelling as the package capability
+    // probe the spec describes, with the engine's own code CRYPTO.PACKAGE.NOT_CALLABLE and the function name as the data field `function`; the engine is still never asked, so the
+    // answer is the same on a native database as anywhere (a lowered call would have stopped at the opcode-1024 gate with NATIVE_NOT_IMPLEMENTED, which says "not built"
+    // about something that is never callable). Every argument shape gives the same specific outcome.
+    for (const std::string sql : {"SELECT pgcrypto()", "SELECT pgcrypto('abc')", "SELECT pgcrypto(NULL)", "SELECT PGCRYPTO(1, 2)", "SELECT upper(pgcrypto())"}) {
+      const auto ran = RunSql(one, sql, 2);
+      Check(!ran.result.accepted && FirstCode(ran.result) == "CRYPTO.PACKAGE.NOT_CALLABLE" && ran.recorded.empty() && ran.server_diagnostics.empty(),
+            "(pgp) `" + sql + "` is answered by the PARSER with CRYPTO.PACKAGE.NOT_CALLABLE (the capability probe; the engine is never asked): " + AllCodes(ran.result));
+      Check(FieldNamed(ran.result, "function") == "pgcrypto", "(pgp) `" + sql + "` carries the function name as the data field `function`: " + FieldNamed(ran.result, "function"));
+      Check(AllCodes(ran.result).find("SBSQL.QUERY.PROJECTION_INVALID") == std::string::npos && AllCodes(ran.result).find("NATIVE_NOT_IMPLEMENTED") == std::string::npos,
+            "(pgp) `" + sql + "`: neither the generic projection refusal nor the native not-built refusal reaches the user: " + AllCodes(ran.result));
+      Check(one.order() == order1, "(pgp) `" + sql + "`: the transaction is unchanged");
+    }
   }
   // the session is still usable after every refusal
   {

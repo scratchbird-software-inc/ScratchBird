@@ -174,6 +174,9 @@ struct ServerSessionRecord {
   // attachment and first transaction exist), and the ledger identities the approval issued. Process-local; never serialized.
   std::weak_ptr<NativeDatabaseLoop> native_loop;
   bool native_session_approved = false;
+  // The wire extension this native session's V11 receipt announces (wire/message_vector_typed_uuid_registry.hpp): 76 = native + typed UUID diagnostic fields,
+  // 75 = native without them. The receipt and the typed-field gate both read this one value. Meaningful only when native_session_approved.
+  std::uint16_t native_receipt_wire_extension = 76;
   std::array<std::uint8_t, 16> ledger_connection_uuid{};  // the CONNECTION record's UUID (the server-issued channel UUID)
   scratchbird::core::platform::Uuid database_uuid;
   std::string resource_seed_pack_root;

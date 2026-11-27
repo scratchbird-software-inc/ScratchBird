@@ -951,7 +951,7 @@ std::vector<std::uint8_t> EncodeMessageVectorSet(
   return EncodeMessageVectorSet(diagnostics, request_uuid, false);
 }
 
-// SEARCH_KEY: SB_SBMV_TYPED_UUID_FIELDS. `typed_uuid_peer` is true ONLY when the peer is a NATIVE session (the receipt announced as wire extension 75):
+// SEARCH_KEY: SB_SBMV_TYPED_UUID_FIELDS. `typed_uuid_peer` is true ONLY when the peer is a NATIVE session (the receipt announced as wire extension 76):
 // then, and only then, a diagnostic's typed_uuid_fields are written as SBMV v1 registered value type 5 (system_uuid, 16 raw bytes) TLVs after its text
 // fields. A field is written only if (code, name) is in the registry, its 16 bytes are a non-nil UUIDv7, and its name was not already written; anything
 // else is dropped (never converted to text). With `typed_uuid_peer` false the bytes are exactly those of the two-argument overload.

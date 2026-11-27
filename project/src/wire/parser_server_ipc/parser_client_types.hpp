@@ -202,8 +202,11 @@ struct ParserStatementContext {
   std::uint64_t preliminary_maximum_mga_relation_decoded_bytes_per_pass{0};
   scratchbird::core::platform::Uuid preliminary_mga_snapshot_uuid;
   std::uint16_t preliminary_extension_version{0};
-  // S4h part 1: true when the receipt arrived as the NATIVE V11 variant (wire extension 75): generation 0 means "not installed natively".
+  // S4h part 1: true when the receipt arrived as the NATIVE V11 variant (wire extension 75 or 76): generation 0 means "not installed natively".
   bool preliminary_native_variant{false};
+  // True only when the receipt announced wire extension 76: the peer knows and negotiated the typed binary UUID diagnostic fields (SBMV type 5).
+  // A native receipt of 75 leaves it false and a type 5 field is then refused (typed_uuid_not_negotiated).
+  bool typed_uuid_diagnostics_negotiated{false};
   scratchbird::core::platform::Uuid preliminary_prepared_statement_uuid;
   std::uint64_t preliminary_prepared_generation{0};
   scratchbird::core::platform::Uuid preliminary_batch_uuid;

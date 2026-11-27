@@ -5798,8 +5798,10 @@ std::vector<std::pair<std::string, std::array<std::uint8_t, 16>>> RegisteredEngi
   return forwarded;
 }
 
-// The peer negotiated typed UUID diagnostic fields iff its session is a NATIVE session (the receipt announced as wire extension 75, the native admission).
-bool PeerAcceptsTypedUuidDiagnosticFields(const ServerSessionRecord& session) { return session.native_session_approved; }
+// The peer negotiated typed UUID diagnostic fields iff its session is a NATIVE session (the receipt announced as wire extension 76; a native session that announced 75 did not negotiate them).
+bool PeerAcceptsTypedUuidDiagnosticFields(const ServerSessionRecord& session) {
+  return session.native_session_approved && wire::message_vector::ReceiptExtensionNegotiatesTypedUuid(session.native_receipt_wire_extension);
+}
 
 struct PublicAbiDispatchResult {
   bool attempted = false;

@@ -2572,12 +2572,13 @@ bool DecodeAcquireStatementContextPayloadV11(
       GetU16(payload, offset + 2) != 0) {
     return false;
   }
-  // SB_NATIVE_V11_ADMISSION (S4h part 1, controller Q1 = (a)): wire extension 75 is the NATIVE variant of extension 74: the byte layout is
+  // SB_NATIVE_V11_ADMISSION (S4h part 1, controller Q1 = (a)): wire extensions 75 and 76 are the NATIVE variant of extension 74 (76 also negotiates the typed UUID diagnostic fields): the byte layout is
   // identical, only a native receipt emits it, and it allows generation 0 ("not installed natively", S4f) in the executor-availability fields
   // and in the commit/rollback authority blocks (all of mode/scope/wait/deadline then 0). The values are kept EXACTLY as the receipt carries
   // them so a consumer refuses at use. Extension 74 and every older version keep the strict legacy checks, byte for byte.
   const auto raw_wire_extension_version = GetU16(payload, offset);
-  const bool native_variant = raw_wire_extension_version == 75;
+  const bool native_variant = scratchbird::wire::message_vector::ReceiptExtensionIsNative(raw_wire_extension_version);
+  const bool typed_uuid_negotiated_by_extension = scratchbird::wire::message_vector::ReceiptExtensionNegotiatesTypedUuid(raw_wire_extension_version);
   const auto wire_extension_version = native_variant ? std::uint16_t{74} : raw_wire_extension_version;
   const auto extension_version =
       wire_extension_version >= 27 && wire_extension_version <= 74
@@ -2615,6 +2616,7 @@ bool DecodeAcquireStatementContextPayloadV11(
   context->preliminary_mga_snapshot_uuid = scratchbird::core::platform::Uuid{mga_snapshot_uuid};
   context->preliminary_extension_version = extension_version;
   context->preliminary_native_variant = native_variant;
+  context->typed_uuid_diagnostics_negotiated = typed_uuid_negotiated_by_extension;
   context->preliminary_prepared_statement_uuid = {};
   context->preliminary_prepared_generation = 0;
   context->preliminary_batch_uuid = {};
@@ -3169,7 +3171,7 @@ struct DecodedMessageVector {
 };
 
 // SEARCH_KEY: SB_SBMV_TYPED_UUID_FIELDS. `typed_uuid_negotiated` is true ONLY for a response on a session whose receipt was the NATIVE variant (wire extension
-// 75). OLD: type_code 1 (text) was the only TLV type; any other type failed the whole vector. NEW: in the FIELD section only, and only when negotiated, a
+// 76; 75 is a native receipt WITHOUT the capability). OLD: type_code 1 (text) was the only TLV type; any other type failed the whole vector. NEW: in the FIELD section only, and only when negotiated, a
 // type 5 (SBMV v1 registered system_uuid) TLV is read as a binary_uuid Field: exactly 16 bytes, a non-nil UUIDv7, a name registered for the record's code
 // (wire/message_vector_typed_uuid_registry.hpp), not a repeat of any earlier field name. Anything else fails the vector; `refusal_reason` (optional)
 // names the first cause as a token. A text TLV with a uuid-named field is still refused by IsPublicDiagnosticFieldAllowed, exactly as before.
@@ -7633,7 +7635,7 @@ ServerExecutionResult SbpsClient::ExecuteCanonicalSblrWithDataPacket(
     return result;
   }
   if (!DecodeExecuteResultPayloadV2(response, &result, &messages,
-                                    statement_context.preliminary_native_variant)) {
+                                    statement_context.typed_uuid_diagnostics_negotiated)) {
     ProjectV2ResponseOutcomeUnknown(
         &messages, &result, "malformed_canonical_response");
   }

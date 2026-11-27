@@ -1,5 +1,6 @@
 #include "engine/sblr/sblr_opcode_registry.hpp"
 #include "wire/binary_status_packet.hpp"
+#include "wire/message_vector_typed_uuid_registry.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -3867,11 +3868,12 @@ SessionOperationResult HandleAcquireStatementContext(
     // Unified preliminary bootstrap extension v74.  Every field, including
     // the decoded MGA relation per-pass ceiling, comes only from the immutable
     // engine receipt view.
-    // SB_NATIVE_V11_ADMISSION (S4h part 1, controller Q1 = (a)): a NATIVE session's receipt is announced as wire extension 75, the same
+    // SB_NATIVE_V11_ADMISSION (S4h part 1, controller Q1 = (a)): a NATIVE session's receipt is announced as wire extension 76 (75 before
+    // the typed UUID diagnostic fields, owner 2026-12-21: the extension value IS the capability), the same
     // layout as 74 with generation 0 admitted as "not installed natively" (S4f) in the executor-availability fields and the
     // commit/rollback blocks; the values below are the receipt's, unchanged. A LEGACY session keeps extension 74 and the parser's strict
-    // checks. A parser build that does not know 75 refuses the payload (fail closed).
-    PutU16(&result.payload, session.native_session_approved ? 75 : 74);
+    // checks. A parser build that does not know the announced value refuses the payload (fail closed).
+    PutU16(&result.payload, session.native_session_approved ? session.native_receipt_wire_extension : scratchbird::wire::message_vector::kLegacyReceiptWireExtension);
     PutU16(&result.payload, 0);
     PutUuid(&result.payload, (view.receipt_uuid.bytes));
     PutUuid(&result.payload,
@@ -5998,6 +6000,7 @@ std::optional<NativeApprovalRefusal> ApproveNativeSessionOnLoop(ServerSessionReg
   session->ledger_connection_uuid = request.connection_uuid.bytes;
   session->native_loop = loop;
   session->native_session_approved = true;
+  session->native_receipt_wire_extension = scratchbird::wire::message_vector::kNativeReceiptWireExtension;
   ServerTransactionState transaction;
   transaction.local_transaction_id = opened.begun_order;
   transaction.snapshot_visible_through_local_transaction_id = 0;  // the native snapshot value is derived with the receipt (S4f)

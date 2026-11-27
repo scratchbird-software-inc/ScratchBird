@@ -349,7 +349,7 @@ std::vector<std::uint8_t> EncodeCanonicalExecuteRequestPayload(
     const std::vector<std::uint8_t>& data_packet,
     bool cursor_requested,
     std::uint32_t* request_schema_id);
-// typed_uuid_negotiated: true only for a session whose receipt was the NATIVE variant (wire extension 75); see SB_SBMV_TYPED_UUID_FIELDS in the .cpp.
+// typed_uuid_negotiated: true only for a session whose receipt was the NATIVE variant (wire extension 76); see SB_SBMV_TYPED_UUID_FIELDS in the .cpp.
 bool DecodeCanonicalExecuteResultPayload(
     const std::vector<std::uint8_t>& payload,
     const std::array<std::uint8_t, 16>& request_uuid,

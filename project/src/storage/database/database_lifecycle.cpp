@@ -1439,7 +1439,59 @@ bool IsSafePackRelativePath(const std::string& rel_path) {
   return true;
 }
 
-bool ExtractStringField(const std::string& object, const std::string& key, std::string* value) {
+// ---- policy-pack field scanners --------------------------------------------------------------------------------
+// The pack readers below used to build a std::regex per field per object ("key" \s* : \s* value). Compiling a
+// std::regex costs far more than the match; a policy-pack load runs hundreds of these per load, and the loader runs once
+// per create/assemble. These scanners accept exactly the language the regexes accepted (leftmost match, ECMAScript \s =
+// space \t \n \v \f \r) without compiling anything and without heap allocation beyond the returned value. A key that is
+// not a plain [A-Za-z0-9_] word (none is passed today) is routed to the original regex path so the pattern text keeps
+// its old meaning for any such caller.
+bool IsPolicyJsonSpace(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
+}
+
+bool IsPlainPolicyJsonKey(const std::string& key) {
+  for (const char c : key) {
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return false;
+  }
+  return true;
+}
+
+// Next occurrence of "key" \s* : at or after `from`. On success *token_at is the opening quote, *colon_end the
+// position just past the colon.
+bool NextPolicyJsonKeyColon(const std::string& object, const std::string& token, std::size_t from,
+                            std::size_t* token_at, std::size_t* colon_end) {
+  for (std::size_t at = object.find(token, from); at != std::string::npos; at = object.find(token, at + 1)) {
+    std::size_t cursor = at + token.size();
+    while (cursor < object.size() && IsPolicyJsonSpace(object[cursor])) ++cursor;
+    if (cursor < object.size() && object[cursor] == ':') {
+      *token_at = at;
+      *colon_end = cursor + 1;
+      return true;
+    }
+  }
+  return false;
+}
+
+std::size_t SkipPolicyJsonSpace(const std::string& object, std::size_t cursor) {
+  while (cursor < object.size() && IsPolicyJsonSpace(object[cursor])) ++cursor;
+  return cursor;
+}
+
+// Calls `value_at(value_begin)` for each "key" \s* : \s* candidate in order until it returns true (the regex
+// engine's retry at the next start position when the value does not match).
+template <typename ValueAt>
+bool ScanPolicyJsonKeyValue(const std::string& object, const std::string& key, ValueAt value_at) {
+  const std::string token = "\"" + key + "\"";
+  std::size_t from = 0, token_at = 0, colon_end = 0;
+  while (NextPolicyJsonKeyColon(object, token, from, &token_at, &colon_end)) {
+    if (value_at(SkipPolicyJsonSpace(object, colon_end))) return true;
+    from = token_at + 1;
+  }
+  return false;
+}
+
+bool ExtractStringFieldRegex(const std::string& object, const std::string& key, std::string* value) {
   const std::regex pattern("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
   std::smatch match;
   if (!std::regex_search(object, match, pattern)) {
@@ -1449,10 +1501,21 @@ bool ExtractStringField(const std::string& object, const std::string& key, std::
   return true;
 }
 
+bool ExtractStringField(const std::string& object, const std::string& key, std::string* value) {
+  if (!IsPlainPolicyJsonKey(key)) return ExtractStringFieldRegex(object, key, value);
+  return ScanPolicyJsonKeyValue(object, key, [&](std::size_t at) {
+    if (at >= object.size() || object[at] != '"') return false;
+    const auto close = object.find('"', at + 1);
+    if (close == std::string::npos) return false;
+    value->assign(object, at + 1, close - at - 1);
+    return true;
+  });
+}
+
 // Optional is not synonymous with malformed. Reject duplicate keys and present
 // non-string values rather than silently converting either into absence.
-bool ExtractOptionalStringField(const std::string& object, const std::string& key,
-                                std::string* value) {
+bool ExtractOptionalStringFieldRegex(const std::string& object, const std::string& key,
+                                     std::string* value) {
   const std::regex key_pattern("\"" + key + "\"\\s*:");
   const auto first = std::sregex_iterator(object.begin(), object.end(), key_pattern);
   if (first == std::sregex_iterator()) { value->clear(); return true; }
@@ -1461,7 +1524,18 @@ bool ExtractOptionalStringField(const std::string& object, const std::string& ke
   return ExtractStringField(object, key, value);
 }
 
-bool ExtractU32Field(const std::string& object, const std::string& key, u32* value) {
+bool ExtractOptionalStringField(const std::string& object, const std::string& key,
+                                std::string* value) {
+  if (!IsPlainPolicyJsonKey(key)) return ExtractOptionalStringFieldRegex(object, key, value);
+  const std::string token = "\"" + key + "\"";
+  std::size_t token_at = 0, colon_end = 0;
+  if (!NextPolicyJsonKeyColon(object, token, 0, &token_at, &colon_end)) { value->clear(); return true; }
+  std::size_t second_at = 0, second_end = 0;
+  if (NextPolicyJsonKeyColon(object, token, colon_end, &second_at, &second_end)) return false;
+  return ExtractStringField(object, key, value);
+}
+
+bool ExtractU32FieldRegex(const std::string& object, const std::string& key, u32* value) {
   const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
   std::smatch match;
   if (!std::regex_search(object, match, pattern)) {
@@ -1471,7 +1545,26 @@ bool ExtractU32Field(const std::string& object, const std::string& key, u32* val
   return true;
 }
 
-bool ExtractBoolField(const std::string& object, const std::string& key, bool* value) {
+// The decimal digit run starting at `at`; empty when there is none.
+std::string PolicyJsonDigitRun(const std::string& object, std::size_t at) {
+  std::size_t end = at;
+  while (end < object.size() && object[end] >= '0' && object[end] <= '9') ++end;
+  return object.substr(at, end - at);
+}
+
+bool ExtractU32Field(const std::string& object, const std::string& key, u32* value) {
+  if (!IsPlainPolicyJsonKey(key)) return ExtractU32FieldRegex(object, key, value);
+  std::string digits;
+  const bool found = ScanPolicyJsonKeyValue(object, key, [&](std::size_t at) {
+    digits = PolicyJsonDigitRun(object, at);
+    return !digits.empty();
+  });
+  if (!found) return false;
+  *value = static_cast<u32>(std::stoul(digits));
+  return true;
+}
+
+bool ExtractBoolFieldRegex(const std::string& object, const std::string& key, bool* value) {
   const std::regex pattern("\"" + key + "\"\\s*:\\s*(true|false)");
   std::smatch match;
   if (!std::regex_search(object, match, pattern)) {
@@ -1481,7 +1574,20 @@ bool ExtractBoolField(const std::string& object, const std::string& key, bool* v
   return true;
 }
 
-bool ExtractU64Field(const std::string& object, const std::string& key, u64* value) {
+bool ExtractBoolField(const std::string& object, const std::string& key, bool* value) {
+  if (!IsPlainPolicyJsonKey(key)) return ExtractBoolFieldRegex(object, key, value);
+  bool parsed = false;
+  const bool found = ScanPolicyJsonKeyValue(object, key, [&](std::size_t at) {
+    if (object.compare(at, 4, "true") == 0) { parsed = true; return true; }
+    if (object.compare(at, 5, "false") == 0) { parsed = false; return true; }
+    return false;
+  });
+  if (!found) return false;
+  *value = parsed;
+  return true;
+}
+
+bool ExtractU64FieldRegex(const std::string& object, const std::string& key, u64* value) {
   const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
   std::smatch match;
   if (!std::regex_search(object, match, pattern) || match[1].length() > 20) return false;
@@ -1489,6 +1595,25 @@ bool ExtractU64Field(const std::string& object, const std::string& key, u64* val
     std::size_t used = 0;
     const auto parsed = std::stoull(match[1].str(), &used, 10);
     if (used != static_cast<std::size_t>(match[1].length())) return false;
+    *value = parsed;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool ExtractU64Field(const std::string& object, const std::string& key, u64* value) {
+  if (!IsPlainPolicyJsonKey(key)) return ExtractU64FieldRegex(object, key, value);
+  std::string digits;
+  const bool found = ScanPolicyJsonKeyValue(object, key, [&](std::size_t at) {
+    digits = PolicyJsonDigitRun(object, at);
+    return !digits.empty();
+  });
+  if (!found || digits.size() > 20) return false;
+  try {
+    std::size_t used = 0;
+    const auto parsed = std::stoull(digits, &used, 10);
+    if (used != digits.size()) return false;
     *value = parsed;
     return true;
   } catch (...) {
