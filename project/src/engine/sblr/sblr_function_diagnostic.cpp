@@ -30,6 +30,24 @@ internal_api::EngineApiDiagnostic FunctionDiagnosticToApi(const SblrRuntimeDiagn
       }
     }
   }
+  // CRYPTO.PGP.PROFILE_UNAVAILABLE (owner 2026-11-26, PGP 2 a): the four pgp_* functions are refused until OpenPGP is wired. The ONE public field is
+  // `operation`, a closed token naming the refused function as DATA, taken only when exactly one candidate exists and its value is one of the four exact
+  // tokens. function_id / function_uuid / package_name and every other field stay private; no argument-derived text can cross.
+  if (diagnostic.diagnostic_id == "CRYPTO.PGP.PROFILE_UNAVAILABLE") {
+    const SblrDiagnosticField* operation = nullptr;
+    for (const auto& field : diagnostic.fields) {
+      if (field.key != "operation") continue;
+      if (operation != nullptr) return out;
+      operation = &field;
+    }
+    if (operation != nullptr) {
+      if (const auto* text = std::get_if<std::string>(&operation->value);
+          text != nullptr && (*text == "pgp_sym_encrypt" || *text == "pgp_sym_decrypt" ||
+                              *text == "pgp_pub_encrypt" || *text == "pgp_pub_decrypt")) {
+        out.fields.push_back({operation->key, *text});
+      }
+    }
+  }
   return out;
 }
 }

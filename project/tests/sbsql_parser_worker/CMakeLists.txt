@@ -5575,6 +5575,15 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     LABELS "datatype_null;sbsql_parser_worker;contextual_binding")
   set_tests_properties(sbsql_builtin_function_binary_binding_conformance PROPERTIES
     LABELS "binary_uuid;sbsql_parser_worker;function_binding")
+  # SB_PGP_REFUSAL_ROUTE (2026-12-20; owner 2026-11-26 PGP 2 a / PGP 3 a): the four pgp_* scalar functions are refused by the engine (CRYPTO.PGP.PROFILE_UNAVAILABLE) through the
+  # real parser pipeline + server admission + engine SBLR dispatch in process; the server forwards only the closed `operation` field; no key/plaintext material in any response.
+  add_executable(sbsql_pgp_refusal_route_conformance sbsql_pgp_refusal_route_conformance.cpp)
+  target_compile_features(sbsql_pgp_refusal_route_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_pgp_refusal_route_conformance PRIVATE
+    sbl_sbsql_parser_pipeline sb_server_core sb_engine_sblr sb_engine_functions)
+  add_test(NAME sbsql_pgp_refusal_route_conformance COMMAND sbsql_pgp_refusal_route_conformance)
+  set_tests_properties(sbsql_pgp_refusal_route_conformance PROPERTIES
+    LABELS "sbsql_pgp_refusal_route_conformance;SBSFC-057;binary_uuid;sbsql_parser_worker;function_binding")
   if(TARGET sbl_sbsql_parser_worker_core AND TARGET sb_server AND TARGET public_driver_test_database_seed AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(sbsql_builtin_function_process_client builtin_function_process_client.cpp)
     target_compile_features(sbsql_builtin_function_process_client PRIVATE cxx_std_23)

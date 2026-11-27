@@ -62,12 +62,6 @@ const unsigned char* BytesPtr(const std::vector<std::uint8_t>& bytes) {
   return bytes.empty() ? nullptr : reinterpret_cast<const unsigned char*>(bytes.data());
 }
 
-std::vector<std::uint8_t> RawBytesFromValue(const scratchbird::engine::sblr::SblrValue& value) {
-  if (value.payload_kind == scratchbird::engine::sblr::SblrValuePayloadKind::binary) return value.binary_value;
-  const auto text = ValueAsText(value);
-  return std::vector<std::uint8_t>(text.begin(), text.end());
-}
-
 std::string HexEncode(const std::vector<std::uint8_t>& bytes) {
   static constexpr char kHex[] = "0123456789abcdef";
   std::string out;
@@ -77,58 +71,6 @@ std::string HexEncode(const std::vector<std::uint8_t>& bytes) {
     out.push_back(kHex[byte & 0x0f]);
   }
   return out;
-}
-
-std::string Base64Encode(const std::vector<std::uint8_t>& bytes) {
-  static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  out.reserve(((bytes.size() + 2) / 3) * 4);
-  for (std::size_t i = 0; i < bytes.size(); i += 3) {
-    const std::uint32_t a = bytes[i];
-    const std::uint32_t b = i + 1 < bytes.size() ? bytes[i + 1] : 0;
-    const std::uint32_t c = i + 2 < bytes.size() ? bytes[i + 2] : 0;
-    const std::uint32_t triple = (a << 16) | (b << 8) | c;
-    out.push_back(kAlphabet[(triple >> 18) & 0x3f]);
-    out.push_back(kAlphabet[(triple >> 12) & 0x3f]);
-    out.push_back(i + 1 < bytes.size() ? kAlphabet[(triple >> 6) & 0x3f] : '=');
-    out.push_back(i + 2 < bytes.size() ? kAlphabet[triple & 0x3f] : '=');
-  }
-  return out;
-}
-
-int Base64Value(char ch) {
-  if (ch >= 'A' && ch <= 'Z') return ch - 'A';
-  if (ch >= 'a' && ch <= 'z') return 26 + (ch - 'a');
-  if (ch >= '0' && ch <= '9') return 52 + (ch - '0');
-  if (ch == '+') return 62;
-  if (ch == '/') return 63;
-  return -1;
-}
-
-bool Base64Decode(const std::string& text, std::vector<std::uint8_t>* out) {
-  if ((text.size() % 4) != 0) return false;
-  out->clear();
-  out->reserve((text.size() / 4) * 3);
-  for (std::size_t i = 0; i < text.size(); i += 4) {
-    const char c0 = text[i];
-    const char c1 = text[i + 1];
-    const char c2 = text[i + 2];
-    const char c3 = text[i + 3];
-    const int v0 = Base64Value(c0);
-    const int v1 = Base64Value(c1);
-    const int v2 = c2 == '=' ? 0 : Base64Value(c2);
-    const int v3 = c3 == '=' ? 0 : Base64Value(c3);
-    if (v0 < 0 || v1 < 0 || (c2 != '=' && v2 < 0) || (c3 != '=' && v3 < 0)) return false;
-    if (c2 == '=' && c3 != '=') return false;
-    const std::uint32_t triple = (static_cast<std::uint32_t>(v0) << 18) |
-                                 (static_cast<std::uint32_t>(v1) << 12) |
-                                 (static_cast<std::uint32_t>(v2) << 6) |
-                                 static_cast<std::uint32_t>(v3);
-    out->push_back(static_cast<std::uint8_t>((triple >> 16) & 0xff));
-    if (c2 != '=') out->push_back(static_cast<std::uint8_t>((triple >> 8) & 0xff));
-    if (c3 != '=') out->push_back(static_cast<std::uint8_t>(triple & 0xff));
-  }
-  return true;
 }
 
 struct HmacProfile {
@@ -701,40 +643,18 @@ FunctionCallResult ArmorFunction(const FunctionCallRequest& request,bool decode,
   if(cancelled())return cancelled_result();pending.accepted=true;return result;
 }
 
-std::string Envelope(std::string_view kind, const std::vector<std::uint8_t>& key, const std::vector<std::uint8_t>& data) {
-  return "SBPGP1:" + std::string(kind) + ":" + Base64Encode(key) + ":" + Base64Encode(data);
-}
-
-bool OpenEnvelope(const std::string& envelope,
-                  std::string_view kind,
-                  const std::vector<std::uint8_t>& key,
-                  std::vector<std::uint8_t>* data) {
-  const std::string prefix = "SBPGP1:" + std::string(kind) + ":";
-  if (envelope.rfind(prefix, 0) != 0) return false;
-  const auto separator = envelope.find(':', prefix.size());
-  if (separator == std::string::npos) return false;
-  std::vector<std::uint8_t> encoded_key;
-  if (!Base64Decode(envelope.substr(prefix.size(), separator - prefix.size()), &encoded_key)) return false;
-  if (encoded_key != key) return false;
-  return Base64Decode(envelope.substr(separator + 1), data);
-}
-
-FunctionCallResult PgpEnvelopeFunction(const FunctionCallRequest& request, std::string_view kind, bool decrypt) {
-  if (request.arguments.size() != 2) {
-    return RefuseFunctionInvalidInput(request, decrypt ? "pgp decrypt expects envelope and key"
-                                                       : "pgp encrypt expects value and key");
-  }
-  if (AnyNull(request)) return MakeFunctionSuccess(request, {MakeNullValue(decrypt ? "character" : "character")});
-  const auto key = RawBytesFromValue(request.arguments[1].value);
-  if (decrypt) {
-    std::vector<std::uint8_t> data;
-    if (!OpenEnvelope(ValueAsText(request.arguments[0].value), kind, key, &data)) {
-      return RefuseFunctionInvalidInput(request, "SBSFC-057 pgp envelope key or format mismatch");
-    }
-    return MakeFunctionSuccess(request, {MakeTextValue("character", std::string(data.begin(), data.end()))});
-  }
-  const auto data = RawBytesFromValue(request.arguments[0].value);
-  return MakeFunctionSuccess(request, {MakeTextValue("character", Envelope(kind, key, data))});
+// Owner ruling 2026-11-26 (PGP 2 a): the four pgp_* scalar functions are REFUSED, with a specific diagnostic, until
+// the native OpenPGP primitives (core/hash/openpgp_*) are wired into this family with their typed carriers. The
+// retired legacy envelope kept the key and the plaintext in clear (base64) and is removed: nothing here produces or accepts it.
+// The refusal is the FIRST act: no argument is read, copied, decoded or compared, so no key or plaintext material can reach
+// the diagnostic (the only field added is the closed operation token).
+FunctionCallResult PgpNotWired(const FunctionCallRequest& request, std::string_view operation) {
+  auto refused = RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
+      "CRYPTO.PGP.PROFILE_UNAVAILABLE",
+      "the OpenPGP profile is not wired to this scalar function; the call is refused without reading its arguments");
+  refused.result.diagnostics.front().fields.push_back({"operation", std::string(operation)});
+  return refused;
 }
 
 }  // namespace
@@ -783,10 +703,10 @@ FunctionCallResult DispatchCryptoHashFunction(const FunctionCallRequest& request
   if (IdIs(id, {"xxhash64", "xxhash64_value_seed"})) return Xxh64Function(request);
   if (IdIs(id, {"armor", "armor_binary"})) return ArmorFunction(request,false,IdIs(id,{"armor_binary"}));
   if (IdIs(id, {"dearmor", "dearmor_text"})) return ArmorFunction(request,true,IdIs(id,{"dearmor"}));
-  if (IdIs(id, {"pgp_sym_encrypt"})) return PgpEnvelopeFunction(request, "sym", false);
-  if (IdIs(id, {"pgp_sym_decrypt"})) return PgpEnvelopeFunction(request, "sym", true);
-  if (IdIs(id, {"pgp_pub_encrypt"})) return PgpEnvelopeFunction(request, "pub", false);
-  if (IdIs(id, {"pgp_pub_decrypt"})) return PgpEnvelopeFunction(request, "pub", true);
+  if (IdIs(id, {"pgp_sym_encrypt"})) return PgpNotWired(request, "pgp_sym_encrypt");
+  if (IdIs(id, {"pgp_sym_decrypt"})) return PgpNotWired(request, "pgp_sym_decrypt");
+  if (IdIs(id, {"pgp_pub_encrypt"})) return PgpNotWired(request, "pgp_pub_encrypt");
+  if (IdIs(id, {"pgp_pub_decrypt"})) return PgpNotWired(request, "pgp_pub_decrypt");
 
   return RefuseFunctionWithDiagnostic(request,
                                       scratchbird::engine::sblr::SblrStatusCode::unsupported_feature,

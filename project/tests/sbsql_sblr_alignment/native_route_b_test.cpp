@@ -1339,10 +1339,84 @@ void TypedUuidState() {
   one.End();
 }
 
+// SB_PGP_REFUSAL_NATIVE_ROUTE (2026-12-20; owner 2026-11-26 PGP 2 a / PGP 3 a): what the real pipeline does with the four pgp_* functions and the pgcrypto spelling on a
+// production-created native single-file database. FINDING (this state pins it): NO scalar function call reaches the engine on a native database yet. The parser
+// lowers `pgp_*(...)` to the function-call operation (opcode 1024), the native dispatch gate does not list that row, and the call is refused with
+// SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (opcode_code=1024) BEFORE any engine function (so before the engine's own CRYPTO.PGP.PROFILE_UNAVAILABLE refusal, which the in-process
+// parser-to-engine route test sbsql_pgp_refusal_route_conformance proves). A native-database proof of the engine's refusal is therefore not possible until the
+// native executor lists the function-call row (native scalar function execution: not built here). `pgcrypto()` never leaves the parser (no scalar route).
+// The sentinels below are distinctive plaintext/key literals: neither the raw text, its base64 nor its hex may appear in any diagnostic code, field or detail.
+void PgpRefusalState() {
+  (void)std::setvbuf(stdout, nullptr, _IONBF, 0);
+  srv::ServerSessionRegistry registry;
+  Pipe one(registry);
+  const auto order1 = one.order();
+  Check(order1 != 0, "(pgp) the session's login began a transaction");
+  const std::string plain = "SENTINEL-PLAIN-5e1d", key = "SENTINEL-KEY-9b27";
+  const auto b64 = [](const std::string& in) {
+    static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (std::size_t i = 0; i < in.size(); i += 3) {
+      const std::uint32_t a = static_cast<unsigned char>(in[i]), b2 = i + 1 < in.size() ? static_cast<unsigned char>(in[i + 1]) : 0, c = i + 2 < in.size() ? static_cast<unsigned char>(in[i + 2]) : 0;
+      const std::uint32_t t = (a << 16) | (b2 << 8) | c;
+      out += kAlphabet[(t >> 18) & 63]; out += kAlphabet[(t >> 12) & 63];
+      out += i + 1 < in.size() ? kAlphabet[(t >> 6) & 63] : '='; out += i + 2 < in.size() ? kAlphabet[t & 63] : '=';
+    }
+    return out;
+  };
+  const auto hex = [](const std::string& in) {
+    std::string out;
+    for (const unsigned char ch : in) { out += "0123456789abcdef"[ch >> 4]; out += "0123456789abcdef"[ch & 15]; }
+    return out;
+  };
+  struct Shape { std::string sql; };
+  const std::vector<Shape> shapes = {
+      {"SELECT pgp_sym_encrypt('" + plain + "','" + key + "')"},
+      {"SELECT pgp_sym_decrypt(X'" + hex(plain) + "','" + key + "')"},
+      {"SELECT pgp_pub_encrypt(X'" + hex(plain) + "',X'" + hex(key) + "')"},
+      {"SELECT pgp_pub_decrypt(X'" + hex(plain) + "',X'" + hex(key) + "')"},
+      // an old SBPGP1 envelope as the message: it is not accepted anywhere, it never reaches a decryptor
+      {"SELECT pgp_sym_decrypt(X'" + hex("SBPGP1:sym:" + b64(key) + ":" + b64(plain)) + "','" + key + "')"},
+  };
+  const FileEvidence group_before;
+  for (const auto& shape : shapes) {
+    const auto ran = RunSql(one, shape.sql, 2);
+    std::string asked;
+    for (const auto& r : ran.recorded) asked += RowKey(r.row) + (r.in_allow_list ? "(listed) " : "(NOT listed) ");
+    const std::string label = "(pgp) '" + shape.sql.substr(0, 32) + "...'";
+    Check(!ran.result.accepted && FirstCode(ran.result) == "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED",
+          label + " is refused at the native dispatch gate, before any engine function: " + AllCodes(ran.result));
+    Check(FieldNamed(ran.result, "opcode_code") == "1024", label + " carries opcode_code=1024 (the function-call row): " + FieldNamed(ran.result, "opcode_code"));
+    Check(asked == "engine.op.name_resolve#4865(listed) engine.op.function_call#1024(NOT listed) ",
+          label + ": the production table was asked name-resolve (listed) then function-call 1024 (NOT listed), got [" + asked + "]");
+    Check(ran.result.server_result_payload.empty(), label + " returns no result payload");
+    const std::string everything = AllCodes(ran.result) + ran.server_diagnostics + ran.raw_vector + ran.result.server_result_payload;
+    for (const auto& needle : {plain, key, b64(plain), b64(key), hex(plain), hex(key)})
+      Check(everything.find(needle) == std::string::npos, label + ": no plaintext/key material (raw, base64 or hex form `" + needle.substr(0, 12) + "...`) in any code, field, detail or payload");
+    Check(everything.find("SBPGP1") == std::string::npos, label + ": the retired SBPGP1 envelope is nowhere in the response");
+    Check(one.order() == order1, label + ": the transaction is unchanged");
+  }
+  CheckUntouched(group_before, "the pgp_* statements on a native database");
+  {
+    const auto ran = RunSql(one, "SELECT pgcrypto()", 2);
+    Check(!ran.result.accepted && FirstCode(ran.result) == "SBSQL.QUERY.PROJECTION_INVALID" && ran.recorded.empty() && ran.server_diagnostics.empty(),
+          "(pgp) `SELECT pgcrypto()` is refused by the PARSER with SBSQL.QUERY.PROJECTION_INVALID (no scalar route; the engine is never asked): " + AllCodes(ran.result));
+    Check(AllCodes(ran.result).find("CRYPTO.PACKAGE.NOT_CALLABLE") == std::string::npos,
+          "(pgp) the user does NOT see CRYPTO.PACKAGE.NOT_CALLABLE for pgcrypto through the parser (that code is the engine's, reachable only by a direct function dispatch)");
+  }
+  // the session is still usable after every refusal
+  {
+    const auto ran = RunSql(one, "SELECT 1", 0);
+    Check(ran.result.accepted && !ran.result.messages.has_errors(), "(pgp) the session still runs SELECT 1 after the refusals: " + AllCodes(ran.result));
+  }
+  one.End();
+}
+
 std::optional<int> ExtraReceiptStateForTest(const std::string& state, const Offline&) {
   if (state == "route_b") { RouteBState(); return 0; }
   if (state == "route_b2") { RouteB2State(); return 0; }
   if (state == "typed_uuid") { TypedUuidState(); return 0; }
+  if (state == "pgp_refusal") { PgpRefusalState(); return 0; }
   if (state == "trace") { RouteBTraceState(); return 0; }
   return std::nullopt;
 }

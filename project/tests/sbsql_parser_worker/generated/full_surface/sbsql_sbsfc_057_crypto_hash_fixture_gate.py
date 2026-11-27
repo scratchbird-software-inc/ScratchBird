@@ -61,10 +61,23 @@ DEPENDENCY_SURFACES = {
     "SBSQL-46DCE02DBE41",
 }
 
+# OLD (to 2026-12-20): each invalid-input fixture had to declare the generic SB_DIAG_FUNCTION_INVALID_INPUT.
+# NEW: the engine answers each cause with its family's specific code (owner Q193: one distinct code per cause).
 REQUIRED_INVALID_FIXTURES = {
-    "SBSFC057-dearmor-invalid",
-    "SBSFC057-hmac-bad-algo",
-    "SBSFC057-gen-random-bytes-too-large",
+    "SBSFC057-dearmor-invalid": "CRYPTO.ARMOR.INVALID_INPUT",
+    "SBSFC057-hmac-bad-algo": "CRYPTO.HMAC.UNSUPPORTED_ALGORITHM",
+    "SBSFC057-gen-random-bytes-too-large": "CRYPTO.RNG.INVALID_LENGTH",
+}
+
+# OLD (to 2026-12-20): pgcrypto and the four pgp_* rows were "positive" fixtures (a compatibility-envelope marker and the retired SBPGP1 envelope).
+# NEW (owner 2026-11-26, PGP 2 a / PGP 3 a): they are REFUSAL fixtures. The pgp_* functions are refused until real OpenPGP is wired; pgcrypto is the
+# package capability spelling, not a callable value. A refusal fixture never declares a result.
+REFUSAL_SURFACES = {
+    "SBSQL-AF4E7BFEFDD1": "CRYPTO.PACKAGE.NOT_CALLABLE",  # pgcrypto
+    "SBSQL-6358314B6883": "CRYPTO.PGP.PROFILE_UNAVAILABLE",  # pgp_pub_decrypt
+    "SBSQL-2854D8B0790B": "CRYPTO.PGP.PROFILE_UNAVAILABLE",  # pgp_pub_encrypt
+    "SBSQL-6DBE85C4B814": "CRYPTO.PGP.PROFILE_UNAVAILABLE",  # pgp_sym_decrypt
+    "SBSQL-C98EC981ACD7": "CRYPTO.PGP.PROFILE_UNAVAILABLE",  # pgp_sym_encrypt
 }
 
 ALLOWED_DESCRIPTORS = {
@@ -146,8 +159,22 @@ def main() -> int:
 
         if case_kind == "invalid_input":
             invalid_seen.add(fixture_id)
-            if expected_diag != "SB_DIAG_FUNCTION_INVALID_INPUT":
-                errors.append(f"{fixture_id}: invalid_input must declare SB_DIAG_FUNCTION_INVALID_INPUT")
+            required_code = REQUIRED_INVALID_FIXTURES.get(fixture_id)
+            if required_code is None:
+                errors.append(f"{fixture_id}: unexpected invalid_input fixture")
+            elif expected_diag != required_code:
+                errors.append(f"{fixture_id}: invalid_input must declare {required_code}")
+            continue
+
+        if case_kind == "refusal":
+            required_code = REFUSAL_SURFACES.get(surface_id)
+            if required_code is None:
+                errors.append(f"{fixture_id}: refusal is not expected for {surface_id}")
+            elif expected_diag != required_code:
+                errors.append(f"{fixture_id}: refusal must declare {required_code}")
+            if row.get("expected_result_json", "") or descriptor:
+                errors.append(f"{fixture_id}: a refusal fixture must not declare a result")
+            covered_by_surface[surface_id].add(fixture_id)
             continue
 
         if case_kind == "dependency_unavailable":
@@ -163,6 +190,8 @@ def main() -> int:
             continue
         if surface_id in DEPENDENCY_SURFACES:
             errors.append(f"{fixture_id}: dependency-gated surface must use dependency_unavailable case_kind")
+        if surface_id in REFUSAL_SURFACES:
+            errors.append(f"{fixture_id}: pgcrypto and the pgp_* surfaces must use the refusal case_kind, never positive")
         if expected_diag:
             errors.append(f"{fixture_id}: positive fixture must not declare diagnostic")
         if descriptor not in ALLOWED_DESCRIPTORS:
@@ -174,7 +203,7 @@ def main() -> int:
     for surface_id, fixtures_for_surface in covered_by_surface.items():
         if not fixtures_for_surface:
             errors.append(f"{surface_id}: missing SBSFC-057 fixture")
-    for fixture_id in sorted(REQUIRED_INVALID_FIXTURES - invalid_seen):
+    for fixture_id in sorted(set(REQUIRED_INVALID_FIXTURES) - invalid_seen):
         errors.append(f"{fixture_id}: missing required invalid-input fixture")
 
     print(

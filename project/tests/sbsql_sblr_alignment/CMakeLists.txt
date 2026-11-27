@@ -4798,6 +4798,19 @@ if(TRUE)
       LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;native_typed_uuid;binary_uuid"
       TIMEOUT 190)
   endforeach()
+  # SB_PGP_REFUSAL_NATIVE_ROUTE (2026-12-20): the same executable's `pgp_refusal` state: the four pgp_* functions on a production-created native database stop at the
+  # native dispatch gate (function-call row 1024 is not listed) with no key/plaintext material in the response; `pgcrypto()` never leaves the parser. Pins that a native
+  # proof of the ENGINE's CRYPTO.PGP.PROFILE_UNAVAILABLE refusal is not yet possible (see native_route_b_test.cpp, PgpRefusalState).
+  foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_rb_parts "${sb_rb_size}")
+    list(GET sb_rb_parts 0 sb_rb_bytes)
+    list(GET sb_rb_parts 1 sb_rb_label)
+    add_test(NAME sbsql_sblr_alignment_native_pgp_refusal_${sb_rb_label}
+      COMMAND sbsql_sblr_alignment_native_route_b size ${sb_rb_bytes} pgp_refusal)
+    set_tests_properties(sbsql_sblr_alignment_native_pgp_refusal_${sb_rb_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;native_pgp_refusal;binary_uuid"
+      TIMEOUT 190)
+  endforeach()
   if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
     # the per-statement region (`statement`) is read-only: 0 .sb.* syscalls, 0 data-file writes or fsyncs, 0 opens of the data file by path
     foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)

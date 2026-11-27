@@ -5719,6 +5719,19 @@ std::vector<ServerDiagnosticField> RegisteredEngineDiagnosticFields(
   if (diagnostic_code.starts_with("ENGINE.NATIVE.") || diagnostic_code == "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED") {
     return RegisteredNativeRefusalFields(diagnostic_code, candidates);
   }
+  // CRYPTO.PGP.PROFILE_UNAVAILABLE (the four pgp_* scalar functions are refused until OpenPGP is wired; owner 2026-11-26 PGP 2 a):
+  // the ONE registered field is `operation`, a closed token naming the refused function as DATA (the parser builds the message).
+  // The engine diagnostic also carries function_id / function_uuid / package_name; none of those is forwarded, and an
+  // `operation` whose value is not one of the four exact tokens is dropped, so no argument-derived text can ride this code.
+  if (diagnostic_code == "CRYPTO.PGP.PROFILE_UNAVAILABLE") {
+    constexpr std::array<std::string_view, 4> kOperations = {"pgp_sym_encrypt", "pgp_sym_decrypt", "pgp_pub_encrypt", "pgp_pub_decrypt"};
+    for (const auto& candidate : candidates) {
+      if (candidate.key != "operation") continue;
+      if (std::find(kOperations.begin(), kOperations.end(), candidate.value) == kOperations.end()) return {};
+      return {candidate};
+    }
+    return {};
+  }
   constexpr std::string_view kConversionDiagnostic =
       "SB_DIAG_FUNCTION_CONVERSION_INPUT";
   constexpr std::string_view kConversionField = "conversion_input_text";
