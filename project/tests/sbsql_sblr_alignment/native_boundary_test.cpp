@@ -10,6 +10,10 @@
 #define SB_NATIVE_SELECT_ONE_FIXTURE_ONLY 1
 #include "native_select_one_test.cpp"
 
+// SB_PARSER_ALIASED_LITERAL_PROJECTION (2026-12-25, owner 2026-11-28 Q3): through the wire pipeline (which this file drives) `SELECT <n> AS <name>` is now the VALUES relation (query.execute),
+// so it no longer lowers to the query.evaluate_projection (0x040E) scalar projection this file tests. OLD: every statement below was written `SELECT <n> AS <name>`. NEW: the SAME projection
+// with the alias written WITHOUT AS (`SELECT <n> <name>`), which still lowers to 0x040E (found, not changed: owner question 2 of the report asks whether that spelling should move to
+// VALUES too, which would leave route A with no SQL surface here).
 #include "server/sblr_dispatch_server.hpp"
 
 #include <thread>
@@ -154,7 +158,7 @@ void BoundaryState() {
     CheckUntouched(before, "the refusals");
   }
   Release(old_receipt);
-  Check(SelectIn(*s1, *ps1, "SELECT 1 AS one") == 1, "SELECT 1 AS one = 1 in the replacement");
+  Check(SelectIn(*s1, *ps1, "SELECT 1 one") == 1, "SELECT 1 AS one = 1 in the replacement");
   // the replacement's begin view (S4f: captured BEFORE the write): the loop's receipt lookup shows it, with the reader = this transaction
   {
     const auto input = served.loop->SubmitReceiptLookup(s1->session(), s1->approval.transaction_uuid).get();
@@ -171,7 +175,7 @@ void BoundaryState() {
   const auto rbv = Decode(rb.payload);
   Check(rbv.ok && rbv.operation_id == "engine.op.txn_rollback" && rbv.finality == "rolled_back" && rbv.ended_order == n1 && rbv.new_order == n1 + 1, "the rollback vector");
   Check(File().words.at(n1).state == pgs::TipStateCode::rolled_back && File().words.at(n1 + 1).state == pgs::TipStateCode::active, "TIP: rolled_back and the next active");
-  Check(SelectIn(*s1, *ps1, "SELECT 2 AS two") == 2, "SELECT 2 AS two = 2 after ROLLBACK");
+  Check(SelectIn(*s1, *ps1, "SELECT 2 two") == 2, "SELECT 2 AS two = 2 after ROLLBACK");
 
   // ---- RETAINING: refused with the one specific code, nothing written, the session stays in its transaction ----
   {
@@ -179,7 +183,7 @@ void BoundaryState() {
     const auto retain = Boundary(*s1, true, true);
     Check(!retain.ok && retain.code == "ENGINE.NATIVE.OPERATION_NOT_BUILT" && retain.detail == "requires=native_retaining_boundary", "RETAINING: ENGINE.NATIVE.OPERATION_NOT_BUILT requires=native_retaining_boundary");
     CheckUntouched(before, "the retaining refusal");
-    Check(SelectIn(*s1, *ps1, "SELECT 1 AS one") == 1, "the session is still in its transaction after the refusal");
+    Check(SelectIn(*s1, *ps1, "SELECT 1 one") == 1, "the session is still in its transaction after the refusal");
   }
 
   // ---- settings: the replacement takes the session's CURRENT settings, not the finished transaction's (Q168) ----
@@ -230,7 +234,7 @@ void BoundaryState() {
             "slot " + std::to_string(order) + ": +64/+80/+96 carried to the replacement");
     }
     Check(after.words.at(last).state == pgs::TipStateCode::active, "the last replacement is active");
-    Check(SelectIn(*s1, *ps1, "SELECT 1 AS one") == 1, "SELECT 1 AS one = 1 after the chain grew");
+    Check(SelectIn(*s1, *ps1, "SELECT 1 one") == 1, "SELECT 1 AS one = 1 after the chain grew");
   }
 
   // ---- (d) two sessions, interleaved in threads: independent, distinct ids; (e) a foreign session cannot end another's transaction ----

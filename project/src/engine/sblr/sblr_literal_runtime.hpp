@@ -322,6 +322,16 @@ SblrLiteralExactDecimalCodecResultV1 EncodeSblrLiteralExactDecimalV1(
 SblrLiteralExactDecimalCodecResultV1 DecodeSblrLiteralExactDecimalV1(
     const std::uint8_t* bytes, std::size_t size);
 
+// SB_NATIVE_VALUES_DECIMAL_UNIFICATION (2026-12-25; owner 2026-11-28 Q2). The VALUES decimal fit rules, shared by the engine's validation sites and the result encoder.
+// A literal DESCRIPTOR shape (precision, scale; both absent for a non-decimal) FITS a column's shape when both are absent, or both present with scale <= the column's
+// scale and integer digits (precision - scale) <= the column's integer digits.
+bool SblrDecimalShapeFitsColumnV1(std::optional<std::uint32_t> literal_precision, std::optional<std::uint32_t> literal_scale,
+                                  std::optional<std::uint32_t> column_precision, std::optional<std::uint32_t> column_scale);
+// A 24-byte canonical decimal BODY FITS a column (precision, scale): it decodes canonically and its VALUE has scale <= the column scale and integer digits <= the
+// column's integer digits (zero has no integer digits). The body's own header precision/scale are the canonical (trailing-zero-free) ones; the engine never trusts the
+// descriptor the parser sent without this check.
+bool SblrDecimalBodyFitsColumnV1(const std::uint8_t* body, std::size_t size, std::uint32_t column_precision, std::uint32_t column_scale);
+
 bool DecodeSblrExpressionNodeReferenceV1(
     const std::uint8_t* bytes, std::size_t size,
     SblrExpressionNodeReferenceV1* out);

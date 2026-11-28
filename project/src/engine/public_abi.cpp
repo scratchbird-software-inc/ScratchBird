@@ -61,6 +61,7 @@
 #include "sblr_opcode_stream.hpp"
 #include "sblr_executor_availability_registry.hpp"
 #include "sblr_literal_runtime.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "sblr_parameter_runtime.hpp"
 #include "engine/sblr/prepared_relational_query.hpp"
 #include "sblr_parameter_bind_runtime.hpp"
@@ -4766,7 +4767,11 @@ std::string api_result_payload(const scratchbird::engine::internal_api::EngineAp
 //                  column_datatype[c]        uuid  the datatype identity (type_uuid of the datatype cohort)
 //                  column_datatype_descriptor[c] uuid  the cohort's datatype descriptor identity
 //                  column_datatype_generation[c] unsigned  u64 LE8, the cohort descriptor generation
+//                  column_precision[c]       unsigned  u64 LE8, the column's declared decimal precision (0 for a non-decimal column)   [2026-12-25, SB_NATIVE_VALUES_DECIMAL_SCALE]
+//                  column_scale[c]           unsigned  u64 LE8, the column's declared decimal scale (0 for a non-decimal column)
 //   per row r, column c:  value[r.c]         signed_integer  int64 LE8 (the native carrier)
+// SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25; owner 2026-11-28 Q1): the layout is now 4 + 6C + R*C fields (OLD: 4 + 4C + R*C). The decimal VALUE bytes stay the canonical codec body
+// (no trailing fractional zeros); the DISPLAY scale is the column's declared scale, which the PARSER applies. The engine validates every value fits (precision, scale).
 // Only a non-null int64 (value[r.c] signed_integer), since 2026-12-13 a non-null BOOLEAN (value[r.c] bytes, one byte 0 or 1; the column's datatype
 // UUIDs name the boolean cohort row) and, since 2026-12-24 (SB_NATIVE_VALUES_DECIMAL_LITERAL), a non-null exact DECIMAL (value[r.c] bytes: the
 // cohort's own 24-byte base-1e9 codec body, datatype.decimal.base1e9.le.v1, which is SELF-DESCRIBING: sign, scale and precision are in its header, so
@@ -4814,6 +4819,23 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
     if ((kinds.back() == ColumnKind::int64 ? int64_identity : kinds.back() == ColumnKind::decimal ? decimal_identity : boolean_identity) == nullptr)
       return std::nullopt;
   }
+  // the declared decimal shape of each decimal column, from the column's own descriptor (a bound descriptor's precision and scale; never from the value bytes)
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> decimal_shapes(columns, {0, 0});
+  for (std::size_t c = 0; c < columns; ++c) {
+    if (kinds[c] != ColumnKind::decimal) continue;
+    scratchbird::engine::internal_api::CatalogColumnMetadata metadata;
+    if (!scratchbird::engine::internal_api::AdmitCatalogColumnMetadata(rows.front().fields[c].second.descriptor.encoded_descriptor, &metadata)) return std::nullopt;
+    const auto precision = metadata.text.find("precision");
+    const auto scale = metadata.text.find("scale");
+    if (precision == metadata.text.end() || scale == metadata.text.end()) return std::nullopt;
+    std::uint32_t p = 0, sc = 0;
+    const auto pr = std::from_chars(precision->second.data(), precision->second.data() + precision->second.size(), p);
+    const auto sr = std::from_chars(scale->second.data(), scale->second.data() + scale->second.size(), sc);
+    if (pr.ec != std::errc{} || pr.ptr != precision->second.data() + precision->second.size() || sr.ec != std::errc{} ||
+        sr.ptr != scale->second.data() + scale->second.size() || p == 0 || p > 38 || sc > p)
+      return std::nullopt;
+    decimal_shapes[c] = {p, sc};
+  }
   std::vector<public_result::Field> fields;
   // Route B (2026-12-11): the SAME vector serves the object-free literal VALUES relation (query.execute); operation_id names the operation that
   // produced it, as a machine token (never a name): query.evaluate_projection (route A) or query.execute (route B).
@@ -4830,6 +4852,8 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
     fields.push_back({"column_datatype[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(identity->type_uuid)});
     fields.push_back({"column_datatype_descriptor[" + index + "]", public_result::Kind::uuid, public_uuid_bytes(identity->descriptor_uuid)});
     fields.push_back({"column_datatype_generation[" + index + "]", public_result::Kind::unsigned_integer, u64(identity->descriptor_generation)});
+    fields.push_back({"column_precision[" + index + "]", public_result::Kind::unsigned_integer, u64(decimal_shapes[c].first)});
+    fields.push_back({"column_scale[" + index + "]", public_result::Kind::unsigned_integer, u64(decimal_shapes[c].second)});
   }
   for (std::size_t r = 0; r < rows.size(); ++r) {
     if (rows[r].fields.size() != columns) return std::nullopt;
@@ -4849,7 +4873,10 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
       } else if (kinds[c] == ColumnKind::decimal) {
         // an exact decimal: the cohort's 24-byte codec body as bytes (never text). The body must decode canonically with the engine's own decimal codec.
         if (type != "decimal" || !value.encoded_value.empty() || value.binary_value.size() != scratchbird::engine::sblr::kSblrLiteralExactDecimalBytes ||
-            !scratchbird::engine::sblr::DecodeSblrLiteralExactDecimalV1(value.binary_value.data(), value.binary_value.size()).ok)
+            !scratchbird::engine::sblr::DecodeSblrLiteralExactDecimalV1(value.binary_value.data(), value.binary_value.size()).ok ||
+            // SB_NATIVE_VALUES_DECIMAL_SCALE: the value must fit the column's declared precision and scale (the parser is untrusted)
+            !scratchbird::engine::sblr::SblrDecimalBodyFitsColumnV1(value.binary_value.data(), value.binary_value.size(), decimal_shapes[c].first,
+                                                                    decimal_shapes[c].second))
           return std::nullopt;
         bytes.assign(reinterpret_cast<const char*>(value.binary_value.data()), value.binary_value.size());
         kind = public_result::Kind::bytes;

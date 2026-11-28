@@ -498,9 +498,21 @@ def run(args, work):
     # a decimal COLUMN across rows whose literals share the column's exact precision and scale runs (equality, not coercion); the first and the original-scale rows keep the order written
     tbl = sbsql(args, work, port, "dec-rows", "VALUES (1.5), (2.5)"); logins += 1
     check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["1.5"], ["2.5"]] and "(2 rows)" in tbl.stdout, f"VALUES (1.5), (2.5): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
-    # the codec's canonical form drops trailing fractional zeros (0.10 shows 0.1): pinned as the CURRENT behaviour, pending the owner question about preserving the written scale
+    # OLD (2026-12-24): `SELECT 0.10` showed 0.1 (the codec's canonical spelling, pinned "pending the owner question"). NEW (owner 2026-11-28 Q1, 2026-12-25): the WRITTEN scale is kept: the
+    # engine's vector declares the column's precision and scale and the parser pads the fraction to it: 0.10 shows 0.10.
     tbl = sbsql(args, work, port, "dec-scale", "SELECT 0.10"); logins += 1
-    check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["0.1"]], f"SELECT 0.10 (current behaviour, pending the scale-preservation owner question): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["0.10"]], f"SELECT 0.10 keeps its written scale: rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    # UNIFIED decimal column (Q2), ALIASED literal projection (Q3) and a pure-integer list (Q5), each through the real client (one login each)
+    tbl = sbsql(args, work, port, "dec-unify", "VALUES (1.5), (2.25)"); logins += 1
+    check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["1.50"], ["2.25"]] and "(2 rows)" in tbl.stdout, f"VALUES (1.5), (2.25) unifies to decimal(3,2): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    tbl = sbsql(args, work, port, "dec-promote", "VALUES (1), (1.5)"); logins += 1
+    check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["1.0"], ["1.5"]], f"VALUES (1), (1.5) promotes the integer to decimal(20,1): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    tbl = sbsql(args, work, port, "alias-lit", "SELECT TRUE AS t, 1.5 AS d, 2 AS i"); logins += 1
+    check(tbl.returncode == 0 and re.search(r"^\|\s*t\s*\|\s*d\s*\|\s*i\s*\|\s*$", tbl.stdout, re.M) and table_rows(tbl.stdout) == [["true", "1.5", "2"]],
+          f"SELECT TRUE AS t, 1.5 AS d, 2 AS i prints the aliases as column names: rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    tbl = sbsql(args, work, port, "int-list", "SELECT 1, -2, 3"); logins += 1
+    check(tbl.returncode == 0 and re.search(r"^\|\s*column1\s*\|\s*column2\s*\|\s*column3\s*\|\s*$", tbl.stdout, re.M) and table_rows(tbl.stdout) == [["1", "-2", "3"]],
+          f"SELECT 1, -2, 3 (the VALUES route, column1..3): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
 
     # --- the refused shapes: machine tokens, a failed exit ---
     for label, sql, token in (("plus", "SELECT 1 + 0 AS s", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
@@ -525,7 +537,11 @@ def run(args, work):
                               ("bare-text", "SELECT 'a'", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
                               # OLD (until 2026-12-24): ("bare-dec", "SELECT 1.5", "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"). NEW: decimal literals RUN (below); a decimal COLUMN across rows
                               # of different literal descriptors is still refused by the lowering.
-                              ("dec-column", "VALUES (1.5), (2.25)", "SBLR.PLAN_TREE.INVALID_HANDLE"),  # a decimal column of different scales,
+                              # OLD (2026-12-24): ("dec-column", "VALUES (1.5), (2.25)", "SBLR.PLAN_TREE.INVALID_HANDLE"): a decimal column of different scales. NEW (2026-12-25, owner Q2): it RUNS
+                              # (unified to decimal(3,2), above); a decimal mixed with a boolean in one column is still refused by the lowering.
+                              ("dec-column", "VALUES (1.5), (TRUE)", "SBLR.PLAN_TREE.INVALID_HANDLE"),
+                              # OLD (2026-12-24): ("bool-expr", "SELECT NOT TRUE", "DATATYPE.DESCRIPTOR.INVALID"). NEW (owner Q4): a boolean expression over literals reaches the engine's operator refusal.
+                              ("bool-expr", "SELECT NOT TRUE", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
                               ("dec-precision", "SELECT 123456789012345678901234567890123456789", "SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED"),
                               ("dec-precision-exp", "SELECT 1e39", "SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED"),
                               ("bare-from", "SELECT 1 FROM t", "ENGINE.NATIVE.WIRE_NAME_RESOLVE_S5"),
@@ -564,7 +580,9 @@ def run(args, work):
     boundary_login("commit-garbage", "COMMIT garbage", [], token="SBSQL.PARSER.TRANSACTION_CONTROL_TOKEN_UNKNOWN")
 
     # --- the line client over the same port (AUTH / EXECUTE / QUIT) ---
-    transcript = line_client(port, [f"AUTH {USER} {PASSWORD}", "EXECUTE SELECT 1 AS one", "QUIT"],
+    # OLD (until 2026-12-25): "EXECUTE SELECT 1 AS one" answered RESULT query.evaluate_projection (the 0x040E scalar projection). NEW (owner 2026-11-28 Q3): `SELECT 1 AS one` is the VALUES relation
+    # (query.execute, asserted in the open line session below); this check keeps the scalar-projection route covered with the alias written WITHOUT AS, which still lowers to 0x040E.
+    transcript = line_client(port, [f"AUTH {USER} {PASSWORD}", "EXECUTE SELECT 1 one", "QUIT"],
                              [[r"^OK AUTHENTICATED"], [r"^RESULT \S+ \d+ \S+", r"^ERROR"], [r"^OK BYE"]]); logins += 1
     result = [line for line in transcript[2].splitlines() if line.startswith("RESULT ")]
     check(result and result[0].startswith("RESULT query.evaluate_projection 1 canonical_binary_payload_hex="), f"line client result: {transcript[2][-600:]!r}")

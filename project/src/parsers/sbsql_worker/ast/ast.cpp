@@ -1626,7 +1626,7 @@ std::string NativeLiteralAstKindName(NativeLiteralAstKind kind) {
   return "unknown";
 }
 
-AstDocument BuildAst(const CstDocument& cst) {
+AstDocument BuildAst(const CstDocument& cst, const AstBuildOptions& options) {
   AstDocument ast;
   ast.messages = cst.messages;
   PopulateSourceArtifactNodes(&ast, cst);
@@ -1659,7 +1659,7 @@ AstDocument BuildAst(const CstDocument& cst) {
   // misclassify these surfaces as inner-query syntax errors.
   if (CanonicalWordForToken(*first) != "EXPLAIN" &&
       !non_native_relational_child_surface) {
-    ast.native_relational = ParseNativeRelationalAst(cst);
+    ast.native_relational = ParseNativeRelationalAst(cst, options);
   }
   if (ast.native_relational.recognized()) {
     ast.messages.diagnostics.insert(

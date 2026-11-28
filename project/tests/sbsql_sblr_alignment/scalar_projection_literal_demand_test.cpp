@@ -21,7 +21,9 @@ void Check(bool value, const char* reason) {
 struct Fixture {
   p::CstDocument cst;
   p::NativeRelationalAstDocument native;
-  explicit Fixture(std::string sql) : cst(p::BuildCst(sql)), native(p::ParseNativeRelationalAst(cst)) {}
+  // aliased_values: the wire pipeline's option (SB_PARSER_ALIASED_LITERAL_PROJECTION, 2026-12-25): `SELECT <literal> AS <name>` is the VALUES relation; the default is the standalone pipeline
+  explicit Fixture(std::string sql, bool aliased_values = false)
+      : cst(p::BuildCst(sql)), native(p::ParseNativeRelationalAst(cst, p::AstBuildOptions{aliased_values})) {}
   auto describe(p::ScalarProjectionLiteralDemandLimitsV1 limits = {4096, 256}) const {
     return p::DescribeScalarProjectionLiteralDemandsV1(cst, native, limits);
   }
@@ -208,9 +210,34 @@ void ActualParserInventory() {
               bare.native.relations.size() == 1 && bare.native.relations[0].relation_kind == p::NativeRelationAstKind::kValues,
           ("a bare projection of boolean/decimal literals is the typed literal VALUES relation: " + sql).c_str());
   }
-  // a plain integer list keeps its scalar-projection route (found, not changed: its recorder rows and gate path are pinned elsewhere)
-  Fixture plain_list("SELECT 1,2;");
-  Check(plain_list.native.scalar_syntax_accepted() && !plain_list.native.recognized(), "an all-integer bare list keeps the scalar-projection route");
+  // OLD (before 2026-12-25): "an all-integer bare list keeps the scalar-projection route": plain_list("SELECT 1,2;").native.scalar_syntax_accepted() && !recognized().
+  // NEW (owner 2026-11-28 Q5): a pure-integer list is the VALUES relation like every other bare literal list.
+  for (const std::string sql : {"SELECT 1,2;", "SELECT 1,-2,3", "select 7 , 8 ;"}) {
+    Fixture plain_list(sql);
+    Check(plain_list.native.accepted() && plain_list.native.recognized() && !plain_list.native.scalar_syntax_accepted() && plain_list.native.relations.size() == 1 &&
+              plain_list.native.relations[0].relation_kind == p::NativeRelationAstKind::kValues && plain_list.native.relations[0].column_aliases.empty(),
+          ("an all-integer bare list is the typed literal VALUES relation: " + sql).c_str());
+  }
+  // ALIASED bare literals (owner 2026-11-28 Q3): with the wire pipeline's option the VALUES relation, the alias kept as written in relation.column_aliases (the parser's display name; an
+  // unaliased item is column<N>). WITHOUT the option (the standalone pipeline) the aliased form keeps its scalar-inventory route, so the standalone conformance tests are unchanged.
+  {
+    struct Aliased { const char* sql; std::vector<std::string> names; };
+    for (const auto& item : {Aliased{"SELECT TRUE AS date;", {"date"}}, Aliased{"SELECT 1.5 AS x", {"x"}}, Aliased{"SELECT 1 AS one", {"one"}},
+                             Aliased{"SELECT TRUE AS t, 1.5 AS d, 2 AS i", {"t", "d", "i"}}, Aliased{"SELECT 1 AS one, 2", {"one", "column2"}}, Aliased{"SELECT 1 AS \"Q c\"", {"Q c"}}}) {
+      Fixture aliased(item.sql, true);
+      Check(aliased.native.accepted() && aliased.native.recognized() && !aliased.native.scalar_syntax_accepted() && aliased.native.relations.size() == 1 &&
+                aliased.native.relations[0].relation_kind == p::NativeRelationAstKind::kValues && aliased.native.relations[0].column_aliases.size() == item.names.size(),
+            (std::string("an aliased bare literal list is the VALUES relation with display aliases (wire option): ") + item.sql).c_str());
+      for (std::size_t i = 0; i < item.names.size() && i < aliased.native.relations[0].column_aliases.size(); ++i)
+        Check(aliased.native.relations[0].column_aliases[i].spelling == item.names[i], (std::string("alias ") + std::to_string(i) + " is kept as written: " + item.sql).c_str());
+      Fixture standalone(item.sql, false);
+      Check(!(standalone.native.recognized() && standalone.native.accepted() && !standalone.native.scalar_syntax_accepted()),
+            (std::string("without the wire option the aliased form is NOT the VALUES relation: ") + item.sql).c_str());
+    }
+    // an alias WITHOUT AS and an aliased parameter keep the scalar-projection route even with the option
+    Fixture no_as("SELECT 1 one;", true);
+    Check(no_as.native.scalar_syntax_accepted() && !no_as.native.recognized(), "an alias written without AS keeps the scalar-projection route");
+  }
   // an expression or a parameter beside a boolean is not the literal list
   for (const std::string sql : {"SELECT TRUE,?;", "SELECT NOT TRUE;", "SELECT TRUE AND FALSE;"}) {
     Fixture not_list(sql);

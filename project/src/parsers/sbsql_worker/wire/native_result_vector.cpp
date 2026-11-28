@@ -58,16 +58,18 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
   const auto columns = Le64(fields[2].value);
   const auto rows = Le64(fields[3].value);
   if (columns == 0 || columns > 4096 || rows > 1048576) return invalid("extent");
-  if (fields.size() != 4 + 4 * columns + columns * rows) return invalid("field_count");
+  // SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25): SIX fields per column (OLD: four): the identity triple + generation, then column_precision and column_scale
+  if (fields.size() != 4 + 6 * columns + columns * rows) return invalid("field_count");
   if (column_names.size() != columns) return Refuse("SBSQL.NATIVE_RESULT.COLUMN_NAME_MISSING", "name_count");
   for (const auto& name : column_names)
     if (name.empty()) return Refuse("SBSQL.NATIVE_RESULT.COLUMN_NAME_MISSING", "empty_name");
 
   // ---- the type of each column, from its descriptor UUIDs through the compiled cohort identity table ----
   std::vector<bool> column_is_boolean;
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> column_shape;  // declared decimal (precision, scale) per column; (0, 0) for a non-decimal column
   std::vector<bool> column_is_decimal;  // SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): the decimal codec identity (datatype.decimal.base1e9.le.v1)
   for (std::uint64_t c = 0; c < columns; ++c) {
-    const auto base = 4 + 4 * c;
+    const auto base = 4 + 6 * c;
     const auto index = Index(static_cast<std::size_t>(c));
     const auto& descriptor = fields[base];
     const auto& datatype = fields[base + 1];
@@ -76,8 +78,12 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
     if (descriptor.name != "column_descriptor[" + index + "]" || descriptor.kind != pr::Kind::uuid ||
         datatype.name != "column_datatype[" + index + "]" || datatype.kind != pr::Kind::uuid ||
         datatype_descriptor.name != "column_datatype_descriptor[" + index + "]" || datatype_descriptor.kind != pr::Kind::uuid ||
-        generation.name != "column_datatype_generation[" + index + "]" || generation.kind != pr::Kind::unsigned_integer)
+        generation.name != "column_datatype_generation[" + index + "]" || generation.kind != pr::Kind::unsigned_integer ||
+        fields[base + 4].name != "column_precision[" + index + "]" || fields[base + 4].kind != pr::Kind::unsigned_integer || fields[base + 4].value.size() != 8 ||
+        fields[base + 5].name != "column_scale[" + index + "]" || fields[base + 5].kind != pr::Kind::unsigned_integer || fields[base + 5].value.size() != 8)
       return invalid("column_" + index);
+    const auto declared_precision = Le64(fields[base + 4].value);
+    const auto declared_scale = Le64(fields[base + 5].value);
     // The compiled table holds one row per (snapshot, generation) of the same identity; the vector names the identity (type, descriptor,
     // descriptor generation) and the receipt's snapshot already fixed which row the engine used. Every row that matches the identity must
     // be the int64 codec; an identity that matches rows of different codecs, or none, is refused (never a nearest match).
@@ -98,6 +104,10 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
     }
     if (!matched) return Refuse("SBSQL.NATIVE_RESULT.TYPE_NOT_BUILT", "unknown_type");
     if (!all_int64 && !all_boolean && !all_decimal) return Refuse("SBSQL.NATIVE_RESULT.TYPE_NOT_BUILT", "type_codec");
+    // a decimal column declares 1 <= precision <= 38 and scale <= precision; every other column declares (0, 0)
+    if (all_decimal ? (declared_precision == 0 || declared_precision > 38 || declared_scale > declared_precision) : (declared_precision != 0 || declared_scale != 0))
+      return Refuse("SBSQL.NATIVE_RESULT.VECTOR_INVALID", "column_shape_" + index);
+    column_shape.push_back({static_cast<std::uint32_t>(declared_precision), static_cast<std::uint32_t>(declared_scale)});
     column_is_boolean.push_back(all_boolean);
     column_is_decimal.push_back(all_decimal);
   }
@@ -112,7 +122,7 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
                 (column_is_boolean[static_cast<std::size_t>(c)] ? ":boolean:not_null"
                  : column_is_decimal[static_cast<std::size_t>(c)] ? ":decimal:not_null" : ":int64:not_null");
   }
-  const auto values_base = 4 + 4 * columns;
+  const auto values_base = 4 + 6 * columns;
   for (std::uint64_t r = 0; r < rows; ++r) {
     std::vector<pr::Field> row_fields;
     for (std::uint64_t c = 0; c < columns; ++c) {
@@ -125,10 +135,21 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
         const auto decoded = value.value.size() == scratchbird::engine::sblr::kSblrLiteralExactDecimalBytes
             ? scratchbird::engine::sblr::DecodeSblrLiteralExactDecimalV1(reinterpret_cast<const std::uint8_t*>(value.value.data()), value.value.size())
             : scratchbird::engine::sblr::SblrLiteralExactDecimalCodecResultV1{};
+        // SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25; owner 2026-11-28 Q1): the display scale is the COLUMN's declared scale (the value bytes are canonical, no trailing
+        // fractional zeros): the parser pads the fraction to it (`0.10` shows 0.10, `0.0` shows 0.0). A value that does not fit the declared precision and scale is refused.
+        const auto& shape = column_shape[static_cast<std::size_t>(c)];
         if (value.name != "value[" + Index(static_cast<std::size_t>(r)) + "." + Index(static_cast<std::size_t>(c)) + "]" ||
-            value.kind != pr::Kind::bytes || !decoded.ok)
+            value.kind != pr::Kind::bytes || !decoded.ok ||
+            !scratchbird::engine::sblr::SblrDecimalBodyFitsColumnV1(reinterpret_cast<const std::uint8_t*>(value.value.data()), value.value.size(), shape.first, shape.second))
           return Refuse("SBSQL.NATIVE_RESULT.VALUE_INVALID", "value_" + Index(static_cast<std::size_t>(r)) + "_" + Index(static_cast<std::size_t>(c)));
-        row_fields.push_back({column_names[static_cast<std::size_t>(c)], pr::Kind::text, decoded.canonical_lexical});
+        std::string shown = decoded.canonical_lexical;
+        if (shape.second != 0) {
+          const auto point = shown.find('.');
+          const std::size_t have = point == std::string::npos ? 0 : shown.size() - point - 1;
+          if (point == std::string::npos) shown += '.';
+          shown.append(shape.second - have, '0');
+        }
+        row_fields.push_back({column_names[static_cast<std::size_t>(c)], pr::Kind::text, std::move(shown)});
         continue;
       }
       // an int64 value is a signed 64-bit carrier; a boolean value is ONE byte, 0 or 1 (the engine's vector carrier, Kind::bytes)

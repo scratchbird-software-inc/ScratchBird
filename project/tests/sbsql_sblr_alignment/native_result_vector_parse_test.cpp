@@ -58,8 +58,10 @@ const dt::DatatypeTypeCodecIdentityRowV1* NonInt64Row() {
   return nullptr;
 }
 
-// The engine's documented layout: operation_id, result_kind, column_count, row_count, per column four descriptor fields, then value[r.c].
-std::vector<pr::Field> Vector(const std::vector<std::vector<std::int64_t>>& rows, std::size_t columns, const dt::DatatypeTypeCodecIdentityRowV1& row) {
+// The engine's documented layout: operation_id, result_kind, column_count, row_count, per column SIX descriptor fields (the identity triple and generation, then the declared
+// decimal precision and scale: 0, 0 for a non-decimal column), then value[r.c]. OLD (before 2026-12-25, SB_NATIVE_VALUES_DECIMAL_SCALE): four fields per column.
+std::vector<pr::Field> Vector(const std::vector<std::vector<std::int64_t>>& rows, std::size_t columns, const dt::DatatypeTypeCodecIdentityRowV1& row,
+                              std::uint64_t column_precision = 0, std::uint64_t column_scale = 0) {
   std::vector<pr::Field> fields;
   fields.push_back({"operation_id", pr::Kind::text, "query.evaluate_projection"});
   fields.push_back({"result_kind", pr::Kind::text, "native_scalar_projection_vector"});
@@ -75,6 +77,8 @@ std::vector<pr::Field> Vector(const std::vector<std::vector<std::int64_t>>& rows
     fields.push_back({"column_datatype[" + i + "]", pr::Kind::uuid, Bytes16(row.type_uuid)});
     fields.push_back({"column_datatype_descriptor[" + i + "]", pr::Kind::uuid, Bytes16(row.descriptor_uuid)});
     fields.push_back({"column_datatype_generation[" + i + "]", pr::Kind::unsigned_integer, U64(row.descriptor_generation)});
+    fields.push_back({"column_precision[" + i + "]", pr::Kind::unsigned_integer, U64(column_precision)});
+    fields.push_back({"column_scale[" + i + "]", pr::Kind::unsigned_integer, U64(column_scale)});
   }
   for (std::size_t r = 0; r < rows.size(); ++r)
     for (std::size_t c = 0; c < columns; ++c)
@@ -260,20 +264,22 @@ int main() {
       if (entry.legacy_fields.codec_id == "datatype.decimal.base1e9.le.v1" && entry.legacy_fields.canonical_name == "decimal") { decimal = &entry.legacy_fields; break; }
     Check(decimal != nullptr, "the compiled cohort has the exact-decimal identity (datatype.decimal.base1e9.le.v1)");
     if (decimal) {
-      const auto decimal_vector = [&](const std::string& body, pr::Kind kind) {
-        auto fields = Vector({{0}}, 1, *decimal);
+      const auto decimal_vector = [&](const std::string& body, pr::Kind kind, std::uint64_t column_precision = 2, std::uint64_t column_scale = 1) {
+        auto fields = Vector({{0}}, 1, *decimal, column_precision, column_scale);
         fields.back() = {"value[0.0]", kind, body};
         return fields;
       };
-      struct Case { const char* lexical; const char* shown; unsigned sign_and_scale; unsigned precision; };
+      struct Case { const char* lexical; const char* shown; unsigned sign_and_scale; unsigned precision; std::uint64_t column_precision; std::uint64_t column_scale; };
+      // the last two columns are the column's DECLARED precision and scale (the written shape): the parser pads the fraction to the declared scale
       const Case cases[] = {
-          {"1.5", "1.5", 1, 2}, {"-1.5", "-1.5", 0x81, 2}, {"0.1", "0.1", 1, 1}, {"-0.1", "-0.1", 0x81, 1}, {"0", "0", 0, 1},
-          {"123.456", "123.456", 3, 6}, {"-9223372036854775809", "-9223372036854775809", 0x80, 19}, {"9223372036854775808", "9223372036854775808", 0, 19},
-          {"99999999999999999999999999999999999999", "99999999999999999999999999999999999999", 0, 38},
-          {"0.00000000000000000000000000000000000001", "0.00000000000000000000000000000000000001", 38, 38},
-          {"1e2", "100", 0, 3}, {"5e-1", "0.5", 1, 1},
-          // the engine codec's canonical form drops trailing fractional zeros and a negative zero (pinned by ia01_literal_runtime_test): shown, not changed here
-          {"0.10", "0.1", 1, 1}, {"-0.000", "0", 0, 1}};
+          {"1.5", "1.5", 1, 2, 2, 1}, {"-1.5", "-1.5", 0x81, 2, 2, 1}, {"0.1", "0.1", 1, 1, 1, 1}, {"-0.1", "-0.1", 0x81, 1, 1, 1}, {"0", "0", 0, 1, 1, 0},
+          {"123.456", "123.456", 3, 6, 6, 3}, {"-9223372036854775809", "-9223372036854775809", 0x80, 19, 19, 0}, {"9223372036854775808", "9223372036854775808", 0, 19, 19, 0},
+          {"99999999999999999999999999999999999999", "99999999999999999999999999999999999999", 0, 38, 38, 0},
+          {"0.00000000000000000000000000000000000001", "0.00000000000000000000000000000000000001", 38, 38, 38, 38},
+          {"1e2", "100", 0, 3, 3, 0}, {"5e-1", "0.5", 1, 1, 1, 1},
+          // OLD (2026-12-24): {"0.10", "0.1", 1, 1} and {"-0.000", "0", 0, 1}: the display was the codec's canonical spelling. NEW (2026-12-25, owner Q1): the value bytes are still canonical
+          // (trailing fractional zeros and a negative zero dropped, pinned by ia01_literal_runtime_test) and the DISPLAY follows the column's declared scale
+          {"0.10", "0.10", 1, 1, 2, 2}, {"-0.000", "0.000", 0, 1, 3, 3}, {"1.5", "1.500", 1, 2, 4, 3}, {"100", "100.00", 0, 3, 5, 2}, {"-1", "-1.0", 0x80, 1, 20, 1}};
       for (const auto& c : cases) {
         const auto encoded = sblr::EncodeSblrLiteralExactDecimalV1(c.lexical);
         Check(encoded.ok, std::string("the engine codec accepts ") + c.lexical);
@@ -281,15 +287,39 @@ int main() {
         const std::string body(reinterpret_cast<const char*>(encoded.canonical_bytes.data()), encoded.canonical_bytes.size());
         Check(body.size() == 24 && static_cast<unsigned char>(body[0]) == c.sign_and_scale && static_cast<unsigned char>(body[1]) == c.precision,
               std::string(c.lexical) + ": header byte 0 (sign bit | scale) and byte 1 (precision) are the constants written here");
-        const auto converted = sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(body, pr::Kind::bytes)), {"d"});
+        const auto converted = sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(body, pr::Kind::bytes, c.column_precision, c.column_scale)), {"d"});
         Check(converted.status == sbsql::NativeVectorConversionStatus::converted, std::string(c.lexical) + " converts: " + converted.refusal_code + " " + converted.refusal_detail);
         const auto rows = Decode(converted.payload);
         Check(rows.ok && rows.rows.size() == 1 && rows.rows[0].size() == 1 && rows.rows[0][0] && *rows.rows[0][0] == c.shown,
-              std::string(c.lexical) + ": the client row is the codec's fixed-point spelling `" + c.shown + "`");
+              std::string(c.lexical) + ": the client row is the fixed-point spelling `" + c.shown + "` at the column's declared scale");
         Check(converted.payload.find("d:decimal:not_null") != std::string::npos, std::string(c.lexical) + ": the parser's row metadata names the column type decimal");
         // the same body through a signed_integer / text carrier or reversed is NOT a decimal value
         Check(sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(body, pr::Kind::text)), {"d"}).refusal_code == "SBSQL.NATIVE_RESULT.VALUE_INVALID",
               std::string(c.lexical) + ": a text carrier for a decimal column is refused (VALUE_INVALID)");
+      }
+      {
+        // the declared shape is checked, never trusted: a value that does not fit it, and a shape that is not a decimal shape, are refused
+        const auto body_of = [&](const char* lexical) {
+          const auto e = sblr::EncodeSblrLiteralExactDecimalV1(lexical);
+          return std::string(reinterpret_cast<const char*>(e.canonical_bytes.data()), e.canonical_bytes.size());
+        };
+        const auto refusal = [&](const std::string& body, std::uint64_t p, std::uint64_t sc) {
+          const auto r = sbsql::ConvertNativeScalarProjectionVector(Encode(decimal_vector(body, pr::Kind::bytes, p, sc)), {"d"});
+          return r.status == sbsql::NativeVectorConversionStatus::refused ? r.refusal_code + "/" + r.refusal_detail : std::string("(not refused)");
+        };
+        Check(refusal(body_of("1.5"), 1, 0) == "SBSQL.NATIVE_RESULT.VALUE_INVALID/value_0_0", "1.5 does not fit decimal(1,0) (scale): refused");
+        Check(refusal(body_of("12.5"), 2, 1) == "SBSQL.NATIVE_RESULT.VALUE_INVALID/value_0_0", "12.5 does not fit decimal(2,1) (integer digits): refused");
+        Check(refusal(body_of("0.25"), 2, 1) == "SBSQL.NATIVE_RESULT.VALUE_INVALID/value_0_0", "0.25 does not fit decimal(2,1) (scale): refused");
+        Check(refusal(body_of("0.5"), 1, 1) == "(not refused)", "0.5 fits decimal(1,1) (a pure fraction has no integer digits)");
+        Check(refusal(body_of("0"), 1, 1) == "(not refused)", "zero fits decimal(1,1)");
+        Check(refusal(body_of("1.5"), 0, 0) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/column_shape_0", "a decimal column declaring precision 0 is refused");
+        Check(refusal(body_of("1.5"), 39, 1) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/column_shape_0", "a decimal column declaring precision 39 is refused");
+        Check(refusal(body_of("1.5"), 2, 3) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/column_shape_0", "a decimal column declaring scale > precision is refused");
+        auto int_with_shape = Vector({{1}}, 1, *int64, 2, 1);
+        Check(sbsql::ConvertNativeScalarProjectionVector(Encode(int_with_shape), {"i"}).refusal_code == "SBSQL.NATIVE_RESULT.VECTOR_INVALID", "an int64 column declaring a decimal shape is refused");
+        auto short_layout = Vector({{1}}, 1, *int64);
+        short_layout.erase(short_layout.begin() + 8, short_layout.begin() + 10);  // the OLD four-field-per-column layout
+        Check(sbsql::ConvertNativeScalarProjectionVector(Encode(short_layout), {"i"}).refusal_code == "SBSQL.NATIVE_RESULT.VECTOR_INVALID", "the OLD four-field column layout is refused (field_count)");
       }
       const auto good = sblr::EncodeSblrLiteralExactDecimalV1("-1.5");
       const std::string body(reinterpret_cast<const char*>(good.canonical_bytes.data()), good.canonical_bytes.size());
@@ -311,7 +341,7 @@ int main() {
       // a decimal body under the int64 identity (and the int64 carrier under the decimal identity) is refused
       Check(sbsql::ConvertNativeScalarProjectionVector(Encode([&] { auto f = Vector({{0}}, 1, *int64); f.back() = {"value[0.0]", pr::Kind::bytes, body}; return f; }()), {"d"}).refusal_code ==
                 "SBSQL.NATIVE_RESULT.VALUE_INVALID", "a decimal body under the int64 identity is refused");
-      Check(sbsql::ConvertNativeScalarProjectionVector(Encode(Vector({{1}}, 1, *decimal)), {"d"}).refusal_code == "SBSQL.NATIVE_RESULT.VALUE_INVALID",
+      Check(sbsql::ConvertNativeScalarProjectionVector(Encode(Vector({{1}}, 1, *decimal, 2, 1)), {"d"}).refusal_code == "SBSQL.NATIVE_RESULT.VALUE_INVALID",
             "an int64 carrier under the decimal identity is refused");
       // two columns: int64 and decimal in ONE row, each with its own identity (the group is four fields per column either way)
       auto mixed = Vector({{7, 0}}, 2, *int64);
@@ -319,6 +349,8 @@ int main() {
         if (f.name == "column_datatype[1]") f.value = Bytes16(decimal->type_uuid);
         if (f.name == "column_datatype_descriptor[1]") f.value = Bytes16(decimal->descriptor_uuid);
         if (f.name == "column_datatype_generation[1]") f.value = U64(decimal->descriptor_generation);
+        if (f.name == "column_precision[1]") f.value = U64(2);
+        if (f.name == "column_scale[1]") f.value = U64(1);
         if (f.name == "value[0.1]") f = {"value[0.1]", pr::Kind::bytes, body};
       }
       const auto mixed_converted = sbsql::ConvertNativeScalarProjectionVector(Encode(mixed), {"a", "b"});
@@ -327,6 +359,35 @@ int main() {
                 mixed_converted.payload.find("a:int64:not_null;b:decimal:not_null") != std::string::npos,
             "an int64 column and a decimal column in one row each render by their own identity");
     }
+  }
+
+  // ---- the engine's decimal fit rules (SB_NATIVE_VALUES_DECIMAL_UNIFICATION / _SCALE, 2026-12-25): the functions the engine's VALUES validation sites, its typed-literal evaluation and its
+  // vector encoder call. A shape FITS a column when scale <= the column's and integer digits <= the column's integer digits; a canonical body FITS when its VALUE does (zero has no integer digits). ----
+  {
+    const auto body = [&](const char* lexical) {
+      const auto e = sblr::EncodeSblrLiteralExactDecimalV1(lexical);
+      return std::string(reinterpret_cast<const char*>(e.canonical_bytes.data()), e.canonical_bytes.size());
+    };
+    const auto bytes_fit = [&](const char* lexical, std::uint32_t p, std::uint32_t sc) {
+      const auto b = body(lexical);
+      return sblr::SblrDecimalBodyFitsColumnV1(reinterpret_cast<const std::uint8_t*>(b.data()), b.size(), p, sc);
+    };
+    struct BodyCase { const char* lexical; std::uint32_t p, s; bool fits; };
+    for (const auto& c : {BodyCase{"1.5", 2, 1, true}, BodyCase{"1.5", 3, 2, true}, BodyCase{"1.5", 1, 0, false}, BodyCase{"12.5", 2, 1, false}, BodyCase{"12.5", 3, 1, true},
+                          BodyCase{"0.25", 2, 1, false}, BodyCase{"0.25", 2, 2, true}, BodyCase{"0.5", 1, 1, true}, BodyCase{"0", 1, 1, true}, BodyCase{"0", 1, 0, true},
+                          BodyCase{"-0.000", 3, 3, true}, BodyCase{"100", 3, 0, true}, BodyCase{"100", 2, 0, false}, BodyCase{"100", 21, 2, true}, BodyCase{"100", 5, 3, false},
+                          BodyCase{"99999999999999999999999999999999999999", 38, 0, true}, BodyCase{"99999999999999999999999999999999999999", 38, 1, false},
+                          BodyCase{"0.00000000000000000000000000000000000001", 38, 38, true}, BodyCase{"1.5", 0, 0, false}, BodyCase{"1.5", 39, 1, false}, BodyCase{"1.5", 2, 3, false}})
+      Check(bytes_fit(c.lexical, c.p, c.s) == c.fits, std::string("body ") + c.lexical + " in decimal(" + std::to_string(c.p) + "," + std::to_string(c.s) + ") " + (c.fits ? "fits" : "does not fit"));
+    const auto b = body("1.5");
+    Check(!sblr::SblrDecimalBodyFitsColumnV1(reinterpret_cast<const std::uint8_t*>(b.data()), 23, 2, 1) && !sblr::SblrDecimalBodyFitsColumnV1(nullptr, 24, 2, 1),
+          "a truncated or absent body never fits");
+    using O = std::optional<std::uint32_t>;
+    struct ShapeCase { O lp, ls, cp, cs; bool fits; };
+    for (const auto& c : {ShapeCase{2, 1, 3, 2, true}, ShapeCase{3, 2, 3, 2, true}, ShapeCase{3, 2, 2, 1, false}, ShapeCase{2, 1, 2, 1, true}, ShapeCase{3, 1, 3, 2, false}, ShapeCase{4, 1, 3, 2, false},
+                          ShapeCase{1, 1, 2, 2, true}, ShapeCase{2, 2, 2, 1, false}, ShapeCase{std::nullopt, std::nullopt, std::nullopt, std::nullopt, true}, ShapeCase{2, 1, std::nullopt, std::nullopt, false},
+                          ShapeCase{std::nullopt, std::nullopt, 2, 1, false}, ShapeCase{1, 2, 3, 2, false}})
+      Check(sblr::SblrDecimalShapeFitsColumnV1(c.lp, c.ls, c.cp, c.cs) == c.fits, "shape fit rule case");
   }
 
   std::cout << "native_result_vector_parse: " << checks << " checks, " << failures << " failures\n";

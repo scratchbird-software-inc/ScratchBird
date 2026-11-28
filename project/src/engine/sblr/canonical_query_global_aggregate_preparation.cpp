@@ -1014,9 +1014,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             ((direct_is_int64 &&
               !direct_descriptor->precision.has_value() &&
               !direct_descriptor->scale.has_value()) ||
-             (direct_decimal.ok &&
-              direct_descriptor->precision == direct_decimal.precision &&
-              direct_descriptor->scale == direct_decimal.scale)) &&
+             // SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25): the descriptor carries the WRITTEN shape; the canonical body must FIT it. OLD: precision and scale EQUAL the body's canonical ones.
+             (direct_decimal.ok && direct_descriptor->precision.has_value() && direct_descriptor->scale.has_value() &&
+              SblrDecimalBodyFitsColumnV1(argument->literal_typed_value_v1->canonical_value_bytes.data(), argument->literal_typed_value_v1->canonical_value_bytes.size(), *direct_descriptor->precision, *direct_descriptor->scale))) &&
             argument->result_descriptor_id !=
                 root.output_descriptor_ids.front() &&
             std::ranges::find(input_node.output_descriptor_ids,

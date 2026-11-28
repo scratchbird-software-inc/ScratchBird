@@ -1159,6 +1159,115 @@ bool ExactTimeSeriesPreResolutionAst(
          input->expression_kind == NativeExpressionAstKind::kIdentifier;
 }
 
+// SB_PARSER_DECIMAL_WRITTEN_SHAPE (2026-12-25; owner 2026-11-28 Q1): the exact-decimal literal's descriptor shape is the WRITTEN one: precision = max(significant digits,
+// scale), scale = fraction digits minus the exponent (never below 0, the digits grow instead). `0.10` is decimal(2,2), `0.0` decimal(1,1), `1e2` decimal(3,0). The codec's
+// value bytes stay canonical (no trailing fractional zeros, the spec's value form): the display scale belongs to the DESCRIPTOR. OLD: the codec's canonical shape
+// (`0.10` was decimal(1,1)) so the written scale was lost. The text is the parser's own lexical reading; the engine is never asked to parse it.
+struct DecimalShape {
+  std::size_t precision{0};
+  std::size_t scale{0};
+  bool operator==(const DecimalShape&) const = default;
+};
+// a literal shape FITS a column shape: its scale does not exceed the column's and its integer digits do not exceed the column's integer digits
+bool DecimalShapeFitsColumn(const DecimalShape& literal, const DecimalShape& column) {
+  return literal.scale <= column.scale && literal.precision - literal.scale <= column.precision - column.scale;
+}
+bool IsExactDecimalLiteralSpelling(std::string_view spelling);
+std::optional<DecimalShape> WrittenExactDecimalShape(std::string_view spelling) {
+  std::string text(spelling);
+  for (const std::string_view suffix : {std::string_view("DECIMAL"), std::string_view("DEC"), std::string_view("D")}) {
+    if (text.size() > suffix.size() && ToUpperAscii(text).ends_with(suffix)) { text.resize(text.size() - suffix.size()); break; }
+  }
+  std::size_t at = (!text.empty() && (text[0] == '-' || text[0] == '+')) ? 1 : 0;
+  std::string coefficient;
+  std::size_t fraction_digits = 0;
+  bool in_fraction = false;
+  for (; at < text.size(); ++at) {
+    const char ch = text[at];
+    if (ch == '_') continue;
+    if (ch == '.') { if (in_fraction) return std::nullopt; in_fraction = true; continue; }
+    if (ch == 'e' || ch == 'E') break;
+    if (ch < '0' || ch > '9') return std::nullopt;
+    coefficient.push_back(ch);
+    if (in_fraction) ++fraction_digits;
+  }
+  long long exponent = 0;
+  if (at < text.size()) {
+    ++at;
+    bool negative = false;
+    if (at < text.size() && (text[at] == '-' || text[at] == '+')) negative = text[at++] == '-';
+    if (at >= text.size()) return std::nullopt;
+    for (; at < text.size(); ++at) {
+      if (text[at] < '0' || text[at] > '9') return std::nullopt;
+      exponent = std::min<long long>(exponent * 10 + (text[at] - '0'), 1000000);
+    }
+    if (negative) exponent = -exponent;
+  }
+  const auto first_nonzero = coefficient.find_first_not_of('0');
+  std::size_t digits = first_nonzero == std::string::npos ? 1 : coefficient.size() - first_nonzero;
+  long long scale = static_cast<long long>(fraction_digits) - exponent;
+  if (scale < 0) { digits += static_cast<std::size_t>(-scale); scale = 0; }
+  const auto scale_value = static_cast<std::size_t>(scale);
+  return DecimalShape{std::max(digits, scale_value), scale_value};
+}
+
+// SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25; owner 2026-11-28 Q2): the decimal columns of a VALUES relation are UNIFIED across rows: scale = max scale, precision =
+// max integer digits + max scale (<= 38 or SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED); an int64 literal in a column that also holds a decimal counts as
+// decimal(19,0) and is negotiated under the exact-decimal literal profile ("promoted": its value bytes are the decimal codec's, never a rescale of int64 bytes). The
+// first row's literal descriptor IS the column descriptor, so it carries the unified shape; every other row keeps its own written shape (the engine and the lowering
+// check that each FITS the column: scale <= column scale and integer digits <= column integer digits). A column holding anything but numeric literals is left alone
+// (a boolean mixed with a decimal stays refused by the lowering).
+constexpr std::size_t kInt64AsDecimalPrecision = 19;
+constexpr std::size_t kExactDecimalProfilePrecisionLimit = 38;
+struct ValuesDecimalUnification {
+  std::set<std::uint32_t> promoted;                          // expression ids of integer literals negotiated as exact decimal
+  std::map<std::uint32_t, DecimalShape> first_row_shape;     // first-row expression id -> the column's unified shape
+  std::optional<std::size_t> over_precision;                 // the unified precision when it exceeds the profile limit
+};
+ValuesDecimalUnification ComputeValuesDecimalUnification(const NativeRelationalAstDocument& ast) {
+  ValuesDecimalUnification out;
+  if (ast.values_rows.empty()) return out;
+  const auto arity = ast.values_rows.front().expression_ids.size();
+  std::map<std::uint32_t, const NativeExpressionAstNode*> by_id;
+  for (const auto& expression : ast.expressions) by_id.emplace(expression.expression_id, &expression);
+  for (std::size_t ordinal = 0; ordinal < arity; ++ordinal) {
+    std::vector<const NativeExpressionAstNode*> column;
+    bool numeric_only = true, any_decimal = false;
+    for (const auto& row : ast.values_rows) {
+      if (row.expression_ids.size() != arity) { numeric_only = false; break; }
+      const auto found = by_id.find(row.expression_ids[ordinal]);
+      if (found == by_id.end() || found->second->expression_kind != NativeExpressionAstKind::kLiteral ||
+          found->second->literal_kind != NativeLiteralAstKind::kNumeric) { numeric_only = false; break; }
+      any_decimal = any_decimal || IsExactDecimalLiteralSpelling(found->second->spelling);
+      column.push_back(found->second);
+    }
+    if (!numeric_only || !any_decimal) continue;
+    std::size_t integer_digits = 0, scale = 0;
+    bool readable = true;
+    for (const auto* literal : column) {
+      DecimalShape shape;
+      if (IsExactDecimalLiteralSpelling(literal->spelling)) {
+        const auto written = WrittenExactDecimalShape(literal->spelling);
+        if (!written) { readable = false; break; }
+        shape = *written;
+      } else {
+        out.promoted.insert(literal->expression_id);
+        shape = {kInt64AsDecimalPrecision, 0};
+      }
+      integer_digits = std::max(integer_digits, shape.precision - shape.scale);
+      scale = std::max(scale, shape.scale);
+    }
+    if (!readable) continue;
+    const auto precision = integer_digits + scale;
+    if (precision > kExactDecimalProfilePrecisionLimit) {
+      if (!out.over_precision) out.over_precision = precision;
+      continue;
+    }
+    out.first_row_shape[column.front()->expression_id] = {precision, scale};
+  }
+  return out;
+}
+
 // SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24): the generation of the exact-decimal CODEC PROFILE (the occurrence-local DecimalCodecProfile{uuid, generation}), NOT the cohort
 // codec_generation of the literal's SBLP profile (a different identity that happens to be 1 as well). The negotiated SBLP profile does not carry the decimal codec profile's
 // uuid at all (it names codec_id datatype.decimal.base1e9.le.v1, i.e. the 24-byte codec); the parser takes the uuid from core (kExactDecimal24CodecUuid: precision <= 38, which the
@@ -8474,9 +8583,11 @@ BuildEngineProjectedNativeBindingContext(
         direct_descriptor.canonical_type_name =
             bigint_literal ? "int64" : "decimal";
         if (decimal_literal) {
-          direct_descriptor.width_precision_scale.precision =
-              decimal.precision;
-          direct_descriptor.width_precision_scale.scale = decimal.scale;
+          // SB_PARSER_DECIMAL_WRITTEN_SHAPE (2026-12-25): the WRITTEN shape, like every other decimal literal descriptor. OLD: decimal.precision / decimal.scale (the codec's canonical shape).
+          const auto written_shape = WrittenExactDecimalShape(direct_expression->spelling);
+          if (!written_shape) return fail("catalog_global_direct_literal_shape_unreadable");
+          direct_descriptor.width_precision_scale.precision = static_cast<std::uint32_t>(written_shape->precision);
+          direct_descriptor.width_precision_scale.scale = static_cast<std::uint32_t>(written_shape->scale);
         }
         context.descriptors.push_back(std::move(direct_descriptor));
         context.expressions.push_back(
@@ -8860,6 +8971,8 @@ BuildEngineProjectedNativeBindingContext(
         numeric_literal_occurrences[index], index);
   }
 
+  // SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25): the first row of a decimal column carries the column's unified shape (see ComputeValuesDecimalUnification)
+  const auto decimal_unification = ComputeValuesDecimalUnification(ast);
   std::array<std::uint16_t, 7> next_profile_slot{};
   // Literal admission owns one non-null numeric descriptor identity per
   // structural occurrence.  Keep the corresponding statement-profile slots
@@ -8955,8 +9068,14 @@ BuildEngineProjectedNativeBindingContext(
     descriptor.nullability = BoundNullability::kNonNull;
     descriptor.canonical_type_name = bigint_codec ? "int64" : "decimal";
     if (exact_decimal_codec) {
-      descriptor.width_precision_scale.precision = decimal.precision;
-      descriptor.width_precision_scale.scale = decimal.scale;
+      // SB_PARSER_DECIMAL_WRITTEN_SHAPE / SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25): the column's unified shape for a column's first row, else the WRITTEN shape.
+      // OLD: descriptor.width_precision_scale.precision = decimal.precision; .scale = decimal.scale (the codec's canonical shape: 0.10 was decimal(1,1)).
+      const auto unified = decimal_unification.first_row_shape.find(expression.expression_id);
+      const auto written = WrittenExactDecimalShape(expression.spelling);
+      if (unified == decimal_unification.first_row_shape.end() && !written) return std::nullopt;
+      const auto shape = unified != decimal_unification.first_row_shape.end() ? unified->second : *written;
+      descriptor.width_precision_scale.precision = static_cast<std::uint32_t>(shape.precision);
+      descriptor.width_precision_scale.scale = static_cast<std::uint32_t>(shape.scale);
       // SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24, owner 2026-11-26 item 3): the decimal literal's descriptor carries the cohort's exact-decimal
       // codec profile (24-byte base-1e9, generation from the negotiated literal profile), exactly as a catalog DECIMAL column's does; without it
       // the engine's bound-DECIMAL validation refuses the VALUES descriptor ("DECIMAL column profile or nullability is invalid").
@@ -9808,15 +9927,18 @@ struct DecimalLiteralPrecisionExceeded {
   std::size_t limit{kExactDecimalLiteralPrecisionLimit};
 };
 std::optional<DecimalLiteralPrecisionExceeded> FindDecimalLiteralPrecisionExceeded(const NativeRelationalAstDocument& ast) {
+  const auto unification = ComputeValuesDecimalUnification(ast);
   for (const auto& expression : ast.expressions) {
     if (expression.expression_kind != NativeExpressionAstKind::kLiteral || expression.literal_kind != NativeLiteralAstKind::kNumeric ||
-        !IsExactDecimalLiteralSpelling(expression.spelling)) continue;
+        !(IsExactDecimalLiteralSpelling(expression.spelling) || unification.promoted.contains(expression.expression_id))) continue;
     const auto encoded = scratchbird::engine::sblr::EncodeSblrLiteralExactDecimalV1(expression.spelling);
     if (encoded.ok) continue;
     const auto precision = EffectiveExactDecimalPrecision(expression.spelling);
     if (precision && (encoded.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID" || *precision > kExactDecimalLiteralPrecisionLimit))
       return DecimalLiteralPrecisionExceeded{*precision, kExactDecimalLiteralPrecisionLimit};
   }
+  // SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25): every literal fits the profile but the UNIFIED column (max integer digits + max scale) does not
+  if (unification.over_precision) return DecimalLiteralPrecisionExceeded{*unification.over_precision, kExactDecimalLiteralPrecisionLimit};
   return std::nullopt;
 }
 
@@ -9928,6 +10050,7 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
   demand.resource_epoch = context.literal_resource_epoch;
   demand.mga_snapshot_uuid = *mga;
   LiteralPrebindState state;
+  const auto decimal_unification = ComputeValuesDecimalUnification(ast);
   std::uint32_t numeric_slot = 0;
   for (std::size_t index = 0; index < literals.size(); ++index) {
     const bool boolean_literal =
@@ -9936,7 +10059,8 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
     const bool boolean_null = boolean_literal &&
         literals[index]->literal_kind == NativeLiteralAstKind::kNull;
     const bool exact_decimal =
-        !boolean_literal && IsExactDecimalLiteralSpelling(literals[index]->spelling);
+        !boolean_literal && (IsExactDecimalLiteralSpelling(literals[index]->spelling) ||
+                             decimal_unification.promoted.contains(literals[index]->expression_id));
     const auto decimal = exact_decimal
         ? scratchbird::engine::sblr::EncodeSblrLiteralExactDecimalV1(
               literals[index]->spelling)
@@ -11577,8 +11701,17 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
         const auto encoded = scratchbird::engine::sblr::
             EncodeSblrLiteralExactDecimalV1(lexical);
         if (!encoded.ok) return std::nullopt;
-        numeric_descriptor.width_precision_scale.precision = encoded.precision;
-        numeric_descriptor.width_precision_scale.scale = encoded.scale;
+        // SB_PARSER_DECIMAL_WRITTEN_SHAPE / SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25): the node's descriptor is the WRITTEN shape of its literal, or the column's
+        // UNIFIED shape when the lowered descriptor (the first row of a VALUES column) is wider and the literal FITS it. OLD: encoded.precision / encoded.scale (the codec's
+        // canonical shape, equal to the lowered descriptor by construction).
+        const auto written_shape = WrittenExactDecimalShape(lexical);
+        if (!written_shape) return std::nullopt;
+        DecimalShape node_shape = *written_shape;
+        if (descriptor->second.precision && descriptor->second.scale &&
+            DecimalShapeFitsColumn(*written_shape, {*descriptor->second.precision, *descriptor->second.scale}))
+          node_shape = {*descriptor->second.precision, *descriptor->second.scale};
+        numeric_descriptor.width_precision_scale.precision = static_cast<std::uint32_t>(node_shape.precision);
+        numeric_descriptor.width_precision_scale.scale = static_cast<std::uint32_t>(node_shape.scale);
         // SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24): the lowered decimal literal descriptor carries the cohort codec profile
         numeric_descriptor.decimal_codec_profile = core::datatypes::DecimalCodecProfile{
             core::datatypes::kExactDecimal24CodecUuid, kExactDecimalCodecProfileGeneration};
@@ -28844,7 +28977,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
-  auto ast = BuildAst(cst);
+  AstBuildOptions ast_options;
+  ast_options.aliased_literal_projection_as_values = true;  // SB_PARSER_ALIASED_LITERAL_PROJECTION (2026-12-25): the wire pipeline routes aliased bare literals through VALUES
+  auto ast = BuildAst(cst, ast_options);
   const bool compile_or_submit = submit || ast.native_relational.recognized();
   if (ast.native_relational.recognized() && !session_.authenticated) {
     PipelineResult result;
@@ -29121,10 +29256,16 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   // and its only literals are numeric. Boolean and NULL literals, and every non-scalar-projection statement, keep the exact previous behavior.
   const bool scalar_numeric_literals_ride_operands =
       scalar_projection_demand && !ast.native_relational.recognized() &&
-      std::ranges::none_of(ast.native_relational.expressions, [](const auto& expression) {
-        return expression.expression_kind == NativeExpressionAstKind::kLiteral &&
-               expression.literal_kind == NativeLiteralAstKind::kBoolean;
-      });
+      // SB_PARSER_BOOLEAN_EXPRESSION_OVER_LITERALS (2026-12-25, owner 2026-11-28 Q4): the boolean exclusion stays for a statement whose expressions are ALL literals
+      // (the S4h stopgap's reason); a boolean literal under an operator (`NOT TRUE`, `TRUE AND FALSE`, `1 < 2`) rides the operands like a numeric one, so the
+      // statement reaches the engine's operator refusal. OLD: any boolean literal excluded the whole statement (DATATYPE.DESCRIPTOR.INVALID at prebind).
+      (std::ranges::any_of(ast.native_relational.expressions, [](const auto& expression) {
+         return expression.expression_kind != NativeExpressionAstKind::kLiteral;
+       }) ||
+       std::ranges::none_of(ast.native_relational.expressions, [](const auto& expression) {
+         return expression.expression_kind == NativeExpressionAstKind::kLiteral &&
+                expression.literal_kind == NativeLiteralAstKind::kBoolean;
+       }));
   const bool requires_ordinary_literal_finalization = (!scalar_numeric_literals_ride_operands && std::ranges::any_of(
       ast.native_relational.expressions, [](const auto& expression) {
         return expression.expression_kind == NativeExpressionAstKind::kLiteral &&
@@ -29977,6 +30118,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             literal_prebind_state.has_value() &&
             native_statement_context->literal_statement_descriptor_profiles
                     .size() == literal_prebind_state->occurrences.size()) {
+          const auto decimal_unification = ComputeValuesDecimalUnification(ast.native_relational);
           for (std::size_t literal_index = 0;
                literal_index < literal_prebind_state->occurrences.size();
                ++literal_index) {
@@ -30034,9 +30176,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                   projected.nullability = profile.nullable
                       ? BoundNullability::kNullable : BoundNullability::kNonNull;
                   if (decimal_literal) {
-                    projected.width_precision_scale.precision =
-                        decimal.precision;
-                    projected.width_precision_scale.scale = decimal.scale;
+                    // SB_PARSER_DECIMAL_WRITTEN_SHAPE / SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25): the column's unified shape (first row of a VALUES column)
+                    // or the WRITTEN shape. OLD: decimal.precision / decimal.scale (the codec's canonical shape).
+                    const auto unified = decimal_unification.first_row_shape.find(ast_literal->expression_id);
+                    const auto written = WrittenExactDecimalShape(ast_literal->spelling);
+                    if (unified == decimal_unification.first_row_shape.end() && !written) return false;
+                    const auto shape = unified != decimal_unification.first_row_shape.end() ? unified->second : *written;
+                    projected.width_precision_scale.precision = static_cast<std::uint32_t>(shape.precision);
+                    projected.width_precision_scale.scale = static_cast<std::uint32_t>(shape.scale);
                     // SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24): see the binding-context site; the finalized descriptor keeps the cohort's profile.
                     projected.decimal_codec_profile = core::datatypes::DecimalCodecProfile{
                         core::datatypes::kExactDecimal24CodecUuid, kExactDecimalCodecProfileGeneration};

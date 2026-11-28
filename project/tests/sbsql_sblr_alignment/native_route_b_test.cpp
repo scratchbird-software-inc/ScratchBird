@@ -242,7 +242,14 @@ void CheckAcceptedMixedTable(const Ran& ran, const std::string& sql, const std::
     for (const auto& f : fields) if (f.name == name) { if (found) return nullptr; found = &f; }
     return found;
   };
-  Check(fields.size() == 4 + 4 * columns + columns * rows, label + ": the vector holds exactly the header, four fields per column and one value per cell (no name, no text)");
+  // OLD (before 2026-12-25): 4 + 4 * columns + columns * rows (four fields per column). NEW: six (column_precision and column_scale follow the generation; 0, 0 for int64 and boolean)
+  Check(fields.size() == 4 + 6 * columns + columns * rows, label + ": the vector holds exactly the header, six fields per column and one value per cell (no name, no text)");
+  for (std::size_t column = 0; column < columns; ++column) {
+    const auto* cp = find("column_precision[" + std::to_string(column) + "]");
+    const auto* cs = find("column_scale[" + std::to_string(column) + "]");
+    Check(cp && cs && cp->kind == pr::Kind::unsigned_integer && cs->kind == pr::Kind::unsigned_integer && LE64(cp->value) == 0 && LE64(cs->value) == 0,
+          label + ": column " + std::to_string(column) + " declares no decimal shape (precision 0, scale 0)");
+  }
   const auto* kind_field = find("result_kind");
   const auto* rows_field = find("row_count");
   const auto* columns_field = find("column_count");
@@ -1477,13 +1484,20 @@ struct Cell {
   std::string lexical;
   unsigned sign_scale = 0;
   unsigned precision = 0;
+  // SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25): the column's DECLARED decimal precision and scale as the engine's vector carries them (0, 0 for int64 and boolean)
+  unsigned column_precision = 0;
+  unsigned column_scale = 0;
 };
 Cell I(std::int64_t value) { return {'i', std::to_string(value), "", 0, 0}; }
 Cell B(bool value) { return {'b', value ? "true" : "false", "", 0, 0}; }
-Cell D(std::string lexical, std::string shown, unsigned sign_scale, unsigned precision) { return {'d', std::move(shown), std::move(lexical), sign_scale, precision}; }
+// D(lexical, shown, body byte 0 (sign bit | scale), body byte 1 (precision), the column's declared precision, the column's declared scale). OLD (before 2026-12-25) D had four arguments:
+// the shown text was the codec's canonical spelling (0.10 showed 0.1); NEW: the parser pads the fraction to the COLUMN's declared scale (0.10 shows 0.10).
+Cell D(std::string lexical, std::string shown, unsigned sign_scale, unsigned precision, unsigned column_precision, unsigned column_scale) {
+  return {'d', std::move(shown), std::move(lexical), sign_scale, precision, column_precision, column_scale};
+}
 
 void CheckAcceptedCells(const Ran& ran, const std::string& sql, const std::vector<std::vector<Cell>>& expected, const CohortInt64& int64_cohort, const CohortInt64& boolean_cohort,
-                        const CohortInt64& decimal_cohort) {
+                        const CohortInt64& decimal_cohort, const std::vector<std::string>& names = {}) {
   namespace pr = scratchbird::wire::public_result;
   const auto& r = ran.result;
   const std::string label = "'" + sql.substr(0, 60) + "'";
@@ -1501,7 +1515,9 @@ void CheckAcceptedCells(const Ran& ran, const std::string& sql, const std::vecto
   std::string meta;
   for (std::size_t column = 0; column < columns; ++column) {
     const char kind = expected.front()[column].kind;
-    meta += (column ? ";" : "") + std::string("column") + std::to_string(column + 1) + (kind == 'b' ? ":boolean:not_null" : kind == 'd' ? ":decimal:not_null" : ":int64:not_null");
+    // names: the parser's display names (an alias as written, else column<N>); the engine's vector never carries them
+    meta += (column ? ";" : "") + (column < names.size() ? names[column] : std::string("column") + std::to_string(column + 1)) +
+            (kind == 'b' ? ":boolean:not_null" : kind == 'd' ? ":decimal:not_null" : ":int64:not_null");
   }
   Check(r.server_result_payload.ends_with(meta), label + ": the parser's row metadata is " + meta);
   std::vector<pr::Field> fields;
@@ -1511,7 +1527,8 @@ void CheckAcceptedCells(const Ran& ran, const std::string& sql, const std::vecto
     for (const auto& f : fields) if (f.name == name) { if (found) return nullptr; found = &f; }
     return found;
   };
-  Check(fields.size() == 4 + 4 * columns + columns * rows, label + ": the vector holds exactly the header, four fields per column and one value per cell (no name, no text): " + std::to_string(fields.size()));
+  // OLD (before 2026-12-25): 4 + 4 * columns + columns * rows. NEW: SIX fields per column (column_precision and column_scale follow the generation)
+  Check(fields.size() == 4 + 6 * columns + columns * rows, label + ": the vector holds exactly the header, six fields per column and one value per cell (no name, no text): " + std::to_string(fields.size()));
   const auto* kind_field = find("result_kind");
   const auto* rows_field = find("row_count");
   const auto* columns_field = find("column_count");
@@ -1526,6 +1543,12 @@ void CheckAcceptedCells(const Ran& ran, const std::string& sql, const std::vecto
     const auto* g = find("column_datatype_generation[" + n + "]");
     Check(t && td && g && UuidOf(t->value) == cohort.type_uuid && UuidOf(td->value) == cohort.descriptor_uuid && LE64(g->value) == cohort.generation,
           label + ": column " + n + " carries the cohort's " + (kind == 'b' ? "BOOLEAN" : kind == 'd' ? "exact-DECIMAL" : "int64") + " identity (type, descriptor, generation)");
+    const auto* cp = find("column_precision[" + n + "]");
+    const auto* cs = find("column_scale[" + n + "]");
+    Check(cp && cs && cp->kind == pr::Kind::unsigned_integer && cs->kind == pr::Kind::unsigned_integer && LE64(cp->value) == expected.front()[column].column_precision &&
+              LE64(cs->value) == expected.front()[column].column_scale,
+          label + ": column " + n + " declares precision " + std::to_string(expected.front()[column].column_precision) + " and scale " + std::to_string(expected.front()[column].column_scale) +
+              " in the vector (constants written in the test)");
   }
   for (std::size_t row = 0; row < rows; ++row)
     for (std::size_t column = 0; column < columns; ++column) {
@@ -1586,12 +1609,12 @@ void ValueTypesState() {
   };
   const std::string kThree = "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ";
   const std::string kBindOnly = "engine.op.name_resolve#4865(listed) ";
-  struct Accepted { std::string sql; std::vector<std::vector<Cell>> rows; };
+  struct Accepted { std::string sql; std::vector<std::vector<Cell>> rows; std::vector<std::string> names = {}; };
   const auto run_accepted = [&](const std::string& group, const std::vector<Accepted>& list) {
     const FileEvidence group_before;  // evidence per group (see (a2) of the route_b state: per statement took minutes at 128k)
     for (const auto& item : list) {
       const auto ran = RunSql(one, item.sql, 2);
-      CheckAcceptedCells(ran, item.sql, item.rows, int64_cohort, boolean_cohort, decimal_cohort);
+      CheckAcceptedCells(ran, item.sql, item.rows, int64_cohort, boolean_cohort, decimal_cohort, item.names);
       Check(asked_of(ran) == kThree, "(" + group + ") '" + item.sql + "' asks exactly [name_resolve (bind), literal (finalize), literal (execution)], all listed: " + asked_of(ran));
       Check(owner_of(one) && one.order() == order1, "(e) the transaction is still owned after '" + item.sql + "'");
     }
@@ -1622,13 +1645,22 @@ void ValueTypesState() {
       {"SELECT TRUE, FALSE", {{B(true), B(false)}}}, {"SELECT TRUE, 1", {{B(true), I(1)}}}, {"SELECT 1, TRUE", {{I(1), B(true)}}},
       {"SELECT 1, TRUE, -2", {{I(1), B(true), I(-2)}}}, {"select false , true ;", {{B(false), B(true)}}},
   });
-  // refused, unchanged by construction: the bare-projection route requires literal TOKENS, so a boolean EXPRESSION (`NOT TRUE`, `TRUE AND FALSE`) never reaches it and keeps
-  // the scalar-projection stopgap's stop (DATATYPE.DESCRIPTOR.INVALID, bound literal occurrence inventory changed). The task brief expected SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED
-  // (operator_call 1025): the token observed after this change is DATATYPE.DESCRIPTOR.INVALID (I did not probe the pre-change binary for these two statements); found, not
-  // changed. A mixed COLUMN across rows is refused by the lowering.
+  // OLD (part 1, 2026-12-24): `SELECT NOT TRUE` and `SELECT TRUE AND FALSE` stopped at the parser prebind with DATATYPE.DESCRIPTOR.INVALID (bound literal occurrence inventory changed:
+  // the S4h stopgap excluded every statement holding a boolean literal). NEW (owner 2026-11-28 Q4): a boolean literal under an OPERATOR rides the operands like a numeric one, so the
+  // statement reaches the engine's operator refusal (the same row `SELECT 1 + 0` meets). The exclusion stays for a statement whose expressions are ALL literals. Operators still do
+  // NOT execute: the engine is refused on the operator-call row (opcode 1025, the real opcode read from the engine's forwarded field, never typed in as an assumption).
+  // A mixed COLUMN across rows is refused by the lowering.
+  const std::string kOperator = "engine.op.name_resolve#4865(listed) engine.op.operator_call#1025(NOT listed) ";
   run_refused("1r", {
-      {"SELECT NOT TRUE", "DATATYPE.DESCRIPTOR.INVALID", kBindOnly, "", "a boolean expression over a literal: the scalar-projection stopgap still excludes boolean"},
-      {"SELECT TRUE AND FALSE", "DATATYPE.DESCRIPTOR.INVALID", kBindOnly, "", "a boolean operator over literals"},
+      {"SELECT NOT TRUE", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", kOperator, "opcode_code=1025", "a boolean expression over a literal reaches the engine's operator refusal"},
+      {"SELECT TRUE AND FALSE", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", kOperator, "opcode_code=1025", "a boolean operator over literals"},
+      {"SELECT 1 < 2", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", kOperator, "opcode_code=1025", "a comparison over literals"},
+      {"SELECT 1 + 1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", kOperator, "opcode_code=1025", "an arithmetic expression over literals keeps its refusal (unchanged)"},
+      // an all-literal boolean statement that is NOT the bounded `[AS] alias` form keeps the S4h stopgap's stop (the exclusion is lifted for non-literal shapes ONLY; a mutation that lifts it
+      // for literal tokens too makes these run and is caught here). An alias written WITHOUT AS is not the bounded form.
+      {"SELECT TRUE flag", "DATATYPE.DESCRIPTOR.INVALID", kBindOnly, "", "an all-literal boolean projection with an AS-less alias keeps the scalar-projection stopgap"},
+      {"SELECT TRUE AS flag, FALSE other", "DATATYPE.DESCRIPTOR.INVALID", kBindOnly, "", "an all-literal boolean list with one AS-less alias keeps the stopgap"},
+      {"SELECT TRUE one, 1", "DATATYPE.DESCRIPTOR.INVALID", kBindOnly, "", "an AS-less aliased boolean beside an integer keeps the stopgap"},
       {"VALUES (1), (TRUE)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a column mixing integer and boolean across rows"},
       {"VALUES (TRUE), (1)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a column mixing boolean and integer across rows"},
   });
@@ -1639,44 +1671,83 @@ void ValueTypesState() {
   // negative zero (pinned by ia01_literal_runtime_test; the exact-decimal binary profile spec also defines the VALUE canonically without fractional trailing zeros, with the display scale a
   // property of the DESCRIPTOR): so `0.10` -> `0.1` and `0.0` -> `0` are the CURRENT behaviour, pinned PENDING the owner question (reference engines keep the written scale; preserving it
   // needs the literal descriptor's scale from the lexical and the column precision/scale in the vector). They are not claimed correct.
+  // OLD (2026-12-24, part 1): the codec's CANONICAL shape was the display and the descriptor shape: `0.10` -> `0.1`, `0.0` -> `0`, and the cells were D(lexical, shown, byte0, byte1) without the
+  // column's declared shape. NEW (owner 2026-11-28 Q1): the descriptor carries the WRITTEN shape, the vector declares it per column (column_precision / column_scale: the last two
+  // arguments of D), the value bytes stay the canonical codec body (byte 0 = sign | scale, byte 1 = precision of the VALUE) and the parser pads the fraction to the column's scale.
+  // `1e2` is decimal(3,0) and shows 100 (the written exponent folds into the integer digits). UNGROUNDED: what PostgreSQL, MySQL and Firebird do for an exponent literal (an exponent
+  // literal may be an APPROXIMATE type in some of them) and whether each keeps the written scale of a plain decimal literal were NOT verified against their documentation in this session
+  // (owner question 1 of the report).
   run_accepted("2", {
-      {"SELECT 1.5", {{D("1.5", "1.5", 1, 2)}}}, {"SELECT 0.1", {{D("0.1", "0.1", 1, 1)}}}, {"SELECT -1.5", {{D("-1.5", "-1.5", 0x81, 2)}}},
-      {"select 123.456;", {{D("123.456", "123.456", 3, 6)}}}, {"SELECT 1e2", {{D("1e2", "100", 0, 3)}}},
-      {"SELECT 0.10", {{D("0.10", "0.1", 1, 1)}}}, {"SELECT 0.0", {{D("0.0", "0", 0, 1)}}},
-      {"VALUES (1.5)", {{D("1.5", "1.5", 1, 2)}}}, {"VALUES (-0.25)", {{D("-0.25", "-0.25", 0x82, 2)}}},
-      // later rows whose decimal literal has EXACTLY the column's precision, scale and codec profile (OLD: every later row's precision and scale had to be absent)
-      {"VALUES (1.5), (2.5)", {{D("1.5", "1.5", 1, 2)}, {D("2.5", "2.5", 1, 2)}}}, {"VALUES (1.5), (-2.5), (9.9)", {{D("1.5", "1.5", 1, 2)}, {D("-2.5", "-2.5", 0x81, 2)}, {D("9.9", "9.9", 1, 2)}}},
-      {"VALUES (1.5, 2), (2.5, 3)", {{D("1.5", "1.5", 1, 2), I(2)}, {D("2.5", "2.5", 1, 2), I(3)}}},
-      {"VALUES (1.5, 2)", {{D("1.5", "1.5", 1, 2), I(2)}}}, {"VALUES (1, 2.25)", {{I(1), D("2.25", "2.25", 2, 3)}}},
-      {"VALUES (1.5, 2.25, TRUE)", {{D("1.5", "1.5", 1, 2), D("2.25", "2.25", 2, 3), B(true)}}},
-      {"SELECT 1.5, 2.5", {{D("1.5", "1.5", 1, 2), D("2.5", "2.5", 1, 2)}}}, {"SELECT 1, 2.5", {{I(1), D("2.5", "2.5", 1, 2)}}},
-      {"SELECT 1.5, TRUE", {{D("1.5", "1.5", 1, 2), B(true)}}},
-      {"VALUES (99999999999999999999999999999999999999)", {{D("99999999999999999999999999999999999999", "99999999999999999999999999999999999999", 0, 38)}}},
-      {"SELECT 0.00000000000000000000000000000000000001", {{D("0.00000000000000000000000000000000000001", "0.00000000000000000000000000000000000001", 38, 38)}}},
+      {"SELECT 1.5", {{D("1.5", "1.5", 1, 2, 2, 1)}}}, {"SELECT 0.1", {{D("0.1", "0.1", 1, 1, 1, 1)}}}, {"SELECT -1.5", {{D("-1.5", "-1.5", 0x81, 2, 2, 1)}}},
+      {"select 123.456;", {{D("123.456", "123.456", 3, 6, 6, 3)}}}, {"SELECT 1e2", {{D("1e2", "100", 0, 3, 3, 0)}}},
+      // OLD: {"SELECT 0.10", {{D("0.10", "0.1", 1, 1)}}}, {"SELECT 0.0", {{D("0.0", "0", 0, 1)}}}
+      {"SELECT 0.10", {{D("0.10", "0.10", 1, 1, 2, 2)}}}, {"SELECT 0.0", {{D("0.0", "0.0", 0, 1, 1, 1)}}}, {"SELECT 1.50", {{D("1.50", "1.50", 1, 2, 3, 2)}}},
+      {"SELECT -0.50", {{D("-0.50", "-0.50", 0x81, 1, 2, 2)}}}, {"SELECT 100.00", {{D("100.00", "100.00", 0, 3, 5, 2)}}},
+      {"VALUES (1.5)", {{D("1.5", "1.5", 1, 2, 2, 1)}}}, {"VALUES (-0.25)", {{D("-0.25", "-0.25", 0x82, 2, 2, 2)}}},
+      {"VALUES (1.5), (2.5)", {{D("1.5", "1.5", 1, 2, 2, 1)}, {D("2.5", "2.5", 1, 2, 2, 1)}}},
+      {"VALUES (1.5), (-2.5), (9.9)", {{D("1.5", "1.5", 1, 2, 2, 1)}, {D("-2.5", "-2.5", 0x81, 2, 2, 1)}, {D("9.9", "9.9", 1, 2, 2, 1)}}},
+      {"VALUES (1.5, 2), (2.5, 3)", {{D("1.5", "1.5", 1, 2, 2, 1), I(2)}, {D("2.5", "2.5", 1, 2, 2, 1), I(3)}}},
+      {"VALUES (1.5, 2)", {{D("1.5", "1.5", 1, 2, 2, 1), I(2)}}}, {"VALUES (1, 2.25)", {{I(1), D("2.25", "2.25", 2, 3, 3, 2)}}},
+      {"VALUES (1.5, 2.25, TRUE)", {{D("1.5", "1.5", 1, 2, 2, 1), D("2.25", "2.25", 2, 3, 3, 2), B(true)}}},
+      {"SELECT 1.5, 2.5", {{D("1.5", "1.5", 1, 2, 2, 1), D("2.5", "2.5", 1, 2, 2, 1)}}}, {"SELECT 1, 2.5", {{I(1), D("2.5", "2.5", 1, 2, 2, 1)}}},
+      {"SELECT 1.5, TRUE", {{D("1.5", "1.5", 1, 2, 2, 1), B(true)}}},
+      {"VALUES (99999999999999999999999999999999999999)", {{D("99999999999999999999999999999999999999", "99999999999999999999999999999999999999", 0, 38, 38, 0)}}},
+      {"SELECT 0.00000000000000000000000000000000000001", {{D("0.00000000000000000000000000000000000001", "0.00000000000000000000000000000000000001", 38, 38, 38, 38)}}},
   });
-  // refused, pinned: a decimal COLUMN across rows whose literals differ in precision or scale (each literal carries its own precision/scale descriptor; unifying them is a coercion rule nobody has ruled: owner
-  // question), a decimal mixed with an integer or a boolean across rows (same stop), and the alias form `SELECT 1.5 AS x` (a scalar projection: no decimal carrier there).
-  // A later row whose decimal literal has EXACTLY the column's precision, scale and codec profile IS admitted (accepted block above): that is equality, not coercion.
+  // ---- (2u) UNIFIED DECIMAL COLUMNS (owner 2026-11-28 Q2). OLD (part 1): every row of a decimal column needed EXACTLY the first row's precision and scale, so
+  // `VALUES (1.5),(2.25)`, (0.5),(1.5), (1.5),(12.5), (1),(1.5), (1.5),(1) were refused SBLR.PLAN_TREE.INVALID_HANDLE (pinned in the old (2r) list, moved here as accepted).
+  // NEW: scale = max scale, precision = max integer digits + max scale (<= 38), an int64 literal in a decimal column counts as decimal(19,0) and is negotiated as an exact decimal
+  // (its value bytes are the decimal codec's, never a rescale of int64 bytes). The value bytes stay canonical (header constants below); the parser pads to the column's scale.
+  run_accepted("2u", {
+      {"VALUES (1.5), (2.25)", {{D("1.5", "1.50", 1, 2, 3, 2)}, {D("2.25", "2.25", 2, 3, 3, 2)}}},
+      {"VALUES (0.5), (1.5)", {{D("0.5", "0.5", 1, 1, 2, 1)}, {D("1.5", "1.5", 1, 2, 2, 1)}}},
+      {"VALUES (1.5), (12.5)", {{D("1.5", "1.5", 1, 2, 3, 1)}, {D("12.5", "12.5", 1, 3, 3, 1)}}},
+      // an int64 literal counts as decimal(19,0): max integer digits 19, max scale 1 -> decimal(20,1)
+      {"VALUES (1), (1.5)", {{D("1", "1.0", 0, 1, 20, 1)}, {D("1.5", "1.5", 1, 2, 20, 1)}}},
+      {"VALUES (1.5), (1)", {{D("1.5", "1.5", 1, 2, 20, 1)}, {D("1", "1.0", 0, 1, 20, 1)}}},
+      {"VALUES (1.5), (2.25), (100)", {{D("1.5", "1.50", 1, 2, 21, 2)}, {D("2.25", "2.25", 2, 3, 21, 2)}, {D("100", "100.00", 0, 3, 21, 2)}}},
+      {"VALUES (-1), (0.25)", {{D("-1", "-1.00", 0x80, 1, 21, 2)}, {D("0.25", "0.25", 2, 2, 21, 2)}}},
+      {"VALUES (9223372036854775808), (1.5)", {{D("9223372036854775808", "9223372036854775808.0", 0, 19, 20, 1)}, {D("1.5", "1.5", 1, 2, 20, 1)}}},
+      {"VALUES (1e2), (1.5)", {{D("1e2", "100.0", 0, 3, 4, 1)}, {D("1.5", "1.5", 1, 2, 4, 1)}}},
+      {"VALUES (0.10), (1.5)", {{D("0.10", "0.10", 1, 1, 3, 2)}, {D("1.5", "1.50", 1, 2, 3, 2)}}},
+      {"VALUES (1.5, 1), (2.25, 2)", {{D("1.5", "1.50", 1, 2, 3, 2), I(1)}, {D("2.25", "2.25", 2, 3, 3, 2), I(2)}}},
+      {"VALUES (1, 7), (1.5, 8)", {{D("1", "1.0", 0, 1, 20, 1), I(7)}, {D("1.5", "1.5", 1, 2, 20, 1), I(8)}}},
+      // exactly 38 digits after unification: 36 integer digits + scale 2
+      {"VALUES (123456789012345678901234567890123456.5), (0.25)", {{D("123456789012345678901234567890123456.5", "123456789012345678901234567890123456.50", 1, 37, 38, 2)}, {D("0.25", "0.25", 2, 2, 38, 2)}}},
+  });
+  // refused, pinned: a decimal mixed with a BOOLEAN across rows (no unification between a boolean and a number); everything else of the old (2r) list moved to (2u) above
   run_refused("2r", {
-      {"VALUES (1.5), (2.25)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal column of two different scales"},
-      {"VALUES (0.5), (1.5)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal column of two equal scales but different precisions (1 and 2)"},
-      {"VALUES (1.5), (12.5)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal column of equal scale and different precisions (2 and 3)"},
-      {"VALUES (1), (1.5)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "an integer then a decimal in one column"},
-      {"VALUES (1.5), (1)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal then an integer in one column"},
       {"VALUES (1.5), (TRUE)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a decimal then a boolean in one column"},
-      {"SELECT 1.5 AS x", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT", "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) ", "operation=query.evaluate_projection;requires=native_result_vector_types",
-       "the alias form is the scalar projection route (query.evaluate_projection): its literals ride the operands, one finalize row, and there is no decimal vector carrier on it"},
+      {"VALUES (TRUE), (1.5)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a boolean then a decimal in one column"},
+      {"VALUES (1), (1.5), (TRUE)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a boolean in a column that would otherwise unify"},
   });
+  // the UNIFIED column's precision beyond the profile's 38 digits has the same distinct token as a literal beyond it; precision = the unified precision, never the engine asked
+  {
+    const FileEvidence group_before;
+    struct Over { std::string sql; const char* digits; };
+    const std::vector<Over> over = {{"VALUES (12345678901234567890123456789.5), (1.123456789012345678)", "47"}, {"VALUES (123456789012345678901234567890123456.5), (0.125)", "39"},
+                                    {"VALUES (9223372036854775808), (0.12345678901234567890)", "39"}};
+    for (const auto& item : over) {
+      const auto ran = RunSql(one, item.sql, 2);
+      Check(!ran.result.accepted && FirstCode(ran.result) == "SBSQL.RESOURCE.DECIMAL_LITERAL_PRECISION_EXCEEDED", "(2u) '" + item.sql + "' is refused with the distinct precision token: " + AllCodes(ran.result));
+      Check(FieldNamed(ran.result, "precision") == item.digits && FieldNamed(ran.result, "limit") == "38" && FieldNamed(ran.result, "literal_class") == "decimal",
+            "(2u) '" + item.sql + "' carries the UNIFIED precision " + item.digits + ", limit 38 and the class as DATA: " + AllCodes(ran.result));
+      Check(ran.server_diagnostics.empty() && asked_of(ran) == kBindOnly, "(2u) '" + item.sql + "' never asked the engine to finalize: [" + asked_of(ran) + "]");
+      Check(owner_of(one) && one.order() == order1, "(e) the transaction is still owned after '" + item.sql + "'");
+    }
+    CheckUntouched(group_before, "the (2u) unified-precision refusals");
+    Check(active(order1), "(e) the transaction is still active after the (2u) refusals");
+  }
 
   // ---- (3) INT64 OVERFLOW PROMOTION. OLD: DATATYPE.DESCRIPTOR.INVALID (the literal was negotiated int64 and the SBXN encoder's from_chars failed). NEW (owner 2026-11-26
   // item 2, PostgreSQL's rule): a digits-only literal outside int64 is the exact-decimal literal profile's; INT64_MAX and INT64_MIN stay int64.
   run_accepted("3", {
       {"SELECT 9223372036854775807", {{I(INT64_MAX)}}}, {"SELECT -9223372036854775808", {{I(INT64_MIN)}}},
-      {"SELECT 9223372036854775808", {{D("9223372036854775808", "9223372036854775808", 0, 19)}}},
-      {"SELECT -9223372036854775809", {{D("-9223372036854775809", "-9223372036854775809", 0x80, 19)}}},
-      {"VALUES (9223372036854775808)", {{D("9223372036854775808", "9223372036854775808", 0, 19)}}},
-      {"VALUES (9223372036854775807, 9223372036854775808)", {{I(INT64_MAX), D("9223372036854775808", "9223372036854775808", 0, 19)}}},
-      {"SELECT 12345678901234567890123456789012345678", {{D("12345678901234567890123456789012345678", "12345678901234567890123456789012345678", 0, 38)}}},
+      {"SELECT 9223372036854775808", {{D("9223372036854775808", "9223372036854775808", 0, 19, 19, 0)}}},
+      {"SELECT -9223372036854775809", {{D("-9223372036854775809", "-9223372036854775809", 0x80, 19, 19, 0)}}},
+      {"VALUES (9223372036854775808)", {{D("9223372036854775808", "9223372036854775808", 0, 19, 19, 0)}}},
+      {"VALUES (9223372036854775807, 9223372036854775808)", {{I(INT64_MAX), D("9223372036854775808", "9223372036854775808", 0, 19, 19, 0)}}},
+      {"SELECT 12345678901234567890123456789012345678", {{D("12345678901234567890123456789012345678", "12345678901234567890123456789012345678", 0, 38, 38, 0)}}},
   });
   // a literal beyond the exact-decimal profile's 38 digits is refused with its OWN token (data fields: precision = the mantissa digit count as written, limit = 38,
   // literal_class); the engine is never asked to finalize (bind row only)
@@ -1705,6 +1776,44 @@ void ValueTypesState() {
   run_refused("3s", {
       {"VALUES (" + [] { std::string out; for (int i = 0; i < 33; ++i) out += std::string(i ? ", " : "") + "1.5"; return out; }() + ")", "SBSQL.RESOURCE.LITERAL_SLOT_LIMIT_EXCEEDED", kBindOnly, "",
        "33 decimal literals in one row (also the 16-column bound: the slot token wins)"},
+  });
+
+  // ---- (Q3) ALIASED BARE LITERAL PROJECTIONS route through the VALUES relation (owner 2026-11-28). OLD: `SELECT 1.5 AS x` was the scalar projection (query.evaluate_projection, one
+  // finalize row, no decimal carrier: ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT) and `SELECT 1 AS one` ran on that route. NEW: the same query.execute VALUES relation as `VALUES (..)`;
+  // the alias is the parser's DISPLAY name (kept as written, like the VALUES column-list alias); an unaliased item keeps column<N>. The alias never reaches the engine (asserted below).
+  run_accepted("q3", {
+      {"SELECT 1.5 AS x", {{D("1.5", "1.5", 1, 2, 2, 1)}}, {"x"}}, {"SELECT 1 AS one", {{I(1)}}, {"one"}}, {"SELECT TRUE AS t", {{B(true)}}, {"t"}},
+      {"SELECT TRUE AS t, 1.5 AS d, 2 AS i", {{B(true), D("1.5", "1.5", 1, 2, 2, 1), I(2)}}, {"t", "d", "i"}},
+      {"SELECT 1 AS X", {{I(1)}}, {"X"}}, {"SELECT 1 AS \"My Col\", 2.5 AS b", {{I(1), D("2.5", "2.5", 1, 2, 2, 1)}}, {"My Col", "b"}},
+      {"SELECT 1 AS one, 2", {{I(1), I(2)}}, {"one", "column2"}}, {"SELECT 1, 2 AS two", {{I(1), I(2)}}, {"column1", "two"}},
+      {"SELECT -1.50 AS neg;", {{D("-1.50", "-1.50", 0x81, 2, 3, 2)}}, {"neg"}}, {"select 0.10 as small", {{D("0.10", "0.10", 1, 1, 2, 2)}}, {"small"}},
+  });
+  {
+    // the alias is DISPLAY only: the lowered request carries no alias text and has the plain statement's size to within one byte (OBSERVED: the request's size varies by one byte with the
+    // statement's text, e.g. `SELECT 1` and `SELECT 1 AS abcdefghijklmnop` differ by 1 while their relation is identical; a byte diff showed many length fields moving by 1 and one inserted
+    // byte, presumably a decimal number's digit count: not investigated further. An 11-character alias in the request would differ by 11 or more).
+    const struct { const char* aliased; const char* plain; const char* alias_text; } pairs[] = {
+        {"SELECT 1.5 AS xyzzy_alias", "SELECT 1.5", "xyzzy_alias"}, {"SELECT 1 AS xyzzy_alias", "SELECT 1", "xyzzy_alias"},
+        {"SELECT TRUE AS xyzzy_alias, 2 AS plover_alias", "SELECT TRUE, 2", "plover_alias"}};
+    for (const auto& pair : pairs) {
+      const auto a = RunSql(one, pair.aliased, 2);
+      const auto b = RunSql(one, pair.plain, 2);
+      Check(a.result.accepted && b.result.accepted && std::abs(static_cast<long>(a.result.sblr_payload.size()) - static_cast<long>(b.result.sblr_payload.size())) <= 1 &&
+                std::abs(static_cast<long>(a.result.server_request_payload_bytes) - static_cast<long>(b.result.server_request_payload_bytes)) <= 1 &&
+                a.result.server_request_payload_bytes != 0 && a.result.sblr_payload.find("xyzzy_alias") == std::string::npos && a.result.sblr_payload.find(pair.alias_text) == std::string::npos &&
+                KeysOf(a) == KeysOf(b),
+            std::string("(q3) the alias never reaches the engine: '") + pair.aliased + "' has the lowered size within one byte (" + std::to_string(a.result.sblr_payload.size()) + " vs " +
+                std::to_string(b.result.sblr_payload.size()) + "), the request size within one byte (" + std::to_string(a.result.server_request_payload_bytes) + " vs " +
+                std::to_string(b.result.server_request_payload_bytes) + "), no alias text and the same recorder rows as the plain statement");
+    }
+  }
+
+  // ---- (Q5) PURE-INTEGER LISTS move from the scalar-projection route to the VALUES route (owner 2026-11-28). OLD: `SELECT 1, 2` was query.evaluate_projection (its own recorder rows
+  // and its own finalize path); NEW: query.execute, the same three recorder rows as the other bare lists, printed column1..N (the scalar route printed the same names: no visible change).
+  // Expressions (`SELECT 1 + 1`) keep their route and refusal (asserted in (1r) above).
+  run_accepted("q5", {
+      {"SELECT 1, 2", {{I(1), I(2)}}}, {"SELECT 1, -2, 3", {{I(1), I(-2), I(3)}}}, {"select 7 , 8 ;", {{I(7), I(8)}}},
+      {"SELECT 9223372036854775807, -9223372036854775808", {{I(INT64_MAX), I(INT64_MIN)}}},
   });
   one.End();
 }

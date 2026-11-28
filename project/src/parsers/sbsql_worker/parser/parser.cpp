@@ -112,7 +112,7 @@ std::optional<BinaryOperator> BinaryOperatorFor(const Token& token) {
 
 class NativeRelationalParser final {
  public:
-  explicit NativeRelationalParser(const CstDocument& cst) : cst_(cst) {
+  NativeRelationalParser(const CstDocument& cst, const AstBuildOptions& options = {}) : cst_(cst), options_(options) {
     tokens_.reserve(cst.tokens.size());
     for (const auto& token : cst.tokens) {
       if (token.kind == TokenKind::kEnd || IsTriviaToken(token)) continue;
@@ -639,7 +639,9 @@ class NativeRelationalParser final {
   // when it holds a boolean literal or an exact-decimal literal: an all-integer list (`SELECT 1, 2`) keeps its existing scalar-projection route (found, not changed: its
   // recorder rows and gate path are pinned). OLD: only one `SELECT [-] <numeric|parameter>`; a boolean fell to the scalar-syntax route and failed
   // prebind (DATATYPE.DESCRIPTOR.INVALID, "bound literal occurrence inventory changed").
-  struct BoundedScalarItem { std::size_t first{0}; std::size_t last{0}; bool negative{false}; bool boolean{false}; bool parameter{false}; bool decimal{false}; };
+  // SB_PARSER_ALIASED_LITERAL_PROJECTION (2026-12-25, owner 2026-11-28 Q3): an item may carry `AS <name>`; the alias is the parser's DISPLAY name of the column (kept as written,
+  // exactly as the VALUES derived-table column list does) and rides in relation.column_aliases, never in the engine's request. alias is the alias token's index.
+  struct BoundedScalarItem { std::size_t first{0}; std::size_t last{0}; bool negative{false}; bool boolean{false}; bool parameter{false}; bool decimal{false}; std::optional<std::size_t> alias; };
   // A numeric token the exact-decimal literal profile owns (the wire layer's IsExactDecimalLiteralSpelling rule: a `.`, an exponent, a DECIMAL / DEC / D
   // suffix, or a digits-only value outside int64). SB_PARSER_BARE_DECIMAL_PROJECTION (2026-12-24): a bare LIST holding one is VALUES-routed too, because the
   // scalar-projection route has no decimal vector carrier (`SELECT 1.5, 2.5` stopped at ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT).
@@ -669,14 +671,22 @@ class NativeRelationalParser final {
       else if (NumericTokenIsExactDecimal((item.negative ? "-" : "") + tokens_[at]->text)) { item.decimal = true; any_decimal = true; }
       item.last = at;
       ++at;
+      if (options_.aliased_literal_projection_as_values && at + 1 < tokens_.size() && IsWord(*tokens_[at], "AS") && IsNameToken(*tokens_[at + 1]) && !tokens_[at + 1]->text.empty()) {
+        item.alias = at + 1;
+        at += 2;
+      }
       items->push_back(item);
       if (at < tokens_.size() && tokens_[at]->text == ",") { ++at; continue; }
       break;
     }
     if (at < tokens_.size() && tokens_[at]->text == ";") ++at;
     if (at != tokens_.size()) return false;
+    if (std::ranges::any_of(*items, [](const auto& item) { return item.alias.has_value() && item.parameter; })) return false;  // an aliased parameter keeps its own route
     if (items->size() == 1) return true;
-    return (any_boolean || any_decimal) && std::ranges::none_of(*items, [](const auto& item) { return item.parameter; });
+    // SB_PARSER_INTEGER_LIST_VALUES (2026-12-25, owner 2026-11-28 Q5): every list of two or more literal items (a parameter excluded) is the VALUES relation, including a pure-integer
+    // list (`SELECT 1, 2`). OLD: only a list holding a boolean or an exact-decimal literal; `SELECT 1, 2` kept the scalar-projection route (query.evaluate_projection).
+    (void)any_boolean; (void)any_decimal;
+    return std::ranges::none_of(*items, [](const auto& item) { return item.parameter; });
   }
 
   bool LooksLikeBoundedObjectFreeScalarSelect() const {
@@ -719,14 +729,27 @@ class NativeRelationalParser final {
     }
     row.range = Span(*tokens_[items.front().first], *tokens_[items.back().last]);
     document_.values_rows.push_back(std::move(row));
-    cursor_ = tokens_.size();  // the whole statement was recognized by BoundedObjectFreeScalarItems
+    cursor_ = tokens_.size();
+    std::vector<NativeIdentifierAstNode> column_aliases;
+    if (std::ranges::any_of(items, [](const auto& item) { return item.alias.has_value(); })) {
+      // an unaliased item keeps the default display name column<N>; the list always names EVERY column (the same invariant the derived-table alias list has)
+      for (std::size_t ordinal = 0; ordinal < items.size(); ++ordinal) {
+        if (items[ordinal].alias) {
+          const Token& name = *tokens_[*items[ordinal].alias];
+          column_aliases.push_back({name.text, name.quoted, TokenSourceRange(name)});
+        } else {
+          column_aliases.push_back({"column" + std::to_string(ordinal + 1), false, TokenSourceRange(*tokens_[items[ordinal].last])});
+        }
+      }
+    }  // the whole statement was recognized by BoundedObjectFreeScalarItems
 
     NativeRelationAstNode relation;
     relation.relation_id = 1;
     relation.relation_kind = NativeRelationAstKind::kValues;
     relation.values_row_ids = {1};
     for (std::uint32_t id = 1; id <= items.size(); ++id) relation.output_expression_ids.push_back(id);
-    relation.range = Span(select_token, *tokens_[items.back().last]);
+    relation.column_aliases = std::move(column_aliases);
+    relation.range = Span(select_token, *tokens_[items.back().last]);  // the range ends at the last ITEM (the same range the unaliased statement has): the alias is display data, not engine input
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
     document_.status = NativeRelationalParseStatus::kAccepted;
@@ -8521,6 +8544,7 @@ class NativeRelationalParser final {
   }
 
   const CstDocument& cst_;
+  AstBuildOptions options_;
   std::vector<const Token*> tokens_;
   std::size_t cursor_{0};
   bool allow_count_star_expression_{false};
@@ -8531,8 +8555,8 @@ class NativeRelationalParser final {
 } // namespace
 
 // QOW-SOURCE-QRY-001-AST-V1
-NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst) {
-  auto document = NativeRelationalParser(cst).Parse();
+NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst, const AstBuildOptions& options) {
+  auto document = NativeRelationalParser(cst, options).Parse();
   std::vector<NativeExpressionAstNode*> literals;
   std::vector<NativeExpressionAstNode*> parameters;
   std::vector<NativeExpressionAstNode*> variables;

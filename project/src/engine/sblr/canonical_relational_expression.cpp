@@ -282,8 +282,10 @@ std::string BoundLiteralType(
     }
     const auto decimal =
         DecodeSblrLiteralExactDecimalV1(bytes.data(), bytes.size());
-    if (decimal.ok && descriptor.precision == decimal.precision &&
-        descriptor.scale == decimal.scale) {
+    // SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25, owner 2026-11-28 Q1): the descriptor carries the WRITTEN (display) shape, the body the canonical value: the body must FIT the
+    // descriptor's declared precision and scale. OLD: descriptor.precision == decimal.precision && descriptor.scale == decimal.scale (the canonical shape, so `0.10` was refused).
+    if (decimal.ok && descriptor.precision.has_value() && descriptor.scale.has_value() &&
+        SblrDecimalBodyFitsColumnV1(bytes.data(), bytes.size(), *descriptor.precision, *descriptor.scale)) {
       return "decimal";
     }
     return {};
@@ -3610,8 +3612,9 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
         if(source_descriptor==descriptors_.end()||
            !source_descriptor->second->precision.has_value()||
            !source_descriptor->second->scale.has_value()||
-           *source_descriptor->second->precision!=decimal_value.precision||
-           *source_descriptor->second->scale!=decimal_value.scale||
+           // SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25): the body must FIT the descriptor's declared shape (OLD: precision and scale EQUAL to the body's canonical ones)
+           !SblrDecimalBodyFitsColumnV1(typed.canonical_value_bytes.data(),typed.canonical_value_bytes.size(),
+                                        *source_descriptor->second->precision,*source_descriptor->second->scale)||
            native_literal_type != dt::CanonicalTypeId::decimal ||
            typed.descriptor_generation != source_descriptor->second->descriptor_generation){
           if(refusal_detail->empty())

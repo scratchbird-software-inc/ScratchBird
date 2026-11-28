@@ -674,6 +674,26 @@ SblrLiteralExactDecimalCodecResultV1 DecodeSblrLiteralExactDecimalV1(
   return FromDecimalBinaryResult(scratchbird::libraries::sbl_numeric::DecodeExactDecimalLittleEndian(bytes, size));
 }
 
+bool SblrDecimalShapeFitsColumnV1(const std::optional<std::uint32_t> literal_precision, const std::optional<std::uint32_t> literal_scale,
+                                  const std::optional<std::uint32_t> column_precision, const std::optional<std::uint32_t> column_scale) {
+  if (literal_precision.has_value() != column_precision.has_value() || literal_scale.has_value() != column_scale.has_value()) return false;
+  if (!literal_precision.has_value() || !literal_scale.has_value()) return true;
+  if (*literal_precision < *literal_scale || *column_precision < *column_scale) return false;
+  return *literal_scale <= *column_scale && *literal_precision - *literal_scale <= *column_precision - *column_scale;
+}
+
+bool SblrDecimalBodyFitsColumnV1(const std::uint8_t* body, const std::size_t size, const std::uint32_t column_precision, const std::uint32_t column_scale) {
+  if (column_precision == 0 || column_precision > 38 || column_scale > column_precision) return false;
+  const auto decoded = DecodeSblrLiteralExactDecimalV1(body, size);
+  if (!decoded.ok) return false;
+  std::string_view lexical = decoded.canonical_lexical;
+  if (!lexical.empty() && lexical.front() == '-') lexical.remove_prefix(1);
+  const bool zero = lexical == "0";
+  const std::uint32_t value_scale = zero ? 0 : decoded.scale;
+  const std::uint32_t integer_digits = zero ? 0 : static_cast<std::uint32_t>(decoded.precision) - decoded.scale;
+  return value_scale <= column_scale && integer_digits <= column_precision - column_scale;
+}
+
 static SblrExpressionNodeTableCodecResultV1
 DecodeSblrExpressionNodeTableWithLimitV1(
     const std::uint8_t* bytes, std::size_t size,

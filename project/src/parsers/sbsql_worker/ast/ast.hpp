@@ -566,8 +566,14 @@ struct AstDocument {
   MessageVectorSet messages;
 };
 
-NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst);
-AstDocument BuildAst(const CstDocument& cst);
+// SB_PARSER_ALIASED_LITERAL_PROJECTION (2026-12-25, owner 2026-11-28 Q3): options of the AST build. aliased_literal_projection_as_values: `SELECT <literal> AS <identifier>` (a bare literal list
+// whose items may carry an AS alias) is the typed literal VALUES relation with DISPLAY aliases. Only the wire pipeline (the path that reaches a database) sets it: the standalone parser
+// pipeline (BuildAst(cst) alone, BindAst, LowerToSblr) has no binding context for a VALUES relation and keeps the scalar projection (query.evaluate_projection) for the aliased form.
+struct AstBuildOptions {
+  bool aliased_literal_projection_as_values{false};
+};
+NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst, const AstBuildOptions& options = {});
+AstDocument BuildAst(const CstDocument& cst, const AstBuildOptions& options = {});
 std::string StatementFamilyName(StatementFamily family);
 std::string NativeRelationAstKindName(NativeRelationAstKind kind);
 // The initial native CTE transport admits one wildcard heap producer and one

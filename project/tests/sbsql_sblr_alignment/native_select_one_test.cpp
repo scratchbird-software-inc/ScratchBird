@@ -10,6 +10,10 @@
 #define SB_NATIVE_RECEIPT_FIXTURE_ONLY 1
 #include "native_receipt_test.cpp"
 
+// SB_PARSER_ALIASED_LITERAL_PROJECTION (2026-12-25, owner 2026-11-28 Q3): through the wire pipeline (which this file drives) `SELECT <n> AS <name>` is now the VALUES relation (query.execute),
+// so it no longer lowers to the query.evaluate_projection (0x040E) scalar projection this file tests. OLD: every statement below was written `SELECT <n> AS <name>`. NEW: the SAME projection
+// with the alias written WITHOUT AS (`SELECT <n> <name>`), which still lowers to 0x040E (found, not changed: owner question 2 of the report asks whether that spelling should move to
+// VALUES too, which would leave route A with no SQL surface here).
 #include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
@@ -285,14 +289,19 @@ Vector DecodeVector(const std::string& payload) {
   out.column_count = LE64(columns->value);
   out.row_count = LE64(rows->value);
   if (out.column_count == 0 || out.column_count > 64 || out.row_count == 0 || out.row_count > 64) return out;
-  // exactly: 4 header fields + 4 per column + 1 per value; nothing else (no name, no evidence, no rendered row)
-  if (fields.size() != 4 + 4 * out.column_count + out.column_count * out.row_count) return out;
+  // exactly: 4 header fields + 6 per column + 1 per value; nothing else (no name, no evidence, no rendered row)
+  // OLD (before 2026-12-25): 4 + 4 * column_count + ...; NEW: column_precision[c] and column_scale[c] follow the generation (SB_NATIVE_VALUES_DECIMAL_SCALE)
+  if (fields.size() != 4 + 6 * out.column_count + out.column_count * out.row_count) return out;
   for (std::uint64_t c = 0; c < out.column_count; ++c) {
     const auto n = std::to_string(c);
     const auto* d = find("column_descriptor[" + n + "]");
     const auto* t = find("column_datatype[" + n + "]");
     const auto* td = find("column_datatype_descriptor[" + n + "]");
     const auto* g = find("column_datatype_generation[" + n + "]");
+    const auto* cp = find("column_precision[" + n + "]");
+    const auto* cs = find("column_scale[" + n + "]");
+    // an int64 column declares no decimal shape: precision 0, scale 0
+    if (!cp || !cs || cp->kind != pr::Kind::unsigned_integer || cs->kind != pr::Kind::unsigned_integer || LE64(cp->value) != 0 || LE64(cs->value) != 0) return out;
     if (!d || !t || !td || !g || d->kind != pr::Kind::uuid || t->kind != pr::Kind::uuid || td->kind != pr::Kind::uuid || g->kind != pr::Kind::unsigned_integer) return out;
     out.column_descriptor.push_back(UuidOf(d->value));
     out.column_datatype.push_back(UuidOf(t->value));
@@ -629,8 +638,8 @@ void RecordState() {
     }
   };
   // the allow-list is exactly the rows logged for the shape that runs: engine.op.literal (one lookup per literal), nothing else
-  record("SELECT 1 AS one", {"engine.op.literal#3"}, true);
-  record("SELECT 1 AS one, 2 AS two", {"engine.op.literal#3", "engine.op.literal#3"}, true);
+  record("SELECT 1 one", {"engine.op.literal#3"}, true);
+  record("SELECT 1 one, 2 two", {"engine.op.literal#3", "engine.op.literal#3"}, true);
   // shapes that ask for rows NOT on the list: the recorder shows which row each needs (the operator-call row for `1 + 0`)
   record("SELECT 1 + 0 AS s", {"engine.op.operator_call#1025"}, true);
   const auto& allowed = api::NativeExecutorAvailabilityAllowList();
@@ -672,9 +681,9 @@ void SelectOneState() {
   for (int round = 0; round < 3; ++round) {
     const FileEvidence before;
     std::string lowered;
-    const auto got = Run("SELECT 1 AS one", *ps1, r1, *s1, &lowered);
+    const auto got = Run("SELECT 1 one", *ps1, r1, *s1, &lowered);
     CheckUntouched(before, "SELECT 1 AS one (round " + std::to_string(round) + ")");
-    Check(lowered == "query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION", "SELECT 1 AS one lowers to the 0x040E scalar projection: " + lowered);
+    Check(lowered == "query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION", "SELECT 1 one lowers to the 0x040E scalar projection: " + lowered);
     Check(got.status == SB_ENGINE_STATUS_OK && got.vector.ok, "SELECT 1 AS one dispatches and returns a decodable vector (status " + std::to_string(got.status) + " " + got.refusal.code + ")");
     Check(got.rows_produced == 1 && got.vector.operation_id == "query.evaluate_projection" && got.vector.result_kind == "native_scalar_projection_vector" &&
               got.vector.column_count == 1 && got.vector.row_count == 1 && got.vector.values == std::vector<std::int64_t>{1},
@@ -700,7 +709,7 @@ void SelectOneState() {
     }
     // S4h part 1: the REAL engine vector, through the SBsql parser's converter: the parser builds the row and the name `one` from its own alias.
     {
-      const auto rows = ParserBuildsRows(MakeParserSide(*s1), "SELECT 1 AS one", got.payload);
+      const auto rows = ParserBuildsRows(MakeParserSide(*s1), "SELECT 1 one", got.payload);
       Check(rows.converted && rows.names == std::vector<std::string>{"one"} && rows.rows.size() == 1 && rows.rows[0].size() == 1 && rows.rows[0][0] &&
                 *rows.rows[0][0] == "1" && rows.oids.size() == 1,
             "the parser builds the client row (one = 1) from the real engine vector: " + rows.code + " " + rows.detail);
@@ -709,20 +718,20 @@ void SelectOneState() {
   // other values and shapes of the same row set
   {
     const FileEvidence before;
-    const auto two = Run("SELECT 2 AS two", *ps1, r1, *s1);
-    CheckUntouched(before, "SELECT 2 AS two");
+    const auto two = Run("SELECT 2 two", *ps1, r1, *s1);
+    CheckUntouched(before, "SELECT 2 two");
     Check(two.status == SB_ENGINE_STATUS_OK && two.vector.ok && two.vector.values == std::vector<std::int64_t>{2},
           "SELECT 2 AS two runs: the SAME literal row, the value 2");
-    const auto pair = Run("SELECT 1 AS one, 2 AS two", *ps1, r1, *s1);
-    CheckUntouched(before, "SELECT 1 AS one, 2 AS two");
+    const auto pair = Run("SELECT 1 one, 2 two", *ps1, r1, *s1);
+    CheckUntouched(before, "SELECT 1 one, 2 two");
     Check(pair.status == SB_ENGINE_STATUS_OK && pair.vector.ok && pair.vector.column_count == 2 && pair.vector.values == std::vector<std::int64_t>({1, 2}) &&
               pair.vector.column_descriptor[0] != pair.vector.column_descriptor[1],
           "two literal columns: two descriptors, values 1 and 2");
     {
-      const auto rows2 = ParserBuildsRows(MakeParserSide(*s1), "SELECT 2 AS two", two.payload);
+      const auto rows2 = ParserBuildsRows(MakeParserSide(*s1), "SELECT 2 two", two.payload);
       Check(rows2.converted && rows2.names == std::vector<std::string>{"two"} && rows2.rows.size() == 1 && rows2.rows[0][0] && *rows2.rows[0][0] == "2",
             "the parser builds (two = 2) from the real engine vector: " + rows2.code);
-      const auto rows_pair = ParserBuildsRows(MakeParserSide(*s1), "SELECT 1 AS one, 2 AS two", pair.payload);
+      const auto rows_pair = ParserBuildsRows(MakeParserSide(*s1), "SELECT 1 one, 2 two", pair.payload);
       Check(rows_pair.converted && rows_pair.names == std::vector<std::string>({"one", "two"}) && rows_pair.rows.size() == 1 && rows_pair.rows[0].size() == 2 &&
                 *rows_pair.rows[0][0] == "1" && *rows_pair.rows[0][1] == "2",
             "the parser builds (one = 1, two = 2) from the real two-column engine vector: " + rows_pair.code);
@@ -819,7 +828,7 @@ void SelectOneState() {
   {
     auto again = Acquire(*ps1, c1, s1->approval.transaction_uuid);
     Check(again.ok(), "another receipt is acquired for the same transaction afterwards: " + again.code);
-    const auto next = Run("SELECT 3 AS three", *ps1, again, *s1);
+    const auto next = Run("SELECT 3 three", *ps1, again, *s1);
     Check(next.status == SB_ENGINE_STATUS_OK && next.vector.ok && next.vector.values == std::vector<std::int64_t>{3}, "and a statement runs on it");
     Release(again);
   }
@@ -832,14 +841,14 @@ void SelectOneState() {
   Check(r2.ok(), "a native receipt for session 2: " + r2.code);
   {
     const FileEvidence before;
-    const auto a = Run("SELECT 11 AS a", *ps1, r1, *s1);
-    const auto b = Run("SELECT 22 AS b", *ps2, r2, *s2);
+    const auto a = Run("SELECT 11 a", *ps1, r1, *s1);
+    const auto b = Run("SELECT 22 b", *ps2, r2, *s2);
     CheckUntouched(before, "two sessions' statements");
     Check(a.vector.ok && b.vector.ok && a.vector.values == std::vector<std::int64_t>{11} && b.vector.values == std::vector<std::int64_t>{22} &&
               a.vector.column_descriptor[0] != b.vector.column_descriptor[0],
           "two sessions' statements are independent: each gets its own value and its own column descriptor");
     // session 1's receipt cannot be used by session 2's engine session
-    auto cross = Prepare("SELECT 5 AS five", *ps1, r1, *s1);
+    auto cross = Prepare("SELECT 5 five", *ps1, r1, *s1);
     cross.dispatch.engine_session = ps2->session;
     const auto crossed = Dispatch(cross);
     std::printf("CROSS-SESSION dispatch: status=%d vector=%d code=%s\n", static_cast<int>(crossed.status), crossed.vector.ok ? 1 : 0, crossed.refusal.code.c_str());
@@ -854,7 +863,7 @@ void SelectOneState() {
     auto c3 = ContextFor(*s3, catalog_generation);
     auto r3 = Acquire(*ps3, c3, s3->approval.transaction_uuid);
     Check(r3.ok(), "a native receipt for session 3");
-    auto prepared = Prepare("SELECT 7 AS seven", *ps3, r3, *s3);
+    auto prepared = Prepare("SELECT 7 seven", *ps3, r3, *s3);
     Check(prepared.ok, "a statement for session 3 is admitted");
     const auto order3 = s3->approval.transaction_order;
     ps3.reset();       // the engine session ends: it rolls its transaction back and drops the receipt
@@ -894,7 +903,7 @@ void TraceState() {
   auto r1 = Acquire(*ps1, c1, s1->approval.transaction_uuid, false);
   Check(r1.ok(), "a receipt (traced)");
   for (int i = 0; i < 2; ++i) {
-    const auto got = Run("SELECT 1 AS one", *ps1, r1, *s1);
+    const auto got = Run("SELECT 1 one", *ps1, r1, *s1);
     Check(got.status == SB_ENGINE_STATUS_OK && got.vector.ok && got.vector.values == std::vector<std::int64_t>{1}, "SELECT 1 AS one (traced)");
   }
   {

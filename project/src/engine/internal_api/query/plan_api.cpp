@@ -3159,6 +3159,14 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   }
 
   std::unordered_set<std::uint32_t> assigned_values_row_ids;
+  // SB_NATIVE_VALUES_DECIMAL_UNIFICATION (2026-12-25): the shape fit rule (same rule as SblrDecimalShapeFitsColumnV1 in the SBLR library, which this translation unit cannot link)
+  const auto decimal_shape_fits = [](const std::optional<std::uint32_t>& literal_precision, const std::optional<std::uint32_t>& literal_scale,
+                                     const std::optional<std::uint32_t>& column_precision, const std::optional<std::uint32_t>& column_scale) {
+    if (literal_precision.has_value() != column_precision.has_value() || literal_scale.has_value() != column_scale.has_value()) return false;
+    if (!literal_precision.has_value() || !literal_scale.has_value()) return true;
+    if (*literal_precision < *literal_scale || *column_precision < *column_scale) return false;
+    return *literal_scale <= *column_scale && *literal_precision - *literal_scale <= *column_precision - *column_scale;
+  };
   const auto exact_values_literal_descriptor =
       [&](const RelationalExpressionRecord& expression,
           const std::uint32_t output_descriptor_id,
@@ -3199,8 +3207,11 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
            !expression_descriptor->second->width.has_value() &&
            !output_descriptor->second->width.has_value() &&
            // SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): precision, scale and codec profile EQUAL (absent on both for int64 and boolean); OLD: both had to be absent
-           expression_descriptor->second->precision == output_descriptor->second->precision &&
-           expression_descriptor->second->scale == output_descriptor->second->scale &&
+           // SB_NATIVE_VALUES_DECIMAL_UNIFICATION (2026-12-25, owner 2026-11-28 Q2): the literal's declared shape must FIT the column's (scale <= the column's, integer digits <= the
+           // column's; OLD: precision and scale EQUAL). This translation unit is also built without the SBLR library, so the SHAPE rule is local; the value-BYTES check is made where
+           // the values are materialized (MaterializeValues), at typed-literal evaluation and in the result encoder (SblrDecimalBodyFitsColumnV1).
+           decimal_shape_fits(expression_descriptor->second->precision, expression_descriptor->second->scale,
+                              output_descriptor->second->precision, output_descriptor->second->scale) &&
            expression_descriptor->second->decimal_codec_profile == output_descriptor->second->decimal_codec_profile;
   };
   for (const auto& node : dag.nodes) {
@@ -3347,6 +3358,18 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                 node.output_descriptor_ids[ordinal] &&
             !exact_values_literal_descriptor(
                 *expression, node.output_descriptor_ids[ordinal], true)) {
+          // SB_NATIVE_VALUES_DECIMAL_UNIFICATION (2026-12-25): a decimal literal that is otherwise exact (same type, same codec profile) but whose declared shape or value
+          // bytes do not fit the column's declared precision and scale has its OWN token (one distinct code per cause); everything else keeps the old one
+          const auto expression_descriptor = descriptors_by_id.find(expression->result_descriptor_id);
+          const auto output_descriptor = descriptors_by_id.find(node.output_descriptor_ids[ordinal]);
+          if (expression->expression_kind == RelationalExpressionKind::kLiteral &&
+              expression->literal_kind == RelationalLiteralKind::kNumeric && expression->literal_typed_value_v1.has_value() &&
+              expression_descriptor != descriptors_by_id.end() && output_descriptor != descriptors_by_id.end() &&
+              expression_descriptor->second->type_uuid == output_descriptor->second->type_uuid &&
+              expression_descriptor->second->precision.has_value() && output_descriptor->second->precision.has_value() &&
+              expression_descriptor->second->decimal_codec_profile == output_descriptor->second->decimal_codec_profile) {
+            return refuse("SBLR.VALUES.DECIMAL_DOES_NOT_FIT_COLUMN", node.node_id, "values_row_decimal_shape");
+          }
           return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                         "values_row_descriptor_ids");
         }

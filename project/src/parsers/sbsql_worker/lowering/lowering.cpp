@@ -38475,6 +38475,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   if (values_relation != nullptr) {
     const auto& values_outputs =
         outputs_by_relation.at(values_relation->relation_id);
+    // SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25): shared fit rule for the VALUES literal descriptor check
+    const auto values_decimal_shape_fits = [](const auto& literal_precision, const auto& literal_scale, const auto& column_precision,
+                                              const auto& column_scale) {
+      if (literal_precision.has_value() != column_precision.has_value() || literal_scale.has_value() != column_scale.has_value()) return false;
+      if (!literal_precision.has_value() || !literal_scale.has_value()) return true;
+      if (*literal_precision < *literal_scale || *column_precision < *column_scale) return false;
+      return *literal_scale <= *column_scale && *literal_precision - *literal_scale <= *column_precision - *column_scale;
+    };
     const auto exact_values_literal_descriptor =
         [&](const BoundExpressionAstRecord& expression,
             const std::uint32_t output_descriptor_id) {
@@ -38511,10 +38519,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                   .has_value() &&
              // SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): OLD required precision and scale ABSENT on both descriptors (an integer-era rule). NEW: they must be
              // EQUAL (absent on both for int64 and boolean, as before; for a decimal the column's own precision, scale and codec profile): never a coercion.
-             expression_descriptor->second->width_precision_scale.precision ==
-                 output_descriptor->second->width_precision_scale.precision &&
-             expression_descriptor->second->width_precision_scale.scale ==
-                 output_descriptor->second->width_precision_scale.scale &&
+             // SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25, owner 2026-11-28 Q2): a decimal literal's written shape must FIT the column's unified shape (scale <=
+             // the column's, integer digits <= the column's); absent on both (int64, boolean) stays equal. OLD: precision and scale EQUAL.
+             values_decimal_shape_fits(expression_descriptor->second->width_precision_scale.precision,
+                                       expression_descriptor->second->width_precision_scale.scale,
+                                       output_descriptor->second->width_precision_scale.precision,
+                                       output_descriptor->second->width_precision_scale.scale) &&
              expression_descriptor->second->decimal_codec_profile ==
                  output_descriptor->second->decimal_codec_profile;
     };
@@ -48650,6 +48660,14 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
 
   std::unordered_set<std::uint32_t> assigned_rows;
   std::unordered_set<std::uint32_t> referenced_descriptors;
+  // SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25): shared fit rule for the VALUES literal descriptor check (same rule as the lowering-time check)
+  const auto values_decimal_shape_fits = [](const auto& literal_precision, const auto& literal_scale, const auto& column_precision,
+                                            const auto& column_scale) {
+    if (literal_precision.has_value() != column_precision.has_value() || literal_scale.has_value() != column_scale.has_value()) return false;
+    if (!literal_precision.has_value() || !literal_scale.has_value()) return true;
+    if (*literal_precision < *literal_scale || *column_precision < *column_scale) return false;
+    return *literal_scale <= *column_scale && *literal_precision - *literal_scale <= *column_precision - *column_scale;
+  };
   const auto exact_values_literal_descriptor =
       [&](const ParsedRelationalExpression& expression,
           const std::uint32_t output_descriptor_id) {
@@ -48677,8 +48695,9 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
            !expression_descriptor->second->width.has_value() &&
            !output_descriptor->second->width.has_value() &&
            // SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): precision, scale and codec profile EQUAL (absent on both for int64 and boolean); OLD: both had to be absent
-           expression_descriptor->second->precision == output_descriptor->second->precision &&
-           expression_descriptor->second->scale == output_descriptor->second->scale &&
+           // SB_PARSER_VALUES_DECIMAL_UNIFICATION (2026-12-25): the literal's shape must FIT the column's (OLD: precision and scale EQUAL)
+           values_decimal_shape_fits(expression_descriptor->second->precision, expression_descriptor->second->scale,
+                                     output_descriptor->second->precision, output_descriptor->second->scale) &&
            expression_descriptor->second->decimal_codec_profile == output_descriptor->second->decimal_codec_profile;
   };
   for (const auto& expression : graph.expressions) {

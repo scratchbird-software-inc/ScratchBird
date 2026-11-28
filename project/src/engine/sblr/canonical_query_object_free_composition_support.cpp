@@ -9,6 +9,7 @@
 #include "canonical_query_object_free_composition_support.hpp"
 
 #include "canonical_query_descriptor_support.hpp"
+#include "sblr_literal_runtime.hpp"
 #include "canonical_query_scalar_support.hpp"
 
 #include "datatype_operations.hpp"
@@ -114,9 +115,15 @@ MaterializedValues MaterializeValues(
            !expression_descriptor->second->width.has_value() &&
            !output_descriptor->second->width.has_value() &&
            // SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): precision, scale and codec profile EQUAL (absent on both for int64 and boolean); OLD: both had to be absent
-           expression_descriptor->second->precision == output_descriptor->second->precision &&
-           expression_descriptor->second->scale == output_descriptor->second->scale &&
-           expression_descriptor->second->decimal_codec_profile == output_descriptor->second->decimal_codec_profile;
+           // SB_NATIVE_VALUES_DECIMAL_UNIFICATION (2026-12-25, owner 2026-11-28 Q2): the literal's shape must FIT the column's (OLD: precision and scale EQUAL) AND, the
+           // parser being untrusted, the literal's own value bytes must fit the column's declared precision and scale (a distinct refusal is raised by the plan validator)
+           SblrDecimalShapeFitsColumnV1(expression_descriptor->second->precision, expression_descriptor->second->scale,
+                                        output_descriptor->second->precision, output_descriptor->second->scale) &&
+           expression_descriptor->second->decimal_codec_profile == output_descriptor->second->decimal_codec_profile &&
+           (!output_descriptor->second->precision.has_value() || !output_descriptor->second->scale.has_value() ||
+            SblrDecimalBodyFitsColumnV1(expression.literal_typed_value_v1->canonical_value_bytes.data(),
+                                        expression.literal_typed_value_v1->canonical_value_bytes.size(),
+                                        *output_descriptor->second->precision, *output_descriptor->second->scale));
   };
 
   std::vector<const api::RelationalOutputRecord*> outputs;
