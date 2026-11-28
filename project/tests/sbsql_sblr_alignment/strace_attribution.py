@@ -46,6 +46,9 @@ FD_RETURNING = frozenset((
     'inotify_init', 'inotify_init1', 'memfd_create', 'pidfd_open', 'pidfd_getfd', 'userfaultfd',
     'io_uring_setup', 'perf_event_open', 'fanotify_init', 'fsopen', 'open_tree', 'mq_open', 'memfd_secret'))
 FD_PAIR_RETURNING = frozenset(('pipe', 'pipe2', 'socketpair'))
+# NEW (slow-cost2): the names whose branches in data_descriptors read the call's result / the table before it changes.
+_DUP_NAMES = frozenset(('dup', 'dup2', 'dup3', 'fcntl'))
+_RESULT_NAMES = (frozenset(('close', 'close_range', 'execve', 'execveat', 'fcntl')) | FD_PAIR_RETURNING | FD_RETURNING)
 
 
 class StrayPid(Exception):
@@ -93,13 +96,17 @@ def reassemble(lines):
         pid, body = _split_pid(line)
         if pid is None:
             continue
-        resumed = RESUMED_RE.match(body)
+        # NEW (slow-cost2, 2026-12-27): a literal test before each regex. OLD: both regexes ran on every line; UNFINISHED_RE's lazy
+        # `(.*?)` walks a whole long line (the log is written with -s 1024) before failing, and it was ~40% of this module's time.
+        # Each pattern can only match when its literal is present (RESUMED_RE starts with `<...`, UNFINISHED_RE contains
+        # `<unfinished ...>`), so the result is the same match object or None as before.
+        resumed = RESUMED_RE.match(body) if body.startswith('<...') else None
         if resumed:
             held = pending.pop(pid, None)
             if held is not None:
                 calls.append((pid, held[0], index, held[1] + resumed.group(2)))
             continue
-        unfinished = UNFINISHED_RE.match(body)
+        unfinished = UNFINISHED_RE.match(body) if '<unfinished ...>' in body else None
         if unfinished:
             pending[pid] = (index, unfinished.group(1))
             continue
@@ -121,14 +128,15 @@ def merge_split_lines(lines):
         pid, body = _split_pid(line)
         if pid is None:
             continue
-        resumed = RESUMED_RE.match(body)
+        # NEW (slow-cost2): the same literal tests as in reassemble (OLD: both regexes on every line).
+        resumed = RESUMED_RE.match(body) if body.startswith('<...') else None
         if resumed:
             held = pending.pop(pid, None)
             if held is not None:
                 out[held[0]] = held[1] + resumed.group(2) + '\n'
                 out[index] = '\n'
             continue
-        unfinished = UNFINISHED_RE.match(body)
+        unfinished = UNFINISHED_RE.match(body) if '<unfinished ...>' in body else None
         if unfinished:
             pending[pid] = (index, line[:line.index(body)] + unfinished.group(1))
     return out
@@ -182,7 +190,8 @@ def data_descriptors(lines, path):
     for _, kind, (pid, start, end, text) in events:
         table = table_of(pid)
         if kind == 0:
-            first = FIRST_ARG_RE.match(text)
+            # NEW (slow-cost2): with no data descriptor in the table nothing can be a hit, so the regex is skipped (OLD: always run).
+            first = FIRST_ARG_RE.match(text) if table else None
             if first and first.group(2) in table:
                 hits[start] = table[first.group(2)][0]
             made = clone_at.get((pid, start))
@@ -194,8 +203,10 @@ def data_descriptors(lines, path):
         if not name_match:
             continue
         name = name_match.group(1)
-        dup_sources = set(table)
-        result = RESULT_RE.search(text)
+        # NEW (slow-cost2): the descriptor-table copy and the unanchored result search ran for EVERY call (OLD: dup_sources = set(table);
+        # result = RESULT_RE.search(text)); only the branches below for these names read them, so they are made only for those names.
+        dup_sources = set(table) if name in _DUP_NAMES else ()
+        result = RESULT_RE.search(text) if name in _RESULT_NAMES else None
         ret = result.group(1) if result else None
         succeeded = ret is not None and ret != '?' and not ret.startswith('-')
         if name == 'close':

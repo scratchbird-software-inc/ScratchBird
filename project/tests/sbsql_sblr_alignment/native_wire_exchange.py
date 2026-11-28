@@ -71,6 +71,8 @@ USER = "fixture_owner"                       # the create fixture's bootstrap pr
 PASSWORD = "S4a-Bootstrap-Pw-7f3a91c2d8"     # its test password (a public test constant, as in that fixture)
 WRONG = "S4c-Wrong-Pw-4d9e1a77c0b2"
 WRITE_CALLS = r"(pwrite64|pwrite|write|writev|pwritev2?|ftruncate|fallocate|fsync|fdatasync|sync_file_range)"
+# NEW (slow-cost2): every literal `name(` the WRITE_CALLS pattern can match (pwritev2? = pwritev( and pwritev2( ); a line with none of them cannot match it.
+WRITE_CALL_LITERALS = ("pwrite64(", "pwrite(", "write(", "writev(", "pwritev(", "pwritev2(", "ftruncate(", "fallocate(", "fsync(", "fdatasync(", "sync_file_range(")
 
 PROCS = []          # (name, Popen) every child started, for the finally block
 FAILURE_LOGS = []   # (title, path) printed on failure
@@ -311,9 +313,15 @@ def analyse_strace(log, path, logins, per_login, label, restart, size=0, allowed
     for index, line in enumerate(lines):
         if region == "startup" and "service_ready=true" in line:
             region = "serving"
-        elif region == "serving" and re.search(r"--- SIGTERM ", line):
+        elif region == "serving" and "--- SIGTERM " in line:  # OLD: re.search(r"--- SIGTERM ", line) (a literal: the same test)
             region = "shutdown"
-        m = re.search(r"\bpwrite64\((\d+),.*,\s*(\d+),\s*(\d+)\)\s*=\s*(-?\d+)", line)
+        # NEW (slow-cost2): every branch below acts only on a line the data descriptor covers, so a line it does not cover is skipped before
+        # its three regex searches (OLD: all three ran on every one of the ~270,000 lines of a 76-login run, ~20 s of the 8K strace test).
+        if not spans.covers(index):
+            continue
+        # NEW (slow-cost2): each search is run only when its literal can be present (a necessary condition of the pattern; the greedy
+        # `.*` of the first one is quadratic on a long -s 1024 line such as a pread64). OLD: all three on every covered line.
+        m = re.search(r"\bpwrite64\((\d+),.*,\s*(\d+),\s*(\d+)\)\s*=\s*(-?\d+)", line) if "pwrite64(" in line else None
         if m and spans.covers(index):
             count, offset, result = m.group(2), int(m.group(3)), m.group(4)
             if count == str(size) and result == count and offset % size == 0 and size != 512:
@@ -326,11 +334,11 @@ def analyse_strace(log, path, logins, per_login, label, restart, size=0, allowed
             else:
                 counts[region][0] += 1
             continue
-        m = re.search(r"\b(?:fsync|fdatasync)\((\d+)\)\s*=\s*0", line)
+        m = re.search(r"\b(?:fsync|fdatasync)\((\d+)\)\s*=\s*0", line) if ("fsync(" in line or "fdatasync(" in line) else None
         if m and spans.covers(index):
             counts[region][1] += 1
             continue
-        m = re.search(r"\b" + WRITE_CALLS + r"\((\d+)", line)
+        m = re.search(r"\b" + WRITE_CALLS + r"\((\d+)", line) if any(name in line for name in WRITE_CALL_LITERALS) else None
         if m and spans.covers(index):
             raise Fail(f"{label} {region}: a write-class syscall that is not a 512-byte pwrite64 (or a whole new chain page) or an fsync on the data file: {line.strip()[:200]}")
     check(region != "startup", f"{label}: the service_ready marker was never traced")

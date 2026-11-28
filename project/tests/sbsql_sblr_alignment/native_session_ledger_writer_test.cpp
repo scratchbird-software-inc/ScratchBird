@@ -112,15 +112,27 @@ class ImageSink final : public d::CarefulWriteSink {
     std::vector<byte> bytes;
   };
   explicit ImageSink(std::vector<byte> image) : img_(std::move(image)) {}
+  // NEW (slow-cost2, 2026-12-27): a sink that BORROWS an image instead of owning a copy. The tear sweep ran ~1,600 cases and
+  // copied the whole image (32 MB at 128K pages) twice per case (the case image, then the sink's own copy): ~100 GB of
+  // allocation, page faults and munmap, 95% of the syscall time. A borrowing sink works on the caller's buffer, records the
+  // bytes every write overwrites, and Rollback() puts them back, so the buffer is byte-identical afterwards (the sweep then
+  // checks that equality once per scenario). What the engine code reads and writes through the sink is unchanged.
+  struct Borrow {};
+  ImageSink(std::vector<byte>& borrowed, Borrow) : ext_(&borrowed) {}
+  void Rollback() {
+    for (auto it = undo_.rbegin(); it != undo_.rend(); ++it) std::copy(it->bytes.begin(), it->bytes.end(), Img().begin() + it->offset);
+    undo_.clear();
+  }
   d::BoundedIoResult ReadAt(u64 offset, std::span<byte> bytes) override {
     if (Fault()) return Fail(d::BoundedIoOperation::read, offset, bytes.size());
-    if (offset + bytes.size() > img_.size()) return Fail(d::BoundedIoOperation::read, offset, bytes.size());
-    std::copy_n(img_.begin() + offset, bytes.size(), bytes.begin());
+    if (offset + bytes.size() > Img().size()) return Fail(d::BoundedIoOperation::read, offset, bytes.size());
+    std::copy_n(Img().begin() + offset, bytes.size(), bytes.begin());
     return Ok(d::BoundedIoOperation::read, offset, bytes.size());
   }
   d::BoundedIoResult WriteAt(u64 offset, std::span<const byte> bytes) override {
     if (Fault()) return Fail(d::BoundedIoOperation::write, offset, bytes.size());
-    std::copy(bytes.begin(), bytes.end(), img_.begin() + offset);
+    if (ext_) undo_.push_back({offset, std::vector<byte>(Img().begin() + offset, Img().begin() + offset + bytes.size())});
+    std::copy(bytes.begin(), bytes.end(), Img().begin() + offset);
     log_.push_back({offset, std::vector<byte>(bytes.begin(), bytes.end())});
     return Ok(d::BoundedIoOperation::write, offset, bytes.size());
   }
@@ -140,8 +152,8 @@ class ImageSink final : public d::CarefulWriteSink {
   u32 calls() const { return calls_; }
   u32 syncs() const { return syncs_; }
   const std::vector<Write>& log() const { return log_; }
-  const std::vector<byte>& image() const { return img_; }
-  std::vector<byte>& mutable_image() { return img_; }
+  const std::vector<byte>& image() const { return Img(); }
+  std::vector<byte>& mutable_image() { return Img(); }
   // Which kind failed last: 'r', 'w' or 's'.
   char failed_kind() const { return failed_kind_; }
 
@@ -169,7 +181,11 @@ class ImageSink final : public d::CarefulWriteSink {
     r.native_attempted = true;
     return r;
   }
+  std::vector<byte>& Img() { return ext_ ? *ext_ : img_; }
+  const std::vector<byte>& Img() const { return ext_ ? *ext_ : img_; }
   std::vector<byte> img_;
+  std::vector<byte>* ext_ = nullptr;
+  std::vector<Write> undo_;
   std::vector<Write> log_;
   std::vector<char> kinds_;
   u32 syncs_ = 0, calls_ = 0, fail_at_ = 0;
@@ -560,7 +576,9 @@ void SectionTear(const Base& b) {
     const auto log = w.sink.log();
     Check(!log.empty() && log.size() == (sc.name == "growth" ? log.size() : 1), "write log");
     if (sc.name == "growth") Check(log.size() >= 4, "growth plans: allocation record(s), page, link, then the record");
-    const auto expect_new = [&](const std::vector<byte>& image, bool may_be_visible, std::string_view where) {
+    // NEW (slow-cost2): `image` is one buffer per scenario, mutated in place and put back after each case (see ImageSink::Borrow);
+    // OLD: every case took a whole-image copy (the case image, then the torn copy of it) and the sink copied it again.
+    const auto expect_new = [&](std::vector<byte>& image, bool may_be_visible, std::string_view where) {
       g_where = sc.name + " " + std::string(where);
       bool torn = false;
       std::vector<pg::SessionLedgerRecord> seen;
@@ -575,7 +593,7 @@ void SectionTear(const Base& b) {
         Check(seen.back() == want, "a visible new record is the WHOLE record");
       }
       // Reload through a fresh ledger: it loads; the next append works and reads back.
-      ImageSink sink(image);
+      ImageSink sink(image, ImageSink::Borrow{});  // OLD: ImageSink sink(image); (a whole-image copy)
       u::StandaloneUuidV7Issuer issuer({b.database, Fixed(10)}, {{}, 0, 1000});
       pg::SessionLedger again(b.LedgerBinding(&issuer));
       const auto loaded = again.Load(sink);
@@ -588,14 +606,25 @@ void SectionTear(const Base& b) {
         const auto after = Walk(b, sink.image());
         Check(after.size() == n_before + 1 && after.back().record_uuid == sc.record.record_uuid, "and reads back whole");
       }
+      sink.Rollback();  // NEW: the borrowed image is exactly as this case found it
+    };
+    std::vector<byte> image = before;     // NEW: the cumulative crash image: `before` + log[0 .. j)
+    std::vector<byte> cumulative = before;  // NEW: the same image kept only by applying the log (never handed to the code under test)
+    const auto image_is_cumulative = [&](std::string_view when) {  // not a Check (the check count is unchanged): a harness fault
+      if (image != cumulative) throw std::logic_error(std::string("the sweep's working image drifted from the cumulative image ") + std::string(when));
     };
     // A crash after every write (j = 0 .. W), and a write torn at every byte prefix of its payload.
     for (std::size_t j = 0; j <= log.size(); ++j) {
-      auto image = before;
-      for (std::size_t k = 0; k < j; ++k) std::copy(log[k].bytes.begin(), log[k].bytes.end(), image.begin() + log[k].offset);
+      // OLD: auto image = before; for (k < j) apply log[k];  (a whole-image copy per j)
+      if (j > 0) {
+        std::copy(log[j - 1].bytes.begin(), log[j - 1].bytes.end(), image.begin() + log[j - 1].offset);
+        std::copy(log[j - 1].bytes.begin(), log[j - 1].bytes.end(), cumulative.begin() + log[j - 1].offset);
+      }
+      image_is_cumulative("before the crash case");
       const bool last_done = j == log.size();
       expect_new(image, last_done, "crash after write " + std::to_string(j));
       ++crash_cases;
+      image_is_cumulative("after the crash case");
       if (j == log.size()) break;
       const auto& wr = log[j];
       const bool is_record = j + 1 == log.size();
@@ -617,12 +646,15 @@ void SectionTear(const Base& b) {
           if (q > 0 && q < wr.bytes.size()) prefixes.push_back(q);
       }
       for (const auto p : prefixes) {
-        auto torn_image = image;
-        std::copy_n(wr.bytes.begin(), p, torn_image.begin() + wr.offset);
+        // OLD: auto torn_image = image; copy_n(wr.bytes, p) into it; expect_new(torn_image, ...)  (a whole-image copy per case)
+        const std::vector<byte> saved(image.begin() + wr.offset, image.begin() + wr.offset + wr.bytes.size());
+        std::copy_n(wr.bytes.begin(), p, image.begin() + wr.offset);
         // Only the final write (the record) can make a record visible; a torn earlier write (growth) never does.
-        expect_new(torn_image, is_record && p >= 1, "write " + std::to_string(j + 1) + " torn at " + std::to_string(p));
+        expect_new(image, is_record && p >= 1, "write " + std::to_string(j + 1) + " torn at " + std::to_string(p));
+        std::copy(saved.begin(), saved.end(), image.begin() + wr.offset);
         ++torn_cases;
       }
+      image_is_cumulative("after the torn cases of a write");
     }
   }
   Check(crash_cases >= 8 && torn_cases > 1000, "the sweep covered many cases");

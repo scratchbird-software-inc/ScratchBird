@@ -192,7 +192,11 @@ std::optional<TransactionBeginResult> GrowForNext(disk::CarefulWriteSink& sink, 
 std::optional<TransactionBeginResult> BuildBeginCounters(u32 page_size, const Chains& chains, u64 n,
                                                          TipCounters& counters) {
   using R = TransactionBeginResult;
-  const auto built = BuildLocalTransactionInventoryFromImages(page_size, chains.state, chains.headers);
+  // NEW (slow-cost2): `chains` is the output of a successful ReadChains (CheckTransactionInventoryImages passed on exactly these
+  // images, and neither Begin nor CompleteAndBegin edits them before this call: a growth re-reads them, which checks again), so the
+  // build skips its own check. OLD: BuildLocalTransactionInventoryFromImages, which ran the check twice more per Begin.
+  const auto built = BuildLocalTransactionInventoryFromCheckedImages(page_size, chains.state, chains.headers,
+                                                                     chains.counters.next_transaction);
   if (!built.ok()) {
     auto refused = Refuse<R>(E::invalid_inventory, built.error);
     refused.transaction_order = built.transaction_order;  // the entry that could not be built

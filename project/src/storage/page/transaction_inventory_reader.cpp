@@ -146,18 +146,16 @@ bool StoredTransactionHorizonsAdmissible(const TipCounters& stored, u64 inventor
          h.oldest_snapshot <= projected.oldest_snapshot_transaction.value;
 }
 
-TransactionInventoryBuildView BuildLocalTransactionInventoryInto(u32 page_size, std::span<const byte> state_images,
-                                                                 std::span<const byte> header_images,
-                                                                 const TransactionInventoryBuildScratch& scratch) noexcept {
+namespace {
+// NEW (slow-cost2): the build after the check, for callers that hold a check of exactly these images (`next` is its
+// counters.next_transaction). OLD: BuildLocalTransactionInventoryInto and BuildLocalTransactionInventoryFromImages each ran
+// the whole CheckTransactionInventoryImages, and FromImages ran it twice (its own, then Into's).
+TransactionInventoryBuildView BuildLocalTransactionInventoryIntoChecked(u32 page_size, std::span<const byte> state_images,
+                                                                        std::span<const byte> header_images,
+                                                                        const TransactionInventoryBuildScratch& scratch,
+                                                                        u64 next) noexcept {
   namespace mga = scratchbird::transaction::mga;
   TransactionInventoryBuildView out;
-  const auto check = CheckTransactionInventoryImages(page_size, state_images, header_images);
-  if (!check.ok()) {
-    out.error = check.error;
-    out.transaction_order = check.transaction_order;
-    return out;
-  }
-  const u64 next = check.counters.next_transaction;
   const u64 capacity = next - 1;
   if (scratch.entries.size() < capacity || scratch.commits.size() < capacity || scratch.indices.size() < capacity ||
       scratch.markers.size() < capacity) {
@@ -216,6 +214,21 @@ TransactionInventoryBuildView BuildLocalTransactionInventoryInto(u32 page_size, 
   out.error = E::none;
   return out;
 }
+}  // namespace
+
+TransactionInventoryBuildView BuildLocalTransactionInventoryInto(u32 page_size, std::span<const byte> state_images,
+                                                                 std::span<const byte> header_images,
+                                                                 const TransactionInventoryBuildScratch& scratch) noexcept {
+  TransactionInventoryBuildView out;
+  const auto check = CheckTransactionInventoryImages(page_size, state_images, header_images);
+  if (!check.ok()) {
+    out.error = check.error;
+    out.transaction_order = check.transaction_order;
+    return out;
+  }
+  return BuildLocalTransactionInventoryIntoChecked(page_size, state_images, header_images, scratch,
+                                                   check.counters.next_transaction);
+}
 
 TransactionInventoryBuild BuildLocalTransactionInventoryFromImages(u32 page_size, std::span<const byte> state_images,
                                                                    std::span<const byte> header_images) {
@@ -226,13 +239,21 @@ TransactionInventoryBuild BuildLocalTransactionInventoryFromImages(u32 page_size
     out.transaction_order = check.transaction_order;
     return out;
   }
-  const std::size_t capacity = check.counters.next_transaction - 1;
+  return BuildLocalTransactionInventoryFromCheckedImages(page_size, state_images, header_images, check.counters.next_transaction);
+}
+
+TransactionInventoryBuild BuildLocalTransactionInventoryFromCheckedImages(u32 page_size, std::span<const byte> state_images,
+                                                                          std::span<const byte> header_images,
+                                                                          u64 next_transaction) {
+  TransactionInventoryBuild out;
+  const std::size_t capacity = next_transaction - 1;
   std::vector<scratchbird::transaction::mga::TransactionInventoryEntry> entries(capacity);
   std::vector<std::pair<u64, std::size_t>> commits(capacity);
   std::vector<std::size_t> indices(capacity);
   std::vector<byte> markers(capacity);
-  const auto built = BuildLocalTransactionInventoryInto(page_size, state_images, header_images,
-                                                        {entries, commits, indices, markers});
+  // OLD: BuildLocalTransactionInventoryInto(...) here, which ran the whole check a second time.
+  const auto built = BuildLocalTransactionInventoryIntoChecked(page_size, state_images, header_images,
+                                                               {entries, commits, indices, markers}, next_transaction);
   out.error = built.error;
   out.transaction_order = built.transaction_order;
   if (!built.ok()) return out;

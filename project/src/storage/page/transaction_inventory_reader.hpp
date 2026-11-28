@@ -78,6 +78,12 @@ struct TransactionInventoryBuild {
 };
 TransactionInventoryBuild BuildLocalTransactionInventoryFromImages(u32 page_size, std::span<const byte> state_images,
                                                                    std::span<const byte> header_images);
+// NEW (slow-cost2): the same build for a caller that ALREADY ran CheckTransactionInventoryImages successfully on exactly
+// these images and passes that check's counters.next_transaction. No check is run here: with images that were not checked
+// (or changed since) the result is undefined, so use FromImages unless the images are the ones just checked.
+TransactionInventoryBuild BuildLocalTransactionInventoryFromCheckedImages(u32 page_size, std::span<const byte> state_images,
+                                                                          std::span<const byte> header_images,
+                                                                          u64 next_transaction);
 
 // The same build into caller-owned scratch, with no heap allocation (for the
 // bounded selected read). Every span needs at least Next - 1 elements (one per
