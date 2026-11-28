@@ -291,7 +291,8 @@ Vector DecodeVector(const std::string& payload) {
   if (out.column_count == 0 || out.column_count > 64 || out.row_count == 0 || out.row_count > 64) return out;
   // exactly: 4 header fields + 6 per column + 1 per value; nothing else (no name, no evidence, no rendered row)
   // OLD (before 2026-12-25): 4 + 4 * column_count + ...; NEW: column_precision[c] and column_scale[c] follow the generation (SB_NATIVE_VALUES_DECIMAL_SCALE)
-  if (fields.size() != 4 + 6 * out.column_count + out.column_count * out.row_count) return out;
+  // OLD (before 2026-12-26): 4 + 6 * column_count + ...; NEW: column_nullability[c] follows column_scale[c] (SB_NATIVE_VALUES_NULL_CELLS); a not-null column has one value field per cell
+  if (fields.size() != 4 + 7 * out.column_count + out.column_count * out.row_count) return out;
   for (std::uint64_t c = 0; c < out.column_count; ++c) {
     const auto n = std::to_string(c);
     const auto* d = find("column_descriptor[" + n + "]");
@@ -302,6 +303,8 @@ Vector DecodeVector(const std::string& payload) {
     const auto* cs = find("column_scale[" + n + "]");
     // an int64 column declares no decimal shape: precision 0, scale 0
     if (!cp || !cs || cp->kind != pr::Kind::unsigned_integer || cs->kind != pr::Kind::unsigned_integer || LE64(cp->value) != 0 || LE64(cs->value) != 0) return out;
+    const auto* cn = find("column_nullability[" + n + "]");
+    if (!cn || cn->kind != pr::Kind::unsigned_integer || cn->value.size() != 8 || LE64(cn->value) != 0) return out;  // a literal column that holds no NULL declares not-null
     if (!d || !t || !td || !g || d->kind != pr::Kind::uuid || t->kind != pr::Kind::uuid || td->kind != pr::Kind::uuid || g->kind != pr::Kind::unsigned_integer) return out;
     out.column_descriptor.push_back(UuidOf(d->value));
     out.column_datatype.push_back(UuidOf(t->value));

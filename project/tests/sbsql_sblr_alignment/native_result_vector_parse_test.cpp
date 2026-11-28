@@ -58,8 +58,9 @@ const dt::DatatypeTypeCodecIdentityRowV1* NonInt64Row() {
   return nullptr;
 }
 
-// The engine's documented layout: operation_id, result_kind, column_count, row_count, per column SIX descriptor fields (the identity triple and generation, then the declared
-// decimal precision and scale: 0, 0 for a non-decimal column), then value[r.c]. OLD (before 2026-12-25, SB_NATIVE_VALUES_DECIMAL_SCALE): four fields per column.
+// The engine's documented layout: operation_id, result_kind, column_count, row_count, per column SEVEN descriptor fields (the identity triple and generation, then the declared
+// decimal precision and scale: 0, 0 for a non-decimal column, then column_nullability), then value[r.c]. OLD (before 2026-12-25, SB_NATIVE_VALUES_DECIMAL_SCALE): four fields per column;
+// OLD (before 2026-12-26, SB_NATIVE_VALUES_NULL_CELLS): six fields per column (no column_nullability). This helper builds NOT-NULL columns (one value field per cell).
 std::vector<pr::Field> Vector(const std::vector<std::vector<std::int64_t>>& rows, std::size_t columns, const dt::DatatypeTypeCodecIdentityRowV1& row,
                               std::uint64_t column_precision = 0, std::uint64_t column_scale = 0) {
   std::vector<pr::Field> fields;
@@ -79,6 +80,7 @@ std::vector<pr::Field> Vector(const std::vector<std::vector<std::int64_t>>& rows
     fields.push_back({"column_datatype_generation[" + i + "]", pr::Kind::unsigned_integer, U64(row.descriptor_generation)});
     fields.push_back({"column_precision[" + i + "]", pr::Kind::unsigned_integer, U64(column_precision)});
     fields.push_back({"column_scale[" + i + "]", pr::Kind::unsigned_integer, U64(column_scale)});
+    fields.push_back({"column_nullability[" + i + "]", pr::Kind::unsigned_integer, U64(0)});
   }
   for (std::size_t r = 0; r < rows.size(); ++r)
     for (std::size_t c = 0; c < columns; ++c)
@@ -318,8 +320,12 @@ int main() {
         auto int_with_shape = Vector({{1}}, 1, *int64, 2, 1);
         Check(sbsql::ConvertNativeScalarProjectionVector(Encode(int_with_shape), {"i"}).refusal_code == "SBSQL.NATIVE_RESULT.VECTOR_INVALID", "an int64 column declaring a decimal shape is refused");
         auto short_layout = Vector({{1}}, 1, *int64);
-        short_layout.erase(short_layout.begin() + 8, short_layout.begin() + 10);  // the OLD four-field-per-column layout
+        short_layout.erase(short_layout.begin() + 8, short_layout.begin() + 11);  // the OLD four-field-per-column layout
         Check(sbsql::ConvertNativeScalarProjectionVector(Encode(short_layout), {"i"}).refusal_code == "SBSQL.NATIVE_RESULT.VECTOR_INVALID", "the OLD four-field column layout is refused (field_count)");
+        auto six_layout = Vector({{1}}, 1, *int64);
+        six_layout.erase(six_layout.begin() + 10);  // the OLD six-field-per-column layout (2026-12-25): no column_nullability
+        Check(sbsql::ConvertNativeScalarProjectionVector(Encode(six_layout), {"i"}).refusal_code == "SBSQL.NATIVE_RESULT.VECTOR_INVALID",
+              "the OLD six-field column layout (no column_nullability) is refused (NEW 2026-12-26)");
       }
       const auto good = sblr::EncodeSblrLiteralExactDecimalV1("-1.5");
       const std::string body(reinterpret_cast<const char*>(good.canonical_bytes.data()), good.canonical_bytes.size());
@@ -388,6 +394,109 @@ int main() {
                           ShapeCase{1, 1, 2, 2, true}, ShapeCase{2, 2, 2, 1, false}, ShapeCase{std::nullopt, std::nullopt, std::nullopt, std::nullopt, true}, ShapeCase{2, 1, std::nullopt, std::nullopt, false},
                           ShapeCase{std::nullopt, std::nullopt, 2, 1, false}, ShapeCase{1, 2, 3, 2, false}})
       Check(sblr::SblrDecimalShapeFitsColumnV1(c.lp, c.ls, c.cp, c.cs) == c.fits, "shape fit rule case");
+  }
+
+
+  // ---- SB_NATIVE_VALUES_NULL_CELLS (2026-12-26; owner 2026-11-28 N1): per-cell state + column_nullability; a NULL cell has NO value field ----
+  {
+    const dt::DatatypeTypeCodecIdentityRowV1* boolean = nullptr;
+    const dt::DatatypeTypeCodecIdentityRowV1* decimal = nullptr;
+    for (const auto& entry : dt::CurrentDatatypeTypeCodecIdentityRowsV3()) {
+      if (entry.legacy_fields.codec_id == "datatype.boolean.u8.v1" && entry.legacy_fields.canonical_name == "boolean") boolean = &entry.legacy_fields;
+      if (entry.legacy_fields.codec_id == "datatype.decimal.base1e9.le.v1" && entry.legacy_fields.canonical_name == "decimal") decimal = &entry.legacy_fields;
+    }
+    Check(boolean != nullptr && decimal != nullptr, "the compiled cohort has the boolean and exact-decimal identities");
+    if (boolean && decimal) {
+      // one-column builder. cells: nullopt = SQL NULL; otherwise the value field's bytes and kind
+      struct Cell { bool is_null; pr::Kind kind; std::string bytes; };
+      const auto build = [&](const dt::DatatypeTypeCodecIdentityRowV1& row, bool nullable, const std::vector<Cell>& cells, std::uint64_t precision = 0, std::uint64_t scale = 0) {
+        auto fields = Vector({}, 1, row, precision, scale);
+        fields[3].value = U64(cells.size());
+        fields[10].value = U64(nullable ? 1 : 0);
+        for (std::size_t r = 0; r < cells.size(); ++r) {
+          const auto cell = std::to_string(r) + ".0";
+          if (nullable) fields.push_back({"state[" + cell + "]", pr::Kind::unsigned_integer, U64(cells[r].is_null ? 1 : 0)});
+          if (!cells[r].is_null) fields.push_back({"value[" + cell + "]", cells[r].kind, cells[r].bytes});
+        }
+        return fields;
+      };
+      const auto i64 = [](std::int64_t v) { return Cell{false, pr::Kind::signed_integer, U64(static_cast<std::uint64_t>(v))}; };
+      const auto nul = Cell{true, pr::Kind::text, ""};
+      const auto code_of = [&](const std::vector<pr::Field>& fields) {
+        const auto r = sbsql::ConvertNativeScalarProjectionVector(Encode(fields), {"n"});
+        return r.status == sbsql::NativeVectorConversionStatus::refused ? r.refusal_code + "/" + r.refusal_detail : std::string("(not refused)");
+      };
+      // int64: a value, a NULL, a value. The NULL row decodes to the client's NULL (nullopt) through the parser's own row metadata state `null`
+      {
+        const auto fields = build(*int64, true, {i64(5), nul, i64(-7)});
+        Check(fields.size() == 4 + 7 + 2 + 1 + 2, "the field count rule: 4 + 7*1 + (state+value) + (state) + (state+value)");
+        const auto converted = sbsql::ConvertNativeScalarProjectionVector(Encode(fields), {"n"});
+        Check(converted.status == sbsql::NativeVectorConversionStatus::converted, "a nullable int64 column with a NULL converts: " + converted.refusal_code + " " + converted.refusal_detail);
+        const auto rows = Decode(converted.payload);
+        Check(rows.ok && rows.rows.size() == 3 && rows.rows[0][0] && *rows.rows[0][0] == "5" && !rows.rows[1][0] && rows.rows[2][0] && *rows.rows[2][0] == "-7",
+              "the NULL cell is the client's NULL (nullopt), the values are 5 and -7");
+        Check(converted.payload.find("n:int64:null") != std::string::npos && converted.payload.find("n:int64:not_null") != std::string::npos,
+              "the row metadata states null / not_null PER CELL (the existing parser state field)");
+      }
+      // a NULL is distinct from the empty/zero value: a value 0 is not NULL
+      {
+        const auto converted = sbsql::ConvertNativeScalarProjectionVector(Encode(build(*int64, true, {i64(0), nul})), {"n"});
+        const auto rows = Decode(converted.payload);
+        Check(rows.ok && rows.rows.size() == 2 && rows.rows[0][0] && *rows.rows[0][0] == "0" && !rows.rows[1][0], "the value 0 is a value, only the NULL state is NULL");
+      }
+      // boolean and decimal columns
+      {
+        const Cell t{false, pr::Kind::bytes, std::string(1, '\x01')}, f{false, pr::Kind::bytes, std::string(1, '\x00')};
+        const auto converted = sbsql::ConvertNativeScalarProjectionVector(Encode(build(*boolean, true, {t, nul, f})), {"n"});
+        const auto rows = Decode(converted.payload);
+        Check(converted.status == sbsql::NativeVectorConversionStatus::converted && rows.ok && rows.rows.size() == 3 && *rows.rows[0][0] == "true" && !rows.rows[1][0] && *rows.rows[2][0] == "false" &&
+                  converted.payload.find("n:boolean:null") != std::string::npos,
+              "a nullable boolean column: true, NULL, false");
+        const auto one_five = sblr::EncodeSblrLiteralExactDecimalV1("1.5");
+        const Cell d{false, pr::Kind::bytes, std::string(reinterpret_cast<const char*>(one_five.canonical_bytes.data()), one_five.canonical_bytes.size())};
+        const auto dc = sbsql::ConvertNativeScalarProjectionVector(Encode(build(*decimal, true, {nul, d}, 2, 1)), {"n"});
+        const auto drows = Decode(dc.payload);
+        Check(dc.status == sbsql::NativeVectorConversionStatus::converted && drows.ok && drows.rows.size() == 2 && !drows.rows[0][0] && *drows.rows[1][0] == "1.5" &&
+                  dc.payload.find("n:decimal:null") != std::string::npos,
+              "a nullable decimal column: NULL, 1.5");
+      }
+      // the count rule, both directions, and each state/value contradiction (the walk must land exactly on the last field)
+      {
+        auto too_many = build(*int64, true, {i64(5), nul});
+        too_many.push_back({"value[1.0]", pr::Kind::signed_integer, U64(9)});  // a value present for a NULL state
+        Check(code_of(too_many) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/field_count", "a value field after a NULL state (an extra field) is refused: " + code_of(too_many));
+        auto missing = build(*int64, true, {i64(5), i64(6)});
+        missing.pop_back();  // state 0 without its value
+        Check(code_of(missing) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/field_count", "a state 0 without its value (too few fields) is refused: " + code_of(missing));
+        auto null_with_value = build(*int64, true, {nul, i64(6)});
+        null_with_value.insert(null_with_value.begin() + 11 + 1, {"value[0.0]", pr::Kind::signed_integer, U64(1)});  // value[0.0] between state[0.0]=1 and state[1.0]
+        Check(code_of(null_with_value) == "SBSQL.NATIVE_RESULT.VALUE_INVALID/state_1_0", "a value present for a NULL state, with more cells after it, is refused: " + code_of(null_with_value));
+        auto trailing = build(*int64, true, {i64(5)});
+        trailing.push_back({"state[1.0]", pr::Kind::unsigned_integer, U64(1)});  // one cell more than row_count
+        Check(code_of(trailing) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/field_count", "a trailing field beyond the last cell is refused: " + code_of(trailing));
+        auto not_null_extra = Vector({{1}}, 1, *int64);
+        not_null_extra.push_back({"value[1.0]", pr::Kind::signed_integer, U64(2)});
+        Check(code_of(not_null_extra) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/field_count", "a not-null column with one value field too many is refused: " + code_of(not_null_extra));
+      }
+      // nullability contradictions
+      {
+        auto declared_not_null = build(*int64, true, {i64(5), nul});
+        declared_not_null[10].value = U64(0);  // the column says not-null but the cells carry states
+        Check(code_of(declared_not_null) == "SBSQL.NATIVE_RESULT.VALUE_INVALID/value_0_0", "a state field in a column that declares not-null is refused: " + code_of(declared_not_null));
+        auto declared_null = Vector({{1}}, 1, *int64);
+        declared_null[10].value = U64(1);  // the column says nullable but the cell has no state field
+        Check(code_of(declared_null) == "SBSQL.NATIVE_RESULT.VALUE_INVALID/state_0_0", "a nullable column whose cell has no state field is refused: " + code_of(declared_null));
+        auto bad_declaration = Vector({{1}}, 1, *int64);
+        bad_declaration[10].value = U64(2);
+        Check(code_of(bad_declaration) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/column_nullability_0", "column_nullability 2 is refused: " + code_of(bad_declaration));
+        auto bad_state = build(*int64, true, {i64(5)});
+        bad_state[11].value = U64(2);
+        Check(code_of(bad_state) == "SBSQL.NATIVE_RESULT.VALUE_INVALID/state_0_0", "a state of 2 is refused: " + code_of(bad_state));
+        auto missing_nullability = Vector({{1}}, 1, *int64);
+        missing_nullability.erase(missing_nullability.begin() + 10);
+        Check(code_of(missing_nullability) == "SBSQL.NATIVE_RESULT.VECTOR_INVALID/column_0", "a column group without column_nullability is refused: " + code_of(missing_nullability));
+      }
+    }
   }
 
   std::cout << "native_result_vector_parse: " << checks << " checks, " << failures << " failures\n";

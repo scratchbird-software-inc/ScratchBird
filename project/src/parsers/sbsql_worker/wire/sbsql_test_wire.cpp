@@ -1268,6 +1268,42 @@ ValuesDecimalUnification ComputeValuesDecimalUnification(const NativeRelationalA
   return out;
 }
 
+// SB_PARSER_VALUES_NULL_PEER (2026-12-26; owner 2026-11-28 N4 + N5; spec: a NULL has no datatype of its own, it takes the one concrete descriptor of its context): a VALUES column that
+// mixes SQL NULL cells with typed cells resolves to the TYPED cells' type, made nullable. Only a column whose every cell is a literal of ONE negotiated peer kind (here BOOLEAN) plus NULLs
+// qualifies; the NULL cells are negotiated as that peer's nullable literal and EVERY cell of the column (value cells too) is negotiated nullable, so the column's descriptors agree. A column
+// of NULLs only has no peer (a NULL has no identity of its own: the cohort carries no NULL descriptor), and a column mixing NULL with any other kind is left alone: both keep their refusals.
+struct ValuesNullPeer {
+  std::set<std::uint32_t> null_cells;      // expression ids of the NULL literals that take their column's peer type
+  std::set<std::uint32_t> nullable_cells;  // expression ids of EVERY cell (NULL and value) of such a column
+};
+ValuesNullPeer ComputeValuesNullPeer(const NativeRelationalAstDocument& ast) {
+  ValuesNullPeer out;
+  if (ast.values_rows.empty()) return out;
+  const auto arity = ast.values_rows.front().expression_ids.size();
+  std::map<std::uint32_t, const NativeExpressionAstNode*> by_id;
+  for (const auto& expression : ast.expressions) by_id.emplace(expression.expression_id, &expression);
+  for (std::size_t ordinal = 0; ordinal < arity; ++ordinal) {
+    std::vector<std::uint32_t> ids;
+    std::size_t nulls = 0, booleans = 0;
+    bool eligible = true;
+    for (const auto& row : ast.values_rows) {
+      if (row.expression_ids.size() != arity) { eligible = false; break; }
+      const auto found = by_id.find(row.expression_ids[ordinal]);
+      if (found == by_id.end() || found->second->expression_kind != NativeExpressionAstKind::kLiteral ||
+          found->second->structural_literal_occurrence_id == 0 ||
+          (found->second->literal_kind != NativeLiteralAstKind::kNull && found->second->literal_kind != NativeLiteralAstKind::kBoolean)) { eligible = false; break; }
+      (found->second->literal_kind == NativeLiteralAstKind::kNull ? nulls : booleans)++;
+      ids.push_back(found->second->expression_id);
+    }
+    if (!eligible || nulls == 0 || booleans == 0) continue;
+    for (const auto id : ids) {
+      out.nullable_cells.insert(id);
+      if (by_id.at(id)->literal_kind == NativeLiteralAstKind::kNull) out.null_cells.insert(id);
+    }
+  }
+  return out;
+}
+
 // SB_NATIVE_DECIMAL_LITERAL_PROFILE (2026-12-24): the generation of the exact-decimal CODEC PROFILE (the occurrence-local DecimalCodecProfile{uuid, generation}), NOT the cohort
 // codec_generation of the literal's SBLP profile (a different identity that happens to be 1 as well). The negotiated SBLP profile does not carry the decimal codec profile's
 // uuid at all (it names codec_id datatype.decimal.base1e9.le.v1, i.e. the 24-byte codec); the parser takes the uuid from core (kExactDecimal24CodecUuid: precision <= 38, which the
@@ -8944,11 +8980,14 @@ BuildEngineProjectedNativeBindingContext(
   // (TRUE / FALSE) literal occurrence (EncodeLiteralPrebindRequest asks for both), in occurrence order. OLD: only numeric occurrences were counted,
   // so `VALUES (TRUE)` failed here with numeric_literal_profile_bijection_invalid. NEW: both kinds are counted and a boolean literal takes its own
   // negotiated boolean profile as its descriptor (below).
+  // SB_PARSER_VALUES_NULL_PEER (2026-12-26): the NULL cells of a column with a boolean peer were negotiated too (a profile each), so they are counted here
+  const auto values_null_peer = ComputeValuesNullPeer(ast);
   std::vector<std::uint64_t> numeric_literal_occurrences;
   for (const auto& expression : ast.expressions) {
     if (expression.expression_kind == NativeExpressionAstKind::kLiteral &&
         (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
-         expression.literal_kind == NativeLiteralAstKind::kBoolean)) {
+         expression.literal_kind == NativeLiteralAstKind::kBoolean ||
+         (expression.literal_kind == NativeLiteralAstKind::kNull && values_null_peer.null_cells.contains(expression.expression_id)))) {
       if (expression.structural_literal_occurrence_id == 0) {
         return fail("numeric_literal_occurrence_missing");
       }
@@ -9018,7 +9057,8 @@ BuildEngineProjectedNativeBindingContext(
         expression.structural_literal_occurrence_id);
     if (expression.expression_kind != NativeExpressionAstKind::kLiteral ||
         (expression.literal_kind != NativeLiteralAstKind::kNumeric &&
-         expression.literal_kind != NativeLiteralAstKind::kBoolean) ||
+         expression.literal_kind != NativeLiteralAstKind::kBoolean &&
+         !(expression.literal_kind == NativeLiteralAstKind::kNull && values_null_peer.null_cells.contains(expression.expression_id))) ||
         expression.structural_literal_occurrence_id == 0 ||
         profile_index == numeric_profile_index_by_occurrence.end()) {
       return std::nullopt;
@@ -9026,9 +9066,11 @@ BuildEngineProjectedNativeBindingContext(
     const auto& profile =
         statement_context.literal_statement_descriptor_profiles[
             profile_index->second];
-    if (expression.literal_kind == NativeLiteralAstKind::kBoolean) {
-      // SB_NATIVE_VALUES_BOOLEAN_LITERAL: the descriptor is the negotiated BOOLEAN profile's own (never a numeric one, never nullable).
-      if (profile.profile_version != 1 || profile.binding_descriptor_uuid.is_nil() || profile.type_uuid.is_nil() || profile.nullable ||
+    if (expression.literal_kind == NativeLiteralAstKind::kBoolean || expression.literal_kind == NativeLiteralAstKind::kNull) {
+      // SB_NATIVE_VALUES_BOOLEAN_LITERAL: the descriptor is the negotiated BOOLEAN profile's own (never a numeric one).
+      // SB_PARSER_VALUES_NULL_PEER (2026-12-26): nullable exactly when the cell belongs to a column that holds a NULL (OLD: never nullable); a NULL cell is always in such a column.
+      if (profile.profile_version != 1 || profile.binding_descriptor_uuid.is_nil() || profile.type_uuid.is_nil() ||
+          profile.nullable != values_null_peer.nullable_cells.contains(expression.expression_id) ||
           profile.descriptor_generation == 0 || profile.codec_id != "datatype.boolean.u8.v1" || profile.codec_version != 1 ||
           profile.codec_generation == 0) {
         return std::nullopt;
@@ -9037,7 +9079,7 @@ BuildEngineProjectedNativeBindingContext(
       boolean_descriptor.descriptor_id = static_cast<std::uint32_t>(context.descriptors.size() + 1);
       boolean_descriptor.descriptor_uuid = profile.binding_descriptor_uuid;
       boolean_descriptor.type_uuid = profile.type_uuid;
-      boolean_descriptor.nullability = BoundNullability::kNonNull;
+      boolean_descriptor.nullability = profile.nullable ? BoundNullability::kNullable : BoundNullability::kNonNull;  // OLD: kNonNull
       boolean_descriptor.canonical_type_name = "boolean";
       context.descriptors.push_back(std::move(boolean_descriptor));
       return context.descriptors.back().descriptor_id;
@@ -9948,6 +9990,10 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
                             const bool allow_empty_contextual_subset,
                             const ScalarProjectionLiteralDemandDescriptionV1* scalar_demands = nullptr) {
   std::set<std::uint64_t> boolean_null_occurrences;
+  // SB_PARSER_VALUES_NULL_PEER (2026-12-26): the NULL cells of a VALUES column that has a boolean peer are negotiated as nullable BOOLEAN literals, like the NULLs of a boolean context
+  const auto values_null_peer = ComputeValuesNullPeer(ast);
+  for (const auto& expression : ast.expressions)
+    if (values_null_peer.null_cells.contains(expression.expression_id)) boolean_null_occurrences.insert(expression.structural_literal_occurrence_id);
   if (scalar_demands != nullptr) {
     if (!scalar_demands->applicable || !scalar_demands->valid ||
         scalar_demands->error != ScalarProjectionLiteralDemandErrorV1::none) return std::nullopt;
@@ -10086,7 +10132,7 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
     item.occurrence_id = literals[index]->structural_literal_occurrence_id;
     item.lexical_class = boolean_literal ? 4 : exact_decimal ? 2 : 1;
     item.context_class = 1;
-    item.nullable = boolean_null;
+    item.nullable = boolean_null || values_null_peer.nullable_cells.contains(literals[index]->expression_id);  // OLD: boolean_null only
     item.lexical_sha256 = *token_hash;
     demand.demands.push_back(item);
     state.occurrences.push_back(

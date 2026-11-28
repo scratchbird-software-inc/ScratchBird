@@ -4769,7 +4769,11 @@ std::string api_result_payload(const scratchbird::engine::internal_api::EngineAp
 //                  column_datatype_generation[c] unsigned  u64 LE8, the cohort descriptor generation
 //                  column_precision[c]       unsigned  u64 LE8, the column's declared decimal precision (0 for a non-decimal column)   [2026-12-25, SB_NATIVE_VALUES_DECIMAL_SCALE]
 //                  column_scale[c]           unsigned  u64 LE8, the column's declared decimal scale (0 for a non-decimal column)
+//                  column_nullability[c]     unsigned  u64 LE8, 0 = the column does not admit NULL, 1 = it does   [2026-12-26, SB_NATIVE_VALUES_NULL_CELLS]
 //   per row r, column c:  value[r.c]         signed_integer  int64 LE8 (the native carrier)
+// SB_NATIVE_VALUES_NULL_CELLS (2026-12-26; owner 2026-11-28 N1): the layout is now 4 + 7C + (cells) fields. A cell of a column with column_nullability 0 is the one field value[r.c] (as
+// before). A cell of a column with column_nullability 1 is state[r.c] (unsigned u64 LE8: 0 = a value follows, 1 = SQL NULL) followed by value[r.c] ONLY when the state is 0: a NULL cell has NO
+// value field (a typed absence, never an empty string). The field count therefore depends on the data, and the parser's converter walks the fields sequentially and must land exactly on the end.
 // SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25; owner 2026-11-28 Q1): the layout is now 4 + 6C + R*C fields (OLD: 4 + 4C + R*C). The decimal VALUE bytes stay the canonical codec body
 // (no trailing fractional zeros); the DISPLAY scale is the column's declared scale, which the PARSER applies. The engine validates every value fits (precision, scale).
 // Only a non-null int64 (value[r.c] signed_integer), since 2026-12-13 a non-null BOOLEAN (value[r.c] bytes, one byte 0 or 1; the column's datatype
@@ -4836,6 +4840,15 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
       return std::nullopt;
     decimal_shapes[c] = {p, sc};
   }
+  // SB_NATIVE_VALUES_NULL_CELLS (2026-12-26): the DECLARED nullability of each column, from its own descriptor's SBMETA (`nullability` = nullable / non_null), never from the cells.
+  // A descriptor whose metadata does not say `nullable` is a not-null column (a NULL cell in it is refused below).
+  std::vector<bool> column_nullable(columns, false);
+  for (std::size_t c = 0; c < columns; ++c) {
+    scratchbird::engine::internal_api::CatalogColumnMetadata metadata;
+    if (!scratchbird::engine::internal_api::AdmitCatalogColumnMetadata(rows.front().fields[c].second.descriptor.encoded_descriptor, &metadata)) continue;
+    const auto nullability = metadata.text.find("nullability");
+    column_nullable[c] = nullability != metadata.text.end() && nullability->second == "nullable";
+  }
   std::vector<public_result::Field> fields;
   // Route B (2026-12-11): the SAME vector serves the object-free literal VALUES relation (query.execute); operation_id names the operation that
   // produced it, as a machine token (never a name): query.evaluate_projection (route A) or query.execute (route B).
@@ -4854,13 +4867,23 @@ std::optional<std::string> native_scalar_projection_vector(const scratchbird::en
     fields.push_back({"column_datatype_generation[" + index + "]", public_result::Kind::unsigned_integer, u64(identity->descriptor_generation)});
     fields.push_back({"column_precision[" + index + "]", public_result::Kind::unsigned_integer, u64(decimal_shapes[c].first)});
     fields.push_back({"column_scale[" + index + "]", public_result::Kind::unsigned_integer, u64(decimal_shapes[c].second)});
+    fields.push_back({"column_nullability[" + index + "]", public_result::Kind::unsigned_integer, u64(column_nullable[c] ? 1 : 0)});
   }
   for (std::size_t r = 0; r < rows.size(); ++r) {
     if (rows[r].fields.size() != columns) return std::nullopt;
     for (std::size_t c = 0; c < columns; ++c) {
       const auto& value = rows[r].fields[c].second;
       const auto& type = value.descriptor.canonical_type_name;
+      // SB_NATIVE_VALUES_NULL_CELLS: a SQL NULL cell (state sql_null, no payload) is carried only by a column that DECLARES it admits NULL; any other state (missing, default, unknown,
+      // error, lob, protected) is not a value this vector builds. A NULL cell has no value field.
+      const std::string cell = std::to_string(r) + "." + std::to_string(c);
+      if (value.state == scratchbird::engine::internal_api::EngineValueState::sql_null && value.is_null && value.encoded_value.empty() && value.binary_value.empty()) {
+        if (!column_nullable[c]) return std::nullopt;
+        fields.push_back({"state[" + cell + "]", public_result::Kind::unsigned_integer, u64(1)});
+        continue;
+      }
       if (value.is_null || value.state != scratchbird::engine::internal_api::EngineValueState::value) return std::nullopt;
+      if (column_nullable[c]) fields.push_back({"state[" + cell + "]", public_result::Kind::unsigned_integer, u64(0)});
       std::string bytes;
       public_result::Kind kind = public_result::Kind::signed_integer;
       if (kinds[c] == ColumnKind::boolean) {

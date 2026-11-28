@@ -243,8 +243,11 @@ void CheckAcceptedMixedTable(const Ran& ran, const std::string& sql, const std::
     return found;
   };
   // OLD (before 2026-12-25): 4 + 4 * columns + columns * rows (four fields per column). NEW: six (column_precision and column_scale follow the generation; 0, 0 for int64 and boolean)
-  Check(fields.size() == 4 + 6 * columns + columns * rows, label + ": the vector holds exactly the header, six fields per column and one value per cell (no name, no text)");
+  // OLD (before 2026-12-26): 4 + 6 * columns + columns * rows. NEW: SEVEN fields per column (column_nullability follows column_scale; 0 for a column that holds no NULL)
+  Check(fields.size() == 4 + 7 * columns + columns * rows, label + ": the vector holds exactly the header, seven fields per column and one value per cell (no name, no text)");
   for (std::size_t column = 0; column < columns; ++column) {
+    const auto* cnull = find("column_nullability[" + std::to_string(column) + "]");
+    Check(cnull && cnull->kind == pr::Kind::unsigned_integer && cnull->value.size() == 8 && LE64(cnull->value) == 0, label + ": column " + std::to_string(column) + " declares not-null (column_nullability 0)");
     const auto* cp = find("column_precision[" + std::to_string(column) + "]");
     const auto* cs = find("column_scale[" + std::to_string(column) + "]");
     Check(cp && cs && cp->kind == pr::Kind::unsigned_integer && cs->kind == pr::Kind::unsigned_integer && LE64(cp->value) == 0 && LE64(cs->value) == 0,
@@ -1528,7 +1531,12 @@ void CheckAcceptedCells(const Ran& ran, const std::string& sql, const std::vecto
     return found;
   };
   // OLD (before 2026-12-25): 4 + 4 * columns + columns * rows. NEW: SIX fields per column (column_precision and column_scale follow the generation)
-  Check(fields.size() == 4 + 6 * columns + columns * rows, label + ": the vector holds exactly the header, six fields per column and one value per cell (no name, no text): " + std::to_string(fields.size()));
+  // OLD (before 2026-12-26): 4 + 6 * columns + columns * rows. NEW: SEVEN fields per column (column_nullability; 0 here: these cells hold no NULL)
+  Check(fields.size() == 4 + 7 * columns + columns * rows, label + ": the vector holds exactly the header, seven fields per column and one value per cell (no name, no text): " + std::to_string(fields.size()));
+  for (std::size_t column = 0; column < columns; ++column) {
+    const auto* cnull = find("column_nullability[" + std::to_string(column) + "]");
+    Check(cnull && cnull->kind == pr::Kind::unsigned_integer && cnull->value.size() == 8 && LE64(cnull->value) == 0, label + ": column " + std::to_string(column) + " declares not-null (column_nullability 0)");
+  }
   const auto* kind_field = find("result_kind");
   const auto* rows_field = find("row_count");
   const auto* columns_field = find("column_count");
@@ -1818,10 +1826,196 @@ void ValueTypesState() {
   one.End();
 }
 
+// ============================================================================================================================================================
+// SB_NATIVE_VALUES_NULL_CELLS (2026-12-26; owner 2026-11-28 N1, N4, N5): the `null_text` state (its text half is NOT built: see the report). A VALUES column that mixes SQL NULL cells with
+// BOOLEAN cells resolves to BOOLEAN and is nullable (N5); the engine's vector declares column_nullability per column, carries state[r.c] per cell of a nullable column and NO value field for a NULL
+// cell (N1); the parser renders the NULL as the client's NULL. A NULL with no typed peer has no datatype (the spec carries no NULL identity: N4 as accepted cannot be built, owner question 1 of
+// the report): every such shape keeps its refusal token exactly, pinned below. A NULL beside an integer or a decimal is NOT built yet (the literal negotiation registers a nullable tuple for
+// BOOLEAN only): pinned as refused.
+// ============================================================================================================================================================
+// One expected cell of a nullable-aware table: 'b' boolean / 'i' int64, `null` = SQL NULL (shown is then unused).
+struct NCell { char kind; bool null; std::string shown; };
+NCell NB(bool v) { return {'b', false, v ? "true" : "false"}; }
+NCell NI(std::int64_t v) { return {'i', false, std::to_string(v)}; }
+NCell NN(char kind) { return {kind, true, ""}; }
+
+void CheckAcceptedNullable(const Ran& ran, const std::string& sql, const std::vector<std::vector<NCell>>& expected, const CohortInt64& int64_cohort, const CohortInt64& boolean_cohort) {
+  namespace pr = scratchbird::wire::public_result;
+  const auto& r = ran.result;
+  const std::string label = "'" + sql.substr(0, 70) + "'";
+  Check(r.accepted && !r.messages.has_errors(), label + " is accepted through the real pipeline: " + AllCodes(r));
+  Check(r.server_operation_id == "query.execute", label + ": the engine operation is query.execute: " + r.server_operation_id);
+  const std::size_t rows = expected.size(), columns = expected.front().size();
+  std::vector<bool> nullable(columns, false);
+  for (const auto& row : expected) for (std::size_t c = 0; c < columns; ++c) if (row[c].null) nullable[c] = true;
+  // the parser's client table: a NULL cell is the client's NULL (nullopt), the others display as written
+  std::vector<std::uint32_t> oids;
+  std::vector<std::vector<std::optional<std::string>>> got;
+  Check(ps2::DecodePublicResultRowsForTest(r.server_result_payload, &oids, &got) && got.size() == rows && oids.size() == columns,
+        label + ": the parser-built table has " + std::to_string(rows) + " rows and " + std::to_string(columns) + " columns");
+  for (std::size_t row = 0; row < rows && row < got.size(); ++row)
+    for (std::size_t column = 0; column < columns && column < got[row].size(); ++column) {
+      const auto& cell = expected[row][column];
+      Check(cell.null ? !got[row][column].has_value() : (got[row][column] && *got[row][column] == cell.shown),
+            label + ": parser row " + std::to_string(row) + " column " + std::to_string(column) + (cell.null ? " is the client's NULL" : " displays `" + cell.shown + "`"));
+    }
+  // the parser's per-row metadata states null / not_null PER CELL (the parser's own existing state field), and the column type
+  std::vector<pr::Field> packet;
+  Check(pr::Decode(r.server_result_payload, &packet), label + ": the parser's packet decodes");
+  for (std::size_t row = 0; row < rows; ++row) {
+    std::string meta;
+    for (std::size_t column = 0; column < columns; ++column)
+      meta += (column ? ";" : "") + std::string("column") + std::to_string(column + 1) + (expected[row][column].kind == 'b' ? ":boolean" : ":int64") + (expected[row][column].null ? ":null" : ":not_null");
+    bool found = false;
+    for (const auto& f : packet) if (f.name == "row_meta[" + std::to_string(row) + "]" && f.value == meta) found = true;
+    Check(found, label + ": row_meta[" + std::to_string(row) + "] is " + meta);
+  }
+  // the engine's ONE vector
+  std::vector<pr::Field> fields;
+  Check(pr::Decode(ran.raw_vector, &fields), label + ": the engine's vector decodes");
+  std::size_t expected_fields = 4 + 7 * columns;
+  for (const auto& row : expected) for (std::size_t c = 0; c < columns; ++c) expected_fields += nullable[c] ? (row[c].null ? 1 : 2) : 1;
+  Check(fields.size() == expected_fields, label + ": the vector holds exactly 4 + 7 per column + the cell fields (a NULL cell is ONE state field and NO value field): " + std::to_string(fields.size()) + " vs " + std::to_string(expected_fields));
+  const auto find = [&](const std::string& name) -> const pr::Field* {
+    const pr::Field* found = nullptr;
+    for (const auto& f : fields) if (f.name == name) { if (found) return nullptr; found = &f; }
+    return found;
+  };
+  for (std::size_t column = 0; column < columns; ++column) {
+    const auto n = std::to_string(column);
+    const auto& cohort = expected.front()[column].kind == 'b' ? boolean_cohort : int64_cohort;
+    const auto* t = find("column_datatype[" + n + "]");
+    const auto* td = find("column_datatype_descriptor[" + n + "]");
+    const auto* g = find("column_datatype_generation[" + n + "]");
+    Check(t && td && g && UuidOf(t->value) == cohort.type_uuid && UuidOf(td->value) == cohort.descriptor_uuid && LE64(g->value) == cohort.generation,
+          label + ": column " + n + " carries the cohort's " + (expected.front()[column].kind == 'b' ? "BOOLEAN" : "int64") + " identity (the peer's type, never a NULL identity)");
+    const auto* cn = find("column_nullability[" + n + "]");
+    Check(cn && cn->kind == pr::Kind::unsigned_integer && LE64(cn->value) == (nullable[column] ? 1u : 0u), label + ": column " + n + " declares column_nullability " + (nullable[column] ? "1" : "0") + " (constant written in the test)");
+  }
+  for (std::size_t row = 0; row < rows; ++row)
+    for (std::size_t column = 0; column < columns; ++column) {
+      const auto& cell = expected[row][column];
+      const auto at = std::to_string(row) + "." + std::to_string(column);
+      const auto* state = find("state[" + at + "]");
+      const auto* value = find("value[" + at + "]");
+      if (nullable[column]) {
+        Check(state && state->kind == pr::Kind::unsigned_integer && state->value.size() == 8 && LE64(state->value) == (cell.null ? 1u : 0u), label + ": state[" + at + "] is " + (cell.null ? "1 (SQL NULL)" : "0 (a value)"));
+      } else {
+        Check(state == nullptr, label + ": a not-null column carries no state field (state[" + at + "] absent)");
+      }
+      if (cell.null) {
+        Check(value == nullptr, label + ": the NULL cell " + at + " has NO value field (a typed absence, never an empty string)");
+      } else if (cell.kind == 'b') {
+        Check(value && value->kind == pr::Kind::bytes && value->value.size() == 1 && (value->value[0] == '\1') == (cell.shown == "true") && (value->value[0] == '\0' || value->value[0] == '\1'), label + ": value[" + at + "] is ONE byte, 0 or 1");
+      } else {
+        Check(value && value->kind == pr::Kind::signed_integer && value->value.size() == 8 && std::to_string(static_cast<std::int64_t>(LE64(value->value))) == cell.shown, label + ": value[" + at + "] is the int64 " + cell.shown);
+      }
+    }
+  // no engine text: after the two machine tokens (operation_id, result_kind) no field is Kind::text, no value is a spelled boolean and no field value spells a NULL or a column name
+  bool no_text = fields.size() > 2;
+  for (std::size_t i = 2; i < fields.size(); ++i) if (fields[i].kind == pr::Kind::text) no_text = false;
+  Check(no_text && ran.raw_vector.find("true") == std::string::npos && ran.raw_vector.find("false") == std::string::npos && ran.raw_vector.find("NULL") == std::string::npos && ran.raw_vector.find("column1") == std::string::npos,
+        label + ": the engine's vector carries no text field, no rendered boolean, no NULL text and no column name");
+}
+
+void NullTextState() {
+  (void)std::setvbuf(stdout, nullptr, _IONBF, 0);
+  const auto catalog_generation = served.facts->receipt_source->ReadCatalogEpochs().catalog_generation_id;
+  auto direct = Approve();
+  auto direct_public = OpenPublicFor(*direct);
+  auto direct_context = ContextFor(*direct, catalog_generation);
+  auto direct_receipt = Acquire(*direct_public, direct_context, direct->approval.transaction_uuid);
+  Check(direct_receipt.ok(), "a direct native receipt (for the cohort identities): " + direct_receipt.code);
+  const auto int64_cohort = CohortInt64Of(CopyContext(direct_receipt));
+  const auto boolean_cohort = CohortBooleanOf(CopyContext(direct_receipt));
+  {
+    std::set<std::string> table;
+    for (const auto& row : api::NativeExecutorAvailabilityAllowList()) table.insert(RowKey(row));
+    Check(table == std::set<std::string>({"engine.op.literal#3", "engine.op.name_resolve#4865"}), "the production allow-list is exactly {name-resolve 0x1301 (4865), literal 3} (this batch adds NO row)");
+  }
+  srv::ServerSessionRegistry registry;
+  const auto active = [&](std::uint64_t order) { return off::ReadFile(served.path, served.facts->page_size_bytes).words.at(order).state == pgs::TipStateCode::active; };
+  Pipe one(registry);
+  const auto order1 = one.order();
+  const auto owner_of = [&](Pipe& pipe) {
+    const auto found = registry.sessions_by_uuid.find(pipe.session().session_uuid);
+    return found != registry.sessions_by_uuid.end() && found->second.local_transaction_id == pipe.order() &&
+           found->second.transaction_uuid == pipe.session().transaction_uuid && found->second.native_session_approved;
+  };
+  Check(order1 != 0 && active(order1) && owner_of(one), "session 1's transaction is active and owned after the login");
+  const auto asked_of = [](const Ran& ran) {
+    std::string asked;
+    for (const auto& r : ran.recorded) asked += RowKey(r.row) + (r.in_allow_list ? "(listed) " : "(NOT listed) ");
+    return asked;
+  };
+  // the recorder rows of an accepted table: name_resolve (bind), literal (finalize), literal (execution): the same three rows whatever the cell count (as the numeric and boolean tables)
+  const std::string kThree = "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) engine.op.literal#3(listed) ";
+  struct Accepted { std::string sql; std::vector<std::vector<NCell>> rows; };
+  const auto run_accepted = [&](const std::string& group, const std::vector<Accepted>& list) {
+    const FileEvidence group_before;
+    for (const auto& item : list) {
+      const auto ran = RunSql(one, item.sql, 2);
+      CheckAcceptedNullable(ran, item.sql, item.rows, int64_cohort, boolean_cohort);
+      Check(asked_of(ran) == kThree, "(" + group + ") '" + item.sql + "' asks exactly [name_resolve (bind), literal (finalize), literal (execution)], all listed: " + asked_of(ran));
+      Check(owner_of(one) && one.order() == order1, "the transaction is still owned after '" + item.sql + "'");
+    }
+    CheckUntouched(group_before, "the (" + group + ") statements, every one");
+    Check(active(order1), "the transaction is still active after the (" + group + ") statements");
+  };
+  struct Refused { std::string sql; std::string code; std::string asked; std::string engine_fields; std::string what; };
+  const auto run_refused = [&](const std::string& group, const std::vector<Refused>& list) {
+    const FileEvidence group_before;
+    for (const auto& item : list) {
+      const auto ran = RunSql(one, item.sql, 2);
+      bool present = false;
+      for (const auto& d : ran.result.messages.diagnostics) if (d.code == item.code) present = true;
+      Check(!ran.result.accepted && present, "(" + group + ") '" + item.sql + "' (" + item.what + ") is refused with " + item.code + ": " + AllCodes(ran.result));
+      Check(asked_of(ran) == item.asked, "(" + group + ") '" + item.sql + "': the production table was asked exactly [" + item.asked + "], got [" + asked_of(ran) + "]");
+      CheckEngineFields(ran, item.sql, item.engine_fields, false);
+      Check(owner_of(one) && one.order() == order1, "the transaction is still owned after the refused '" + item.sql + "'");
+    }
+    CheckUntouched(group_before, "the (" + group + ") refusals, every one");
+    Check(active(order1), "the transaction is still active after the (" + group + ") refusals");
+  };
+
+  // ---- (n1) a boolean column that mixes NULL with TRUE / FALSE: ACCEPTED (N5). OLD (route_b (d2) / this state's pins before 2026-12-26): VALUES (TRUE),(NULL) was refused at the dispatch gate
+  // with SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (opcode_code 4615): the gate recognized only an all-present literal table.
+  run_accepted("n1", {
+      {"VALUES (TRUE),(NULL),(FALSE)", {{NB(true)}, {NN('b')}, {NB(false)}}},
+      {"VALUES (NULL),(TRUE)", {{NN('b')}, {NB(true)}}},
+      {"VALUES (FALSE),(NULL)", {{NB(false)}, {NN('b')}}},
+      {"VALUES (TRUE),(NULL),(NULL),(FALSE)", {{NB(true)}, {NN('b')}, {NN('b')}, {NB(false)}}},
+      {"values (null),(true);", {{NN('b')}, {NB(true)}}},
+      // column nullability is PER COLUMN: the second column holds no NULL and stays not-null
+      {"VALUES (NULL, 1), (TRUE, 2)", {{NN('b'), NI(1)}, {NB(true), NI(2)}}},
+      {"VALUES (TRUE, 1), (NULL, 2), (FALSE, 3)", {{NB(true), NI(1)}, {NN('b'), NI(2)}, {NB(false), NI(3)}}},
+  });
+  // ---- (n2) every shape with NO typed peer, or whose peer is not yet negotiable as nullable, keeps its refusal token exactly (the OLD pins, unchanged). A NULL has no datatype of its own
+  // (the specification carries no NULL identity), so a column of NULLs only has nothing to resolve to: owner question 1.
+  const std::string kBindOnly = "engine.op.name_resolve#4865(listed) ";
+  const std::string kBindFinalize = "engine.op.name_resolve#4865(listed) engine.op.literal#3(listed) ";  // the statement holds a negotiated literal: finalize asks the literal row too
+  run_refused("n2", {
+      {"SELECT NULL", "DATATYPE.CONTEXT_REQUIRED", "", "", "an untyped NULL stops in the PARSER (no context): unchanged"},
+      {"SELECT NULL AS x", "DATATYPE.CONTEXT_REQUIRED", "", "", "an aliased untyped NULL: unchanged"},
+      {"SELECT NULL, 1", "DATATYPE.CONTEXT_REQUIRED", "", "", "a NULL beside an integer in ONE row has no peer (peers are the cells of one COLUMN)"},
+      {"SELECT 1, NULL AS n", "DATATYPE.CONTEXT_REQUIRED", "", "", "an aliased NULL beside an integer in one row"},
+      {"SELECT TRUE, NULL", "DATATYPE.CONTEXT_REQUIRED", "", "", "a NULL beside a boolean in one row has no peer either"},
+      {"VALUES (NULL)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", kBindOnly, "opcode_code=4615", "a column of NULLs only: no peer, refused at the dispatch gate (unchanged, as pinned in route_b (d2))"},
+      {"VALUES (NULL), (NULL)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", kBindOnly, "opcode_code=4615", "an all-NULL column of two rows: no peer"},
+      {"VALUES (NULL, 1)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", kBindFinalize, "opcode_code=4615", "a one-row table whose first column is NULL only"},
+      {"VALUES (1), (NULL)", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED", kBindFinalize, "opcode_code=4615", "NOT BUILT: an integer peer needs a nullable integer literal tuple the negotiation does not register (owner question 2)"},
+      {"VALUES (NULL), (1)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "NOT BUILT: an integer peer after a NULL first row (owner question 2)"},
+      {"VALUES (NULL), (1.5)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "NOT BUILT: a decimal peer (owner question 2)"},
+      {"VALUES (TRUE), (NULL), (1)", "SBLR.PLAN_TREE.INVALID_HANDLE", kBindOnly, "", "a column mixing boolean and integer keeps its refusal, NULL or not"},
+  });
+  one.End();
+}
+
 std::optional<int> ExtraReceiptStateForTest(const std::string& state, const Offline&) {
   if (state == "route_b") { RouteBState(); return 0; }
   if (state == "route_b2") { RouteB2State(); return 0; }
   if (state == "value_types") { ValueTypesState(); return 0; }
+  if (state == "null_text") { NullTextState(); return 0; }
   if (state == "typed_uuid") { TypedUuidState(); return 0; }
   if (state == "pgp_refusal") { PgpRefusalState(); return 0; }
   if (state == "trace") { RouteBTraceState(); return 0; }

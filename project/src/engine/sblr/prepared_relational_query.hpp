@@ -380,9 +380,12 @@ inline NativeLiteralValuesTableClassV1 ClassifyNativeLiteralValuesTableV1(const 
   table_binding.node_id = 1;
   table_binding.semantic_variant_id = "values.literal-table.v1";
   for (std::size_t literal = 1; literal <= literals; ++literal) table_binding.bound_expression_ids.push_back(static_cast<std::uint32_t>(literal));
+  // SB_NATIVE_VALUES_NULL_CELLS (2026-12-26; owner 2026-11-28 N5): a table that holds a SQL NULL cell carries its literal nodes in the STATEFUL SBXN (operand type
+  // expression.node_table.v2: a per-node value_state, 0 = value, 1 = SQL NULL with no body); a table with no NULL keeps v1. OLD: only v1 was recognized, so every NULL table was refused here.
+  const bool stateful_node_table = node_index + 2 < op.operands.size() && op.operands[node_index + 2].type == "expression.node_table.v2";
   if (!d::Text(op, node_index, "relational_node_v1", "slot_1", "13|0|-|" + join(1, columns) + "|" + join(1, rows)) ||
       !d::Binding(op, node_index + 1, table_binding) ||
-      !d::Slot(op, node_index + 2, "expression.node_table.v1", "expression_nodes", SblrValueKind::expression_node_table)) return Class::kNotTemplate;
+      !d::Slot(op, node_index + 2, stateful_node_table ? "expression.node_table.v2" : "expression.node_table.v1", "expression_nodes", SblrValueKind::expression_node_table)) return Class::kNotTemplate;
   for (std::size_t column = 0; column < columns; ++column)
     if (!d::Output(op, output_begin + column, static_cast<std::uint32_t>(column + 1), 1, static_cast<std::uint32_t>(column + 1),
                    static_cast<std::uint32_t>(column + 1), static_cast<std::uint32_t>(column))) return Class::kNotTemplate;
@@ -391,7 +394,9 @@ inline NativeLiteralValuesTableClassV1 ClassifyNativeLiteralValuesTableV1(const 
       return Class::kNotTemplate;
   std::vector<internal_api::RelationalTypeDescriptor> descriptors;
   if (!d::Descriptors(op, literals, &descriptors)) return Class::kNotTemplate;
-  const auto table = DecodeSblrExpressionNodeTableV1(op.operands[node_index + 2].value_body.data(), op.operands[node_index + 2].value_body.size());
+  const auto table = stateful_node_table
+      ? DecodeSblrStatefulExpressionNodeTableV2(op.operands[node_index + 2].value_body.data(), op.operands[node_index + 2].value_body.size())
+      : DecodeSblrExpressionNodeTableV1(op.operands[node_index + 2].value_body.data(), op.operands[node_index + 2].value_body.size());
   if (!table.ok || table.table.nodes.size() != literals) return Class::kNotTemplate;
   std::vector<SblrExpressionNodeReferenceV1> refs;
   refs.reserve(literals);

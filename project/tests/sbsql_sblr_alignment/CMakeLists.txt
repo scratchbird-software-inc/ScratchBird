@@ -4798,6 +4798,18 @@ if(TRUE)
       LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;native_value_types;binary_uuid"
       TIMEOUT 190)
   endforeach()
+  # SB_NATIVE_VALUES_NULL_CELLS (2026-12-26): the same executable's `null_text` state (SQL NULL cells in a boolean VALUES column: the per-cell state, column nullability, the parser's NULL;
+  # the pinned refusals of the NULL shapes that have no typed peer), its own target per page size so route_b's largest target does not grow.
+  foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_rb_parts "${sb_rb_size}")
+    list(GET sb_rb_parts 0 sb_rb_bytes)
+    list(GET sb_rb_parts 1 sb_rb_label)
+    add_test(NAME sbsql_sblr_alignment_native_null_text_${sb_rb_label}
+      COMMAND sbsql_sblr_alignment_native_route_b size ${sb_rb_bytes} null_text)
+    set_tests_properties(sbsql_sblr_alignment_native_null_text_${sb_rb_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_receipt;native_route_b;native_null_text;binary_uuid"
+      TIMEOUT 190)
+  endforeach()
   # SB_SBMV_TYPED_UUID_FIELDS (2026-12-17): the same executable's `typed_uuid` state (the engine identity UUIDs reach the parser as typed binary fields; the encoder,
   # the registry and the decoder's refusals), its own target per page size.
   foreach(sb_rb_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)

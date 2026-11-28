@@ -3177,8 +3177,12 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         descriptors_by_id.find(output_descriptor_id);
     // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): a VALUES row's boolean literal carries its own descriptor like a numeric one; only the VALUES
     // row check below asks for it (allow_boolean), the MATCH_RECOGNIZE bound parse keeps numeric only
+    // SB_NATIVE_VALUES_NULL_CELLS (2026-12-26; owner 2026-11-28 N5): a SQL NULL cell (literal kind kNull, value_state "null", no body) is admitted for a VALUES row under the
+    // allow_boolean (VALUES) check only; it carries its PEER's descriptor (same type as the column) and BOTH descriptors must be nullable. A value cell of a nullable column
+    // carries a nullable descriptor too (the descriptors must agree on nullability). OLD: both descriptors had to be non-null and the state had to be "value" with a body.
+    const bool null_cell = allow_boolean && expression.literal_kind == RelationalLiteralKind::kNull;
     return expression.expression_kind == RelationalExpressionKind::kLiteral &&
-           (expression.literal_kind == RelationalLiteralKind::kNumeric ||
+           (expression.literal_kind == RelationalLiteralKind::kNumeric || null_cell ||
             (allow_boolean && expression.literal_kind == RelationalLiteralKind::kBoolean)) &&
            expression.child_expression_ids.empty() &&
            !expression.function_uuid.has_value() &&
@@ -3192,14 +3196,15 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
            expression.literal_typed_value_v1->descriptor_uuid ==
                expression_descriptor->second->descriptor_uuid &&
            expression.literal_typed_value_v1->descriptor_generation != 0 &&
-           expression.literal_typed_value_v1->value_state == "value" &&
-           !expression.literal_typed_value_v1->canonical_value_bytes.empty() &&
+           expression.literal_typed_value_v1->value_state == (null_cell ? "null" : "value") &&
+           expression.literal_typed_value_v1->canonical_value_bytes.empty() == null_cell &&
            expression_descriptor->second->type_uuid ==
                output_descriptor->second->type_uuid &&
            expression_descriptor->second->nullability ==
-               RelationalNullability::kNonNull &&
-           output_descriptor->second->nullability ==
-               RelationalNullability::kNonNull &&
+               output_descriptor->second->nullability &&
+           (expression_descriptor->second->nullability == RelationalNullability::kNonNull ||
+            (allow_boolean && expression_descriptor->second->nullability == RelationalNullability::kNullable)) &&
+           (!null_cell || expression_descriptor->second->nullability == RelationalNullability::kNullable) &&
            !expression_descriptor->second->collation_uuid.has_value() &&
            !output_descriptor->second->collation_uuid.has_value() &&
            !expression_descriptor->second->timezone_profile_id.has_value() &&

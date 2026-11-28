@@ -38494,8 +38494,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                  NativeExpressionAstKind::kLiteral &&
              // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): a boolean literal of a later row has its own negotiated descriptor exactly as a
              // numeric one does (same type uuid as its column, non-null, no width/precision/scale)
+             // SB_NATIVE_VALUES_NULL_CELLS (2026-12-26; owner 2026-11-28 N5): a SQL NULL cell carries its PEER's descriptor; both descriptors are nullable (a value cell of a nullable
+             // column carries a nullable descriptor too: the two must agree). OLD: both descriptors had to be non-null.
              (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
-              expression.literal_kind == NativeLiteralAstKind::kBoolean) &&
+              expression.literal_kind == NativeLiteralAstKind::kBoolean ||
+              expression.literal_kind == NativeLiteralAstKind::kNull) &&
              expression.structural_literal_occurrence_id != 0 &&
              expression.child_expression_ids.empty() &&
              !expression.bound_function_uuid.has_value() &&
@@ -38506,9 +38509,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              expression_descriptor->second->type_uuid ==
                  output_descriptor->second->type_uuid &&
              expression_descriptor->second->nullability ==
-                 BoundNullability::kNonNull &&
-             output_descriptor->second->nullability ==
-                 BoundNullability::kNonNull &&
+                 output_descriptor->second->nullability &&
+             (expression_descriptor->second->nullability == BoundNullability::kNonNull ||
+              expression_descriptor->second->nullability == BoundNullability::kNullable) &&
+             (expression.literal_kind != NativeLiteralAstKind::kNull ||
+              expression_descriptor->second->nullability == BoundNullability::kNullable) &&
              !expression_descriptor->second->collation_uuid.has_value() &&
              !output_descriptor->second->collation_uuid.has_value() &&
              !expression_descriptor->second->timezone_profile_id.has_value() &&
@@ -48675,9 +48680,11 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
         descriptors.find(expression.descriptor_id);
     const auto output_descriptor = descriptors.find(output_descriptor_id);
     // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): literal kind 1 is numeric, 6 is boolean (RelationalLiteralKind); this lambda only judges VALUES rows
-    return expression.kind == 1 && (expression.literal_kind == 1 || expression.literal_kind == 6) &&
-           expression.literal_or_parameter_ref.has_value() &&
-           !expression.literal_or_parameter_ref->empty() &&
+    // SB_NATIVE_VALUES_NULL_CELLS (2026-12-26): literal kind 7 is NULL (RelationalLiteralKind::kNull); a NULL cell carries no literal text
+    const bool null_cell = expression.literal_kind == 7;
+    return expression.kind == 1 && (expression.literal_kind == 1 || expression.literal_kind == 6 || null_cell) &&
+           (null_cell || (expression.literal_or_parameter_ref.has_value() &&
+                          !expression.literal_or_parameter_ref->empty())) &&
            expression.child_ids.empty() &&
            !expression.function_uuid.has_value() &&
            !expression.bound_name_uuid.has_value() &&
@@ -48686,8 +48693,9 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
            output_descriptor != descriptors.end() &&
            expression_descriptor->second->type_uuid ==
                output_descriptor->second->type_uuid &&
-           expression_descriptor->second->nullability == 1 &&
-           output_descriptor->second->nullability == 1 &&
+           expression_descriptor->second->nullability == output_descriptor->second->nullability &&
+           (expression_descriptor->second->nullability == 1 || expression_descriptor->second->nullability == 2) &&
+           (!null_cell || expression_descriptor->second->nullability == 2) &&
            !expression_descriptor->second->collation_uuid.has_value() &&
            !output_descriptor->second->collation_uuid.has_value() &&
            !expression_descriptor->second->timezone_profile_id.has_value() &&

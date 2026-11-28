@@ -80,12 +80,15 @@ MaterializedValues MaterializeValues(
     const auto expression_descriptor =
         descriptors.find(expression.result_descriptor_id);
     const auto output_descriptor = descriptors.find(output_descriptor_id);
+    // SB_NATIVE_VALUES_NULL_CELLS (2026-12-26; owner 2026-11-28 N5): a SQL NULL cell (kNull, value_state "null", no body) carries its PEER's descriptor and both descriptors are
+    // nullable; a value cell of a nullable column carries a nullable descriptor (the two must agree). OLD: both non-null, state "value", a body.
+    const bool null_cell = expression.literal_kind == api::RelationalLiteralKind::kNull;
     return expression.expression_kind ==
                api::RelationalExpressionKind::kLiteral &&
            // SB_NATIVE_VALUES_BOOLEAN_LITERAL (2026-12-13): a boolean literal of a later row, like a numeric one, carries its own descriptor
            // (same type uuid as its column, non-null, no width, precision or scale)
            (expression.literal_kind ==
-                api::RelationalLiteralKind::kNumeric ||
+                api::RelationalLiteralKind::kNumeric || null_cell ||
             expression.literal_kind ==
                 api::RelationalLiteralKind::kBoolean) &&
            expression.child_expression_ids.empty() &&
@@ -100,14 +103,15 @@ MaterializedValues MaterializeValues(
            expression.literal_typed_value_v1->descriptor_uuid ==
                expression_descriptor->second->descriptor_uuid &&
            expression.literal_typed_value_v1->descriptor_generation != 0 &&
-           expression.literal_typed_value_v1->value_state == "value" &&
-           !expression.literal_typed_value_v1->canonical_value_bytes.empty() &&
+           expression.literal_typed_value_v1->value_state == (null_cell ? "null" : "value") &&
+           expression.literal_typed_value_v1->canonical_value_bytes.empty() == null_cell &&
            expression_descriptor->second->type_uuid ==
                output_descriptor->second->type_uuid &&
            expression_descriptor->second->nullability ==
-               api::RelationalNullability::kNonNull &&
-           output_descriptor->second->nullability ==
-               api::RelationalNullability::kNonNull &&
+               output_descriptor->second->nullability &&
+           (expression_descriptor->second->nullability == api::RelationalNullability::kNonNull ||
+            expression_descriptor->second->nullability == api::RelationalNullability::kNullable) &&
+           (!null_cell || expression_descriptor->second->nullability == api::RelationalNullability::kNullable) &&
            !expression_descriptor->second->collation_uuid.has_value() &&
            !output_descriptor->second->collation_uuid.has_value() &&
            !expression_descriptor->second->timezone_profile_id.has_value() &&
@@ -120,7 +124,7 @@ MaterializedValues MaterializeValues(
            SblrDecimalShapeFitsColumnV1(expression_descriptor->second->precision, expression_descriptor->second->scale,
                                         output_descriptor->second->precision, output_descriptor->second->scale) &&
            expression_descriptor->second->decimal_codec_profile == output_descriptor->second->decimal_codec_profile &&
-           (!output_descriptor->second->precision.has_value() || !output_descriptor->second->scale.has_value() ||
+           (null_cell || !output_descriptor->second->precision.has_value() || !output_descriptor->second->scale.has_value() ||
             SblrDecimalBodyFitsColumnV1(expression.literal_typed_value_v1->canonical_value_bytes.data(),
                                         expression.literal_typed_value_v1->canonical_value_bytes.size(),
                                         *output_descriptor->second->precision, *output_descriptor->second->scale));

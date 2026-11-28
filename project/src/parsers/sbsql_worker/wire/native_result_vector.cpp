@@ -59,17 +59,21 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
   const auto rows = Le64(fields[3].value);
   if (columns == 0 || columns > 4096 || rows > 1048576) return invalid("extent");
   // SB_NATIVE_VALUES_DECIMAL_SCALE (2026-12-25): SIX fields per column (OLD: four): the identity triple + generation, then column_precision and column_scale
-  if (fields.size() != 4 + 6 * columns + columns * rows) return invalid("field_count");
+  // SB_NATIVE_VALUES_NULL_CELLS (2026-12-26; owner 2026-11-28 N1): SEVEN fields per column (the seventh is column_nullability), and the cell fields are DATA-DEPENDENT: a not-null column
+  // has one value field per cell; a nullable column has a state field per cell and a value field only for a non-NULL cell. The cell fields are therefore walked sequentially below and the
+  // walk must land EXACTLY on the last field (too few and too many fields are both refused). Here only the minimum is checked.
+  if (fields.size() < 4 + 7 * columns) return invalid("field_count");
   if (column_names.size() != columns) return Refuse("SBSQL.NATIVE_RESULT.COLUMN_NAME_MISSING", "name_count");
   for (const auto& name : column_names)
     if (name.empty()) return Refuse("SBSQL.NATIVE_RESULT.COLUMN_NAME_MISSING", "empty_name");
 
   // ---- the type of each column, from its descriptor UUIDs through the compiled cohort identity table ----
   std::vector<bool> column_is_boolean;
+  std::vector<bool> column_nullable;  // the column's DECLARED nullability (the vector's column_nullability field)
   std::vector<std::pair<std::uint32_t, std::uint32_t>> column_shape;  // declared decimal (precision, scale) per column; (0, 0) for a non-decimal column
   std::vector<bool> column_is_decimal;  // SB_NATIVE_VALUES_DECIMAL_LITERAL (2026-12-24): the decimal codec identity (datatype.decimal.base1e9.le.v1)
   for (std::uint64_t c = 0; c < columns; ++c) {
-    const auto base = 4 + 6 * c;
+    const auto base = 4 + 7 * c;
     const auto index = Index(static_cast<std::size_t>(c));
     const auto& descriptor = fields[base];
     const auto& datatype = fields[base + 1];
@@ -80,8 +84,11 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
         datatype_descriptor.name != "column_datatype_descriptor[" + index + "]" || datatype_descriptor.kind != pr::Kind::uuid ||
         generation.name != "column_datatype_generation[" + index + "]" || generation.kind != pr::Kind::unsigned_integer ||
         fields[base + 4].name != "column_precision[" + index + "]" || fields[base + 4].kind != pr::Kind::unsigned_integer || fields[base + 4].value.size() != 8 ||
-        fields[base + 5].name != "column_scale[" + index + "]" || fields[base + 5].kind != pr::Kind::unsigned_integer || fields[base + 5].value.size() != 8)
+        fields[base + 5].name != "column_scale[" + index + "]" || fields[base + 5].kind != pr::Kind::unsigned_integer || fields[base + 5].value.size() != 8 ||
+        fields[base + 6].name != "column_nullability[" + index + "]" || fields[base + 6].kind != pr::Kind::unsigned_integer || fields[base + 6].value.size() != 8)
       return invalid("column_" + index);
+    const auto declared_nullability = Le64(fields[base + 6].value);
+    if (declared_nullability > 1) return invalid("column_nullability_" + index);
     const auto declared_precision = Le64(fields[base + 4].value);
     const auto declared_scale = Le64(fields[base + 5].value);
     // The compiled table holds one row per (snapshot, generation) of the same identity; the vector names the identity (type, descriptor,
@@ -108,6 +115,7 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
     if (all_decimal ? (declared_precision == 0 || declared_precision > 38 || declared_scale > declared_precision) : (declared_precision != 0 || declared_scale != 0))
       return Refuse("SBSQL.NATIVE_RESULT.VECTOR_INVALID", "column_shape_" + index);
     column_shape.push_back({static_cast<std::uint32_t>(declared_precision), static_cast<std::uint32_t>(declared_scale)});
+    column_nullable.push_back(declared_nullability == 1);
     column_is_boolean.push_back(all_boolean);
     column_is_decimal.push_back(all_decimal);
   }
@@ -115,18 +123,34 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
   // ---- the rows: value[r.c], row-major, each a signed 64-bit carrier ----
   std::vector<std::string> row_records;
   std::vector<std::string> row_metadata;
-  std::string metadata;
-  for (std::uint64_t c = 0; c < columns; ++c) {
-    if (c != 0) metadata += ';';
-    metadata += column_names[static_cast<std::size_t>(c)] +
-                (column_is_boolean[static_cast<std::size_t>(c)] ? ":boolean:not_null"
-                 : column_is_decimal[static_cast<std::size_t>(c)] ? ":decimal:not_null" : ":int64:not_null");
-  }
-  const auto values_base = 4 + 6 * columns;
+  // SB_NATIVE_VALUES_NULL_CELLS: the cell fields, walked sequentially (their count depends on the data). `at` is the next unread field.
+  std::size_t at = static_cast<std::size_t>(4 + 7 * columns);
   for (std::uint64_t r = 0; r < rows; ++r) {
     std::vector<pr::Field> row_fields;
+    std::string row_meta;
     for (std::uint64_t c = 0; c < columns; ++c) {
-      const auto& value = fields[values_base + r * columns + c];
+      const std::string cell = Index(static_cast<std::size_t>(r)) + "." + Index(static_cast<std::size_t>(c));
+      const bool nullable_column = column_nullable[static_cast<std::size_t>(c)];
+      bool null_cell = false;
+      if (nullable_column) {
+        // state[r.c]: u64 LE8, 0 = a value field follows, 1 = SQL NULL and NO value field follows
+        if (at >= fields.size()) return invalid("field_count");
+        const auto& state = fields[at++];
+        if (state.name != "state[" + cell + "]" || state.kind != pr::Kind::unsigned_integer || state.value.size() != 8 || Le64(state.value) > 1)
+          return Refuse("SBSQL.NATIVE_RESULT.VALUE_INVALID", "state_" + Index(static_cast<std::size_t>(r)) + "_" + Index(static_cast<std::size_t>(c)));
+        null_cell = Le64(state.value) == 1;
+      }
+      if (c != 0) row_meta += ';';
+      row_meta += column_names[static_cast<std::size_t>(c)] +
+                  (column_is_boolean[static_cast<std::size_t>(c)] ? ":boolean" : column_is_decimal[static_cast<std::size_t>(c)] ? ":decimal" : ":int64") +
+                  (null_cell ? ":null" : ":not_null");
+      if (null_cell) {
+        // a NULL cell: the parser's own existing NULL carrier (an EMPTY text cell with the `null` state in the row metadata, which the client decodes to NULL)
+        row_fields.push_back({column_names[static_cast<std::size_t>(c)], pr::Kind::text, std::string()});
+        continue;
+      }
+      if (at >= fields.size()) return invalid("field_count");
+      const auto& value = fields[at++];
       const bool boolean_column = column_is_boolean[static_cast<std::size_t>(c)];
       const bool decimal_column = column_is_decimal[static_cast<std::size_t>(c)];
       if (decimal_column) {
@@ -167,8 +191,10 @@ NativeVectorConversion ConvertNativeScalarProjectionVector(std::string_view engi
     std::string record;
     if (!pr::Encode(row_fields, &record)) return Refuse("SBSQL.NATIVE_RESULT.VECTOR_INVALID", "row_encode");
     row_records.push_back(std::move(record));
-    row_metadata.push_back(metadata);
+    row_metadata.push_back(std::move(row_meta));
   }
+
+  if (at != fields.size()) return invalid("field_count");
 
   // ---- the legacy-shaped packet: operation_id, result_kind, row_count, then row[i] and row_meta[i] per row ----
   std::vector<pr::Field> out_fields;

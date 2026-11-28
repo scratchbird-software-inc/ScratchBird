@@ -513,9 +513,15 @@ def run(args, work):
     tbl = sbsql(args, work, port, "int-list", "SELECT 1, -2, 3"); logins += 1
     check(tbl.returncode == 0 and re.search(r"^\|\s*column1\s*\|\s*column2\s*\|\s*column3\s*\|\s*$", tbl.stdout, re.M) and table_rows(tbl.stdout) == [["1", "-2", "3"]],
           f"SELECT 1, -2, 3 (the VALUES route, column1..3): rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
+    # SQL NULL cells (2026-12-26; owner 2026-11-28 N5): a boolean column that mixes NULL with typed cells resolves to BOOLEAN and is nullable; the client prints the NULL as `(null)` (the client's existing NULL rendering)
+    tbl = sbsql(args, work, port, "null-peer", "VALUES (TRUE), (NULL), (FALSE)"); logins += 1
+    check(tbl.returncode == 0 and table_rows(tbl.stdout) == [["true"], ["(null)"], ["false"]] and "(3 rows)" in tbl.stdout,
+          f"VALUES (TRUE), (NULL), (FALSE) shows true, NULL, false: rc={tbl.returncode} {tbl.stdout!r} {tbl.stderr!r}")
 
     # --- the refused shapes: machine tokens, a failed exit ---
-    for label, sql, token in (("plus", "SELECT 1 + 0 AS s", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
+    for label, sql, token in (
+                              # NULL with no typed peer keeps its OLD refusals (DATATYPE.CONTEXT_REQUIRED, SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED), unchanged: pinned in process in native_route_b_test.cpp (null_text n2);
+                              # NOT repeated here: native_wire_exchange_strace_8k passed in 189.27 s against its TIMEOUT 190 with two more logins (2026-12-26), so this file adds ONE login only.("plus", "SELECT 1 + 0 AS s", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
                               ("text", "SELECT 'a' AS t", "ENGINE.NATIVE.RESULT_VECTOR_TYPE_NOT_BUILT"),
                               # ROUTE B (2026-12-11). OLD: ("bare", "SELECT 1", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED") -- bare SELECT 1 now RUNS (above).
                               ("bare-plus", "SELECT 1 + 0", "SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED"),
